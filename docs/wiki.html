@@ -2476,14 +2476,14 @@ execve(<span class="str">"/bin/bash"</span>, {<span class="str">"/proc/self/fd/N
   <tr><th>Component</th><th>Version</th><th>Required</th></tr>
   <tr><td>Python</td><td>3.10+</td><td>Yes — server runtime</td></tr>
   <tr><td>pip packages</td><td>see <code>requirements.txt</code></td><td>Yes — FastAPI, cryptography, uvicorn, PyYAML</td></tr>
-  <tr><td>Rust + Cargo</td><td>stable 1.70+</td><td>Optional — native agent compilation</td></tr>
-  <tr><td>musl-tools</td><td>any</td><td>Optional — Linux musl-static ELF target</td></tr>
-  <tr><td>clang + lld + xwin</td><td>clang 14+</td><td>Optional — Windows MSVC-ABI PE target</td></tr>
-  <tr><td>OpenSSL</td><td>3.x</td><td>Yes — for TLS cert generation and agent crypto</td></tr>
+  <tr><td>Rust + Cargo</td><td>stable 1.70+</td><td>Yes — native agent compilation (ELF, PE, shellcode)</td></tr>
+  <tr><td>clang + lld + llvm</td><td>clang 14+</td><td>Yes — Windows MSVC-ABI cross-compilation</td></tr>
+  <tr><td>xwin Windows SDK</td><td>0.6.5+</td><td>Yes — Windows PE/DLL/shellcode targets (~1.5 GB)</td></tr>
+  <tr><td>OpenSSL</td><td>3.x</td><td>Yes — TLS cert generation and agent crypto</td></tr>
 </table>
 <div class="callout callout-info">
-  <div class="callout-title">Rust is Optional</div>
-  Script agents (bash + PowerShell) are always generated and require no Rust toolchain. Install Rust only if you need native <code>.elf</code>, <code>.exe</code>, <code>.dll</code>, or <code>.bin</code> artifacts.
+  <div class="callout-title">install.sh handles everything</div>
+  Running <code>./install.sh --server</code> installs all of the above interactively — Python deps, rustup, Rust targets, clang/lld/llvm via apt, and the xwin Windows SDK. Each heavy step (rustup, xwin) asks for confirmation before proceeding.
 </div>
 
 <h3 id="s8-2">1.2 Quick Install</h3>
@@ -2500,7 +2500,7 @@ cp server.yml.example server.yml
 
 <span class="cmt"># Start the server</span>
 python3 stratum-server.py</code></pre>
-<p>The installer performs the following steps: installs Python dependencies from <code>requirements.txt</code>, generates a self-signed TLS certificate in <code>certs/</code>, prints the SHA-256 fingerprint for browser verification, creates the <code>sessions/</code>, <code>logs/</code>, <code>keys/</code>, <code>downloads/</code>, and <code>certs/</code> directories, and sets appropriate file permissions (600 for key files and <code>server.yml</code>, 700 for <code>credentials/</code>).</p>
+<p>The installer performs the following steps interactively: installs Python dependencies from <code>requirements.txt</code>, installs rustup + Rust cross-compilation targets, installs clang/lld/llvm via apt, downloads and splats the xwin Windows SDK (~1.5 GB, asked before proceeding), generates a self-signed TLS certificate in <code>certs/</code>, prints the SHA-256 fingerprint for browser verification, creates the <code>sessions/</code>, <code>logs/</code>, <code>keys/</code>, <code>downloads/</code>, and <code>certs/</code> directories, and sets appropriate file permissions (600 for key files and <code>server.yml</code>, 700 for <code>credentials/</code>).</p>
 
 <!-- Install Checklist -->
 <div class="flow-box"><span class="fc">─── Quick Install · Step Checklist ────────────────────────────────────────</span>
@@ -2510,9 +2510,14 @@ python3 stratum-server.py</code></pre>
           cd stratum-c2
           Status: ───────────────────────────────────────── [ ] pending
 
-  <span class="fb">Step 2</span>  Run installer
+  <span class="fb">Step 2</span>  Run installer (interactive — confirms before heavy downloads)
           ./install.sh --server
           ├─ installs Python deps from requirements.txt         [<span class="fb"> ✓ </span>]
+          ├─ installs rustup + cargo (if missing)               [<span class="fb"> ✓ </span>]
+          ├─ adds Rust targets: linux-musl, windows-msvc,       [<span class="fb"> ✓ </span>]
+          │    windows-gnu, unknown-none
+          ├─ installs clang / lld / llvm via apt                [<span class="fb"> ✓ </span>]
+          ├─ installs xwin + Windows SDK (~1.5 GB)              [<span class="fb"> ✓ </span>]
           ├─ generates self-signed TLS cert in certs/           [<span class="fb"> ✓ </span>]
           ├─ prints SHA-256 fingerprint for browser verification [<span class="fb"> ✓ </span>]
           ├─ creates sessions/ logs/ keys/ downloads/ certs/    [<span class="fb"> ✓ </span>]
@@ -2527,21 +2532,12 @@ python3 stratum-server.py</code></pre>
           ├─ server.port (default: 7443)                         [ ] optional
           └─ settings.timezone                                   [ ] optional
 
-  <span class="fb">Step 4</span>  (Optional) Install Rust toolchain for native agents
-          curl -sSf https://sh.rustup.rs | sh
-          rustup target add x86_64-unknown-linux-musl            [ ] Linux ELF
-          rustup target add x86_64-pc-windows-msvc               [ ] Windows PE
-          cargo install xwin &amp;&amp; xwin splat --output ~/.xwin      [ ] xwin SDK
-          rustup target add x86_64-pc-windows-gnu                [ ] Windows GNU fallback
-          rustup target add x86_64-unknown-none                  [ ] Shellcode
-          Without Rust: script agents only (still fully functional)
-
-  <span class="fb">Step 5</span>  Start server
+  <span class="fb">Step 4</span>  Start server
           python3 stratum-server.py
           └─ Server starts at https://0.0.0.0:7443
           Open browser → accept TLS exception → verify fingerprint
 
-  <span class="fb">Step 6</span>  Log in and run Deploy Wizard
+  <span class="fb">Step 5</span>  Log in and run Deploy Wizard
           + Deploy button → select provider → authenticate → configure → build
           Download artifacts from 📦 Tradecraft panel</div>
 
@@ -2573,9 +2569,9 @@ cp server.yml.example server.yml
 python3 stratum-server.py</code></pre>
 
 <h3 id="s8-4">1.4 Rust Toolchain</h3>
-<div class="callout callout-danger">
-  <div class="callout-title">Required — not optional</div>
-  Native agent compilation (Linux musl ELF, Windows MSVC PE, raw shellcode) requires the Rust toolchain. Without it the Deploy Wizard will fail to build any native artifact. Install the toolchain before running the wizard for the first time.
+<div class="callout callout-info">
+  <div class="callout-title">Handled automatically by install.sh</div>
+  Running <code>./install.sh --server</code> installs the full Rust toolchain interactively — rustup, all four cross-compilation targets, clang/lld/llvm, and the xwin Windows SDK. The manual steps below are only needed if you are setting up the toolchain independently of the installer.
 </div>
 <pre><code><span class="cmt"># Install Rust</span>
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -2583,22 +2579,20 @@ source ~/.cargo/env
 
 <span class="cmt"># ── Linux musl-static ELF ──────────────────────────────────────</span>
 rustup target add x86_64-unknown-linux-musl
-apt install musl-tools                     <span class="cmt"># Debian/Ubuntu</span>
 
 <span class="cmt"># ── Windows MSVC-ABI PE (EXE / DLL) ───────────────────────────</span>
-apt install clang lld llvm                 <span class="cmt"># Debian/Ubuntu</span>
-cargo install xwin
-xwin --accept-license splat --output ~/.xwin
+apt install clang lld llvm                 <span class="cmt"># Debian/Ubuntu/Kali</span>
+cargo install xwin --version 0.6.5 --locked
+xwin --accept-license splat --output ~/.xwin    <span class="cmt"># ~1.5 GB download</span>
 rustup target add x86_64-pc-windows-msvc
 
-<span class="cmt"># ── Windows GNU fallback (PS1/bash wrapper builds) ─────────────</span>
+<span class="cmt"># ── Windows GNU fallback ───────────────────────────────────────</span>
 rustup target add x86_64-pc-windows-gnu
-apt install gcc-mingw-w64-x86-64        <span class="cmt"># Debian/Ubuntu</span>
 
 <span class="cmt"># ── Shellcode (raw binary, no PE headers) ─────────────────────</span>
 rustup target add x86_64-unknown-none
 <span class="cmt"># lld is required for the custom link.ld linker script</span></code></pre>
-<p>After installing the toolchain, native artifacts are compiled automatically during the next deployment wizard run. All four targets (Linux musl, Windows MSVC PE, Windows GNU fallback, shellcode) must be installed for the full artifact set — missing a target causes that compilation step to fail silently for that artifact type.</p>
+<p>After installing the toolchain, native artifacts are compiled automatically during the next deployment wizard run. All four targets (Linux musl, Windows MSVC PE, Windows GNU fallback, shellcode) must be installed for the full artifact set — missing a target causes that compilation step to be skipped with a warning for that artifact type.</p>
 
 <h3 id="s8-5">1.5 Docker</h3>
 <p>Stratum ships a <code>Dockerfile</code> for containerised deployment. The image is <strong>single-stage</strong> and contains the full toolchain needed to compile agents at deploy time — Python server, Rust (rustup), clang/lld (MSVC cross-compilation), and the xwin Windows SDK. Agents are never pre-compiled: each deployment wizard run produces artifacts with unique cloud folder names, provider credentials, and encryption keys, so compilation always happens on-demand inside the running container.</p>
