@@ -1,0 +1,70 @@
+# =============================================================================
+# Stratum C2 — .dockerignore
+# Keeps secrets and runtime state out of the Docker build context.
+# Rules mirror .gitignore but are independent — both must be maintained.
+# =============================================================================
+
+# ── Secrets & live config ─────────────────────────────────────────────────────
+server.yml
+credentials/
+keys/
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ── Runtime state (operator-specific, mounted as volumes at runtime) ──────────
+sessions/
+logs/
+downloads/
+deployments/
+
+# ── Git metadata ──────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Rust build artifacts (rebuilt inside Docker builder stage) ────────────────
+agents/native/*/target/
+target/
+.xwin-cache/
+.cargo/registry/
+.cargo/git/
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── Docs & local-only files ───────────────────────────────────────────────────
+# docs/ covers everything including ADVERSARIAL_REVIEW, ASSESSMENT_REPORT,
+# ROADMAP internals — never include in Docker build context.
+docs/
+CONTEXT.md
+AUDIT.md
+*.xlsx
+README.md
+
+# ── Editor & OS noise ─────────────────────────────────────────────────────────
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.log
+*.pid

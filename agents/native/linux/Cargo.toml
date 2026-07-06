@@ -1,0 +1,18 @@
+[package]
+name = "stratum-linux"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "z"
+strip = true
+panic = "abort"
+lto = true
+codegen-units = 1
