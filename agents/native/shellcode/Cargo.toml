@@ -1,0 +1,15 @@
+[package]
+name = "stratum-shellcode"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "shellcode"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = false

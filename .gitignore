@@ -1,0 +1,109 @@
+# =============================================================================
+# STRATUM C2 — .gitignore
+# Ensures no secrets, credentials, configs, build artifacts or runtime data
+# are ever committed. The repo must be clean and deployable from scratch.
+# =============================================================================
+
+# ── Live server config ────────────────────────────────────────────────────────
+# Contains passwords, JWT secret, OIDC client secret — NEVER commit.
+server.yml
+
+# ── Credentials & OAuth tokens (all forms) ───────────────────────────────────
+# credentials/<provider>      — raw shell-var token files (no extension)
+# credentials/<provider>.json — JSON credential profiles with app keys + tokens
+credentials/
+
+# ── Crypto material ───────────────────────────────────────────────────────────
+# Deployment RSA keypairs (private_key.pem / public_key.pem inside deployments/)
+# are already covered by deployments/ below, but catch any stray key files here.
+keys/
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ── Deployments (per-operation bundles) ──────────────────────────────────────
+# Each folder contains: RSA keypair, bootstrap key blob (.c2_bk),
+# encrypted stage-2 payloads, built agent binaries and deployment guide.
+# All of this is operator-specific and secret.
+deployments/
+
+# ── Runtime state ─────────────────────────────────────────────────────────────
+sessions/
+logs/
+downloads/
+*.pid
+.stratum_server.pid
+
+# ── Audit / analysis / test artefacts (local only) ───────────────────────────
+AUDIT.md
+test_plan.xlsx
+*.xlsx
+assessment_*/
+audit/
+
+# ── Mockups & local dev tools ─────────────────────────────────────────────────
+mockups/
+tools/
+
+# ── Rust compiler artefacts (stray .s files from cargo asm / build) ───────────
+*.s
+
+# ── Dev-only context file ─────────────────────────────────────────────────────
+CONTEXT.md
+
+# ── Operational security docs (internal only — never publish) ─────────────────
+# Adversarial reviews, assessment reports, and roadmap internals expose attack
+# surface analysis, wire-protocol details, and OPSEC decisions. Leaking these
+# gives an adversary a complete map of the framework's design trade-offs.
+docs/ADVERSARIAL_REVIEW.md
+docs/ASSESSMENT_REPORT.md
+docs/ROADMAP_JSON_ENVELOPE.md
+docs/*_REVIEW.md
+docs/*_REPORT.md
+
+# ── Python cache & packaging ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# ── Rust build artifacts ──────────────────────────────────────────────────────
+# Covers all native sub-crates. The wildcard catches future additions.
+agents/native/*/target/
+target/
+
+# ── Cross-compilation caches ──────────────────────────────────────────────────
+.xwin-cache/
+.cargo/registry/
+.cargo/git/
+
+# ── Editor & OS noise ─────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+*.swp
+*.swo
+*.sw?
+*~
+.idea/
+.vscode/
+*.iml
+
+# ── Misc temp / local ─────────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.log

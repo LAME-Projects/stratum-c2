@@ -1,0 +1,7 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
+# Library paths injected at build time via RUSTFLAGS env var (set by stratum wizard).
+# CFLAGS_x86_64_pc_windows_msvc and RC=llvm-rc are also set by the wizard.

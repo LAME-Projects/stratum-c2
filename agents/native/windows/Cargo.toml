@@ -1,0 +1,23 @@
+[package]
+name = "stratum-windows"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[lib]
+name = "agent"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+winres = "0.1"
+
+[profile.release]
+opt-level = "z"
+strip = true
+panic = "abort"
+lto = true
+codegen-units = 1

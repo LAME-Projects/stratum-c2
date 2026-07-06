@@ -1,0 +1,91 @@
+# Stratum C2 — Server Configuration
+# Copy to server.yml and edit before running: python3 stratum-server.py
+# IMPORTANT: chmod 600 server.yml  (contains cleartext passwords / OIDC secrets + JWT secret)
+
+server:
+  host: 0.0.0.0          # bind address (0.0.0.0 = all interfaces)
+  port: 7443             # HTTPS/WSS port
+  tls:
+    mode: self-signed    # "self-signed" generates certs/server.crt + certs/server.key
+    cert: certs/server.crt
+    key:  certs/server.key
+  session_dir: sessions/ # where session JSON profiles are stored
+  log_dir:     logs/     # command history CSV + chat.jsonl + revoked_tokens.json
+  key_dir:     keys/     # deployment RSA keypairs
+
+# ── Authentication ────────────────────────────────────────────────────────────
+# auth_mode selects the login method. Only one mode is active at a time.
+#   local       — username + password defined in users[] below (default)
+#   oidc-manual — OIDC via Keycloak; allowed_identities whitelist required
+#   oidc-auto   — OIDC via Keycloak; any authenticated user is allowed unless blocked
+auth_mode: local
+
+# ── Local users (auth_mode: local only) ──────────────────────────────────────
+# All users have equal privileges. No role system.
+# Cleartext passwords — keep this file chmod 600.
+users:
+  - username: admin
+    password: "changeme"
+  - username: alice
+    password: "changeme2"
+
+# ── OIDC (auth_mode: oidc-manual or oidc-auto) ───────────────────────────────
+# Remove or leave commented when using auth_mode: local.
+#
+# Keycloak client settings (Create client → Settings tab):
+#   Client authentication : On  (makes it a confidential client)
+#   Authorization         : Off
+#   Standard Flow         : On  (Authorization Code Flow)
+#   Root URL              : https://<stratum-host>:<port>
+#   Home URL              : https://<stratum-host>:<port>
+#   Valid redirect URIs   : https://<stratum-host>:<port>/api/v1/auth/oidc/callback
+#   Web origins           : https://<stratum-host>:<port>
+#
+# The callback URL above is derived automatically by Stratum from the incoming
+# request — it does NOT need to be specified in this file.
+#
+#oidc:
+#  provider_url: https://keycloak.example.com/realms/stratum
+#  client_id: stratum-c2
+#  client_secret: "your-client-secret"
+#
+#  # Claim used as stable identity key (whitelist/blocklist, config file, session).
+#  # Normalised to lowercase internally.
+#  # Default: email. Alternatives: preferred_username, sub, name, or any custom claim.
+#  identity_claim: email
+#
+#  # Claim shown in the WebUI as the operator display name.
+#  # Not normalised, not used as a key — purely cosmetic.
+#  # Default: preferred_username. Alternatives: name, given_name, email, or any custom claim.
+#  display_claim: preferred_username
+#
+#  # oidc-manual only: whitelist of identity_claim values allowed to log in.
+#  # Must contain at least one entry when auth_mode is oidc-manual.
+#  allowed_identities:
+#    - alice@corp.com
+#    - bob@corp.com
+#
+#  # oidc-auto only: identities explicitly denied (optional).
+#  # Prefs files for blocked users are NOT deleted automatically — remove manually if needed.
+#  #blocked_identities:
+#  #  - badactor@corp.com
+
+settings:
+  jwt_expiry_hours: 24              # token lifetime
+  jwt_secret: ""                    # auto-generated on first run; do not share
+  build_timeout_sec: 300            # wizard deploy timeout
+  heartbeat_retain_days: 90         # reserved — not currently implemented
+  cmd_lock_timeout_multiplier: 5    # pending_cmd auto-expires after N × agent_sleep
+  hb_warn_multiplier: 3             # online→idle after N × agent_sleep seconds of silence
+  hb_dead_multiplier: 6             # idle→offline after N × agent_sleep seconds of silence
+  timezone: "UTC"                   # IANA timezone for logs and UI timestamps (e.g. "Europe/Rome", "America/New_York")
+  log_level: "info"                 # console log verbosity: debug | info | warning | error | critical
+  log_file: ""                      # log filename inside log_dir (e.g. "stratum.log"); "" = console only
+                                    # rotates daily at midnight, no automatic deletion; format: stratum.log.YYYY-MM-DD
+  key_password: ""                  # passphrase to encrypt deployment private_key.pem at rest (AES-256)
+                                    # if set, all new deployments will have their private key encrypted on disk
+                                    # existing unencrypted keys continue to work (leave empty for no encryption)
+  allowed_origins: []               # CORS origin whitelist — list of exact origins allowed to make browser requests
+                                    # empty list (default) = wildcard "*" (any origin); set to restrict access
+                                    # example: ["https://c2.example.com:7443", "https://192.168.1.10:7443"]
+  max_upload_mb: 512                # max size for staged file uploads (MB); default 512
