@@ -94,7 +94,8 @@ else
   # On Debian/Ubuntu/Kali, pip may refuse to install into the system site-packages
   # unless --break-system-packages is passed. Detect this by running a real dry-run
   # and capturing combined stdout+stderr (the error goes to stderr, not stdout).
-  if "$PYTHON" -m pip install --dry-run requests 2>&1 | grep -q "externally-managed"; then
+  _pip_probe=$("$PYTHON" -m pip install --dry-run requests 2>&1 || true)
+  if echo "$_pip_probe" | grep -q "externally-managed"; then
     PIP_EXTRA="--break-system-packages"
     warn "System-managed Python detected — using --break-system-packages"
   fi
@@ -108,40 +109,123 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3 — Rust / Cargo (needed for binary builds; optional)
+# STEP 3 — Rust / Cargo + cross-compilation toolchain
 # ─────────────────────────────────────────────────────────────────────────────
 step "Rust toolchain (binary builds)"
 
+WIN_MSVC="x86_64-pc-windows-msvc"
+WIN_GNU="x86_64-pc-windows-gnu"
+LINUX_MUSL="x86_64-unknown-linux-musl"
+LINUX_NONE="x86_64-unknown-none"
+RUST_TARGETS=("$WIN_MSVC" "$WIN_GNU" "$LINUX_MUSL" "$LINUX_NONE")
+
+# ── 3a: rustup / cargo ───────────────────────────────────────────────────────
 CARGO_OK=false
 if command -v cargo &>/dev/null; then
   CARGO_VER=$(cargo --version 2>/dev/null | awk '{print $2}')
   ok "Cargo $CARGO_VER found"
   CARGO_OK=true
-
-  # Check Windows cross-compilation targets (MSVC via clang/xwin — primary)
-  WIN_MSVC="x86_64-pc-windows-msvc"
-  WIN_GNU="x86_64-pc-windows-gnu"
-  LINUX_MUSL="x86_64-unknown-linux-musl"
-  LINUX_NONE="x86_64-unknown-none"
-  for tgt in "$WIN_MSVC" "$WIN_GNU" "$LINUX_MUSL" "$LINUX_NONE"; do
-    if rustup target list --installed 2>/dev/null | grep -q "$tgt"; then
-      ok "Rust target $tgt installed"
+else
+  warn "Rust/Cargo not found."
+  ask "Install rustup (Rust toolchain manager)? [y/N]:"
+  read -r ans </dev/tty || ans="n"
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    info "Downloading and running rustup installer..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+    # Source cargo env for the rest of this script
+    # shellcheck source=/dev/null
+    source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
+    if command -v cargo &>/dev/null; then
+      CARGO_VER=$(cargo --version 2>/dev/null | awk '{print $2}')
+      ok "Cargo $CARGO_VER installed"
+      CARGO_OK=true
     else
-      warn "Rust target $tgt not installed"
-      info "Install with: rustup target add $tgt"
+      err "rustup install failed — binary builds unavailable"
+    fi
+  else
+    warn "Skipping Rust — native agent builds will be unavailable"
+  fi
+fi
+
+# ── 3b: Rust cross-compilation targets ───────────────────────────────────────
+if $CARGO_OK; then
+  MISSING_TARGETS=()
+  for tgt in "${RUST_TARGETS[@]}"; do
+    if rustup target list --installed 2>/dev/null | grep -q "$tgt"; then
+      ok "Rust target $tgt"
+    else
+      MISSING_TARGETS+=("$tgt")
     fi
   done
-  # xwin Windows SDK (required for x86_64-pc-windows-msvc)
-  if [ -d "$HOME/.xwin" ] || [ -d "/root/.xwin" ]; then
-    ok "xwin Windows SDK found"
-  else
-    warn "xwin Windows SDK not found — Windows MSVC builds disabled"
-    info "Install with: cargo install xwin --locked && xwin --accept-license splat --output ~/.xwin"
-    info "Also needed:  apt install clang lld llvm"
+
+  if [ ${#MISSING_TARGETS[@]} -gt 0 ]; then
+    warn "Missing Rust targets: ${MISSING_TARGETS[*]}"
+    ask "Install missing targets? [y/N]:"
+    read -r ans </dev/tty || ans="n"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      for tgt in "${MISSING_TARGETS[@]}"; do
+        info "Adding target $tgt..."
+        rustup target add "$tgt"
+        ok "Target $tgt added"
+      done
+    else
+      warn "Skipping — Windows/Linux cross-compilation may fail"
+    fi
   fi
-else
-  warn "Cargo not found — binary agent builds will be unavailable"
-  info "Install rustup: curl https://sh.rustup.rs -sSf | sh"
+fi
+
+# ── 3c: clang / lld / llvm (required for Windows MSVC cross-compile) ─────────
+if $CARGO_OK; then
+  MISSING_PKGS=()
+  for pkg in clang lld llvm; do
+    if ! command -v "$pkg" &>/dev/null && ! dpkg -l "$pkg" &>/dev/null 2>&1; then
+      MISSING_PKGS+=("$pkg")
+    fi
+  done
+
+  if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
+    warn "Missing system packages: ${MISSING_PKGS[*]}"
+    ask "Install via apt? (sudo required) [y/N]:"
+    read -r ans </dev/tty || ans="n"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      sudo apt-get install -y "${MISSING_PKGS[@]}"
+      ok "Installed: ${MISSING_PKGS[*]}"
+    else
+      warn "Skipping — Windows MSVC builds may fail without clang/lld/llvm"
+    fi
+  else
+    ok "clang / lld / llvm found"
+  fi
+fi
+
+# ── 3d: xwin (Windows SDK — ~1.5 GB download) ────────────────────────────────
+if $CARGO_OK; then
+  XWIN_DIR="${XWIN_DIR:-$HOME/.xwin}"
+  if [ -d "$XWIN_DIR" ] && [ -d "$XWIN_DIR/crt" ]; then
+    ok "xwin Windows SDK found ($XWIN_DIR)"
+  else
+    warn "xwin Windows SDK not found — required for Windows MSVC agent builds."
+    info "This downloads ~1.5 GB of Microsoft SDK headers and libs."
+    ask "Install xwin + Windows SDK now? [y/N]:"
+    read -r ans </dev/tty || ans="n"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      if ! command -v xwin &>/dev/null; then
+        info "Installing xwin via cargo..."
+        cargo install xwin --version 0.6.5 --locked
+      fi
+      info "Downloading Windows SDK (this may take several minutes)..."
+      xwin --accept-license splat --output "$XWIN_DIR"
+      if [ -d "$XWIN_DIR/crt" ]; then
+        ok "xwin Windows SDK installed → $XWIN_DIR"
+      else
+        err "xwin splat failed — check output above"
+      fi
+    else
+      warn "Skipping xwin — Windows MSVC agent builds will be unavailable"
+      info "Install later: cargo install xwin --version 0.6.5 --locked"
+      info "               xwin --accept-license splat --output ~/.xwin"
+    fi
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
