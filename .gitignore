@@ -48,6 +48,9 @@ audit/
 mockups/
 tools/
 
+# ── License (not published) ───────────────────────────────────────────────────
+LICENSE
+
 # ── Rust compiler artefacts (stray .s files from cargo asm / build) ───────────
 *.s
 
