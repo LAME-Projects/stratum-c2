@@ -261,7 +261,15 @@ UI mockups for all screens (session list, shell, persist tab, info tab, deploy w
 
 ## Legal
 
-For **authorized security testing and red team engagements only**. Unauthorized access to computer systems is illegal. Use only on systems you own or have explicit written permission to assess.
+**Stratum is intended for educational and authorized security testing purposes only.**
+
+This software is provided for defensive security research, penetration testing training, and authorized security assessments. Users are solely responsible for ensuring their use complies with all applicable laws and regulations.
+
+**For cloud services:** If testing targets hosted on Dropbox, OneDrive, Google Drive, S3, or SharePoint, you must have explicit authorization from both the service provider and the resource owner. Unauthorized access to cloud services is illegal.
+
+**Unauthorized access to computer systems is a criminal offense** and can result in severe civil and criminal penalties, including fines and imprisonment.
+
+By using this software, you acknowledge that you have read this disclaimer and agree to use Stratum only for lawful purposes with proper authorization.
 
 ---
 
