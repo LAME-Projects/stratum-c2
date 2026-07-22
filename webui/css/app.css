@@ -396,7 +396,10 @@ table.sess thead tr { background: var(--panel-2); position: sticky; top: 0; z-in
 table.sess th {
   padding: .3rem .7rem; text-align: center; font-size: .62rem; font-weight: 600;
   letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); white-space: nowrap; user-select: none;
+  position: relative; overflow: hidden; cursor: grab;
 }
+table.sess th.col-dragging { opacity: .4; }
+table.sess th.col-drag-over { background: rgba(204,31,31,.15); }
 table.sess tbody tr { cursor: pointer; transition: background .1s; }
 table.sess tbody tr:hover { background: rgba(255,255,255,.02); }
 table.sess tbody tr.sel { background: rgba(204,31,31,.07); }

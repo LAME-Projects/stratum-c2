@@ -51,9 +51,13 @@ const Notif = (() => {
   }
 
   function _toastLevel(category, extra) {
-    if (category === 'agent_state') return extra?.alive ? 'success' : 'warning';
+    if (category === 'agent_state') {
+      if (extra?.dead) return 'error';
+      return extra?.alive ? 'success' : 'warning';
+    }
     if (category === 'session_removed') return 'warning';
     if (category === 'chat_message')    return 'info';
+    if (category === 'cmd_response')    return 'info';
     return 'success';
   }
 

