@@ -32,6 +32,7 @@ import hashlib as _hashlib
 import io
 import json as _json
 import mimetypes as _mt
+import os
 import re as _re
 from datetime import datetime, timezone
 from core import tz as _tz
@@ -512,9 +513,15 @@ async def upload_file(session_id: str, request: Request,
     safe_name = PurePosixPath(file.filename).name
     if not safe_name or safe_name.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    staging = s.profile.staging_path + "/" + safe_name
+
+    # Encrypt file content + use opaque random filename on cloud
+    from providers._crypto import encrypt_staging
+    enc_data     = encrypt_staging(data, s.session_key_hex)
+    staging_name = os.urandom(8).hex()  # opaque 16-char hex filename
+    staging      = s.profile.staging_path + "/" + staging_name
+
     loop = __import__("asyncio").get_event_loop()
-    ok   = await loop.run_in_executor(None, s.transport.upload, staging, data)
+    ok   = await loop.run_in_executor(None, s.transport.upload, staging, enc_data)
     if not ok:
         raise HTTPException(status_code=502, detail="Cloud upload failed")
     agent_cmd = f"UPLOAD:{staging}:{safe_name}:DEST:{remote_path}" if remote_path else f"UPLOAD:{staging}:{safe_name}"
@@ -524,6 +531,7 @@ async def upload_file(session_id: str, request: Request,
         s.pending_ul[result.cmd_id] = {
             "filename":    safe_name,
             "remote_path": remote_path,
+            "staging_path": staging,
             "size":        len(data),
             "timestamp":   _tz.now().isoformat(),
             "cmd_id":      result.cmd_id,

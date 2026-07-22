@@ -344,7 +344,7 @@
         const _pl  = (p) => ({ googledrive:'GoogleDrive', onedrive:'OneDrive', sharepoint:'SharePoint', s3:'AWS S3', dropbox:'Dropbox' })[(p||'').toLowerCase()] || p || '';
         const prov  = payload.provider ? ` [${_pl(payload.provider)}]` : '';
         const title = who ? `${who} — ${chan}${prov}` : `${chan}${prov}`;
-        Toast.info(title, stateLabel);
+        Notif.trigger('agent_state', title, stateLabel, { alive: newState !== 'offline' });
       }
     });
 
@@ -388,7 +388,7 @@
         const _pl  = (p) => ({ googledrive:'GoogleDrive', onedrive:'OneDrive', sharepoint:'SharePoint', s3:'AWS S3', dropbox:'Dropbox' })[(p||'').toLowerCase()] || p || '';
         const prov  = s.provider ? ` [${_pl(s.provider)}]` : '';
         const title = who ? `${who} — ${chan}${prov}` : `${chan}${prov}`;
-        Toast.error(title, 'Dead — agent stopped responding');
+        Notif.trigger('agent_state', title, 'Dead — agent stopped responding', { alive: false, dead: true });
       }
       Sessions.onHeartbeat(id, { alive: false });
     });
@@ -406,7 +406,7 @@
         _seenHb.delete(sid);
       }
       if (removed_by && removed_by !== API.getUsername()) {
-        Toast.info('Session Removed', `${removed_by} removed ${sid.slice(0, 8)}`);
+        Notif.trigger('session_removed', 'Session Removed', `${removed_by} removed ${sid.slice(0, 8)}`);
       }
     });
 
@@ -430,9 +430,9 @@
       const sess  = Sessions.getSession(session_id);
       const label = sess?.target_host || sess?.folder_path || session_id;
 
-      /* track heartbeat seen (but don't notify — state change Toast is enough) */
       if (!_seenHb.has(session_id)) {
         _seenHb.add(session_id);
+        Notif.trigger('agent_first_hb', 'Agent Check-in', `${label} first heartbeat`);
       }
 
       if (state.alive !== false) _stateMap.set(session_id, 'alive');
@@ -441,6 +441,12 @@
     WS.on('session.output', (ev) => {
       const { cmd_id, output, content, error, session_id, remote_cwd } = ev.payload;
       Sessions.onOutput(cmd_id, output ?? content, !!error, remote_cwd, session_id);
+      const activeId = Sessions.getActiveId ? Sessions.getActiveId() : null;
+      if (session_id && session_id !== activeId) {
+        const sess = Sessions.getSession(session_id);
+        const who  = sess?.target_host || session_id.slice(0, 8);
+        Notif.trigger('cmd_response', `Response — ${who}`, (output ?? content ?? '').slice(0, 80));
+      }
     });
 
     WS.on('session.command', (ev) => {

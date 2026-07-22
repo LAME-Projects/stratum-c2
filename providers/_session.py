@@ -443,6 +443,7 @@ class Session:
         self._hb:             Optional["HeartbeatMonitor"] = None
         self.polling_stopped: bool = False
         self._suppress_first_announce: bool = False
+        self._next_hb_at:    Optional[float] = None   # agent-provided hint (Phase 2 adaptive polling)
 
     # ── derived ────────────────────────────────────────────────────────────────
     @property

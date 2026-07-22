@@ -207,7 +207,6 @@ Multi-operator, real-time, browser-based. Every operator sees the same sessions 
 /upload <path>       — push file to target
 /sleep <s>           — change beacon interval live
 /jitter <pct>        — change jitter percentage live
-/env                 — dump target environment variables
 /timestomp <args>    — set file timestamps on target
 /exit                — stop agent process (persistence survives)
 ```

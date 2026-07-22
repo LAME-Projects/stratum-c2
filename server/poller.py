@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from core import tz as _tz
 from pathlib import Path
@@ -85,7 +86,15 @@ class StateWatcher:
         while True:
             await asyncio.sleep(60)
             try:
-                await sm.expire_locks()
+                expired = await sm.expire_locks()
+                for sid in expired:
+                    session = sm.get(sid)
+                    if session:
+                        await self._ws.broadcast({
+                            "type": "session.update",
+                            "ts":   _ts(),
+                            "payload": _session_summary(session, None),
+                        })
             except Exception:
                 pass
 
@@ -112,9 +121,33 @@ class HBScheduler:
             except Exception:
                 _log_sess.exception("HBScheduler._tick failed")
 
+    @staticmethod
+    def _should_poll(s) -> bool:
+        """Adaptive polling: skip sessions whose agent is known to be mid-sleep.
+
+        With long sleep intervals (e.g. 300 s) the server would otherwise
+        download and decrypt the *same* heartbeat file ~20 times between
+        actual agent check-ins.  This method returns False when the next
+        heartbeat is not yet expected, cutting redundant cloud API calls
+        by ~80 %.
+        """
+        last_seen = s.state.last_seen_at
+        if not last_seen or s.state.state != "online" or s.agent_sleep <= 30:
+            return True
+        now = time.time()
+        # Prefer agent-provided next_hb_at hint (Phase 2) when available
+        next_hb = getattr(s, '_next_hb_at', None)
+        if next_hb is not None:
+            return now >= next_hb - 15
+        # Fallback: estimate from last_seen + minimum sleep interval
+        earliest = last_seen + s.agent_sleep * (100 - s.agent_jitter) / 100
+        # Start polling one tick before the earliest expected heartbeat
+        return now >= earliest - 15
+
     async def _tick(self) -> None:
         loop = asyncio.get_event_loop()
-        sessions = [s for s in self._sm.all() if not s.polling_stopped and s._hb]
+        sessions = [s for s in self._sm.all()
+                    if not s.polling_stopped and s._hb and self._should_poll(s)]
         if not sessions:
             return
         await asyncio.gather(
@@ -157,6 +190,9 @@ def install_notification_hooks(
         def output(self, cmd_id: str, content: str) -> None:
             _log_cmd.info("output: cmd_id=%s length=%d", cmd_id, len(content or ""))
             sid = sm.session_for_cmd(cmd_id)
+            # Always clean reverse-index after response (handles late replies
+            # where expire_locks already cleared _pending but poller still ran).
+            sm._cmd_session.pop(cmd_id, None)
 
             async def _handle():
                 if sid:

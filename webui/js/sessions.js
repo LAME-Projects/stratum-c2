@@ -21,6 +21,34 @@ const Sessions = (() => {
   let   _exfilShowPath   = false;
   let _suggestItems = [];
   let _suggestIdx   = -1;
+  let _resizingCol  = false;         // prevents drag while col-resize active
+
+  /* ── session table column definitions ────────────────────────────────────── */
+  const _SESS_COLS = [
+    { key: 'status',   th: '' },
+    { key: 'provider', th: 'Provider' },
+    { key: 'folder',   th: 'Folder' },
+    { key: 'id',       th: 'ID' },
+    { key: 'user',     th: 'User' },
+    { key: 'host',     th: 'Host' },
+    { key: 'domain',   th: 'Domain' },
+    { key: 'os',       th: 'OS' },
+    { key: 'int_ip',   th: 'Int IP' },
+    { key: 'ext_ip',   th: 'Ext IP' },
+    { key: 'pid',      th: 'PID' },
+    { key: 'process',  th: 'Process' },
+    { key: 'last_hb',  th: 'Last HB' },
+    { key: 'next_ci',  th: 'Next Checkin' },
+  ];
+  const _SESS_COL_KEYS = _SESS_COLS.map(c => c.key);
+  let _sessColOrder = (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('sess-col-order'));
+      if (Array.isArray(saved) && saved.length === _SESS_COL_KEYS.length
+          && _SESS_COL_KEYS.every(k => saved.includes(k))) return saved;
+    } catch (_) {}
+    return [..._SESS_COL_KEYS];
+  })();
 
   /* ── slash-command definitions (used by suggester) ───────────────────────── */
   const _SLASH_DEFS = [
@@ -284,9 +312,21 @@ const Sessions = (() => {
 
     $$('tr:not(#sess-empty-row)', tbody).forEach(r => r.remove());
 
+    // Rebuild thead according to current column order
+    const tbl = $('#sess-table');
+    const theadTr = tbl?.querySelector('thead tr');
+    if (theadTr) {
+      theadTr.innerHTML = _sessColOrder.map(key => {
+        const col = _SESS_COLS.find(c => c.key === key);
+        return col ? `<th data-col="${key}" draggable="true">${col.th}</th>` : '';
+      }).join('');
+    }
+
     const emptyRow = $('#sess-empty-row');
     if (!ids.length) {
       if (emptyRow) emptyRow.style.display = '';
+      _initColResize('sess-table', 'colw:sess-table');
+      _initSessColDrag();
       return;
     }
     if (emptyRow) emptyRow.style.display = 'none';
@@ -318,21 +358,23 @@ const Sessions = (() => {
       const tr = document.createElement('tr');
       if (id === _activeId) tr.classList.add('sel');
       tr.dataset.id = id;
-      tr.innerHTML = `
-        <td><span class="st-pill ${st}">${_stLabel(st)}</span></td>
-        <td class="sess-prov">${providerIcon(prov, 'prov-icon')?.outerHTML || ''}${escHtml(_providerLabel(prov))}</td>
-        <td class="sess-chan">${escHtml(chan || '—')}</td>
-        <td class="sess-uid">${escHtml(uid)}</td>
-        <td class="sess-user">${escHtml(s.target_user || '—')}${admin ? '<span class="priv-star">*</span>' : ''}</td>
-        <td class="sess-host">${escHtml(s.target_host || '—')}</td>
-        <td class="sess-dom">${escHtml(dom)}</td>
-        <td><span class="os-b ${osCls}">${escHtml(osLbl)}</span></td>
-        <td class="sess-ip">${escHtml(intIp)}</td>
-        <td class="sess-ip">${escHtml(extIp)}</td>
-        <td class="sess-pid">${escHtml(pid)}</td>
-        <td class="sess-proc">${escHtml(proc)}</td>
-        <td class="hb-val" data-hb="${escHtml(seenTs)}">${fmtAge(seenTs || null)}</td>
-        <td class="${st === 'stopped' ? 'nc-val nc-stopped' : 'nc-val'}" data-nc="${st === 'stopped' || isNaN(ncMs) ? '' : ncMs}">${st === 'stopped' ? '■ Stopped' : fmtUntil(ncMs)}</td>`;
+      const cellMap = {
+        status:   `<td><span class="st-pill ${st}">${_stLabel(st)}</span></td>`,
+        provider: `<td class="sess-prov">${providerIcon(prov, 'prov-icon')?.outerHTML || ''}${escHtml(_providerLabel(prov))}</td>`,
+        folder:   `<td class="sess-chan">${escHtml(chan || '—')}</td>`,
+        id:       `<td class="sess-uid">${escHtml(uid)}</td>`,
+        user:     `<td class="sess-user">${escHtml(s.target_user || '—')}${admin ? '<span class="priv-star">*</span>' : ''}</td>`,
+        host:     `<td class="sess-host">${escHtml(s.target_host || '—')}</td>`,
+        domain:   `<td class="sess-dom">${escHtml(dom)}</td>`,
+        os:       `<td><span class="os-b ${osCls}">${escHtml(osLbl)}</span></td>`,
+        int_ip:   `<td class="sess-ip">${escHtml(intIp)}</td>`,
+        ext_ip:   `<td class="sess-ip">${escHtml(extIp)}</td>`,
+        pid:      `<td class="sess-pid">${escHtml(pid)}</td>`,
+        process:  `<td class="sess-proc">${escHtml(proc)}</td>`,
+        last_hb:  `<td class="hb-val" data-hb="${escHtml(seenTs)}">${fmtAge(seenTs || null)}</td>`,
+        next_ci:  `<td class="${st === 'stopped' ? 'nc-val nc-stopped' : 'nc-val'}" data-nc="${st === 'stopped' || isNaN(ncMs) ? '' : ncMs}">${st === 'stopped' ? '■ Stopped' : fmtUntil(ncMs)}</td>`,
+      };
+      tr.innerHTML = _sessColOrder.map(k => cellMap[k] || '').join('');
       if (s._wiping) {
         const pill = tr.querySelector('.st-pill');
         if (pill) { pill.className = 'st-pill wiping'; pill.textContent = '⟳ wiping'; }
@@ -340,6 +382,9 @@ const Sessions = (() => {
       tr.addEventListener('click', () => select(id));
       tbody.appendChild(tr);
     });
+
+    _initColResize('sess-table', 'colw:sess-table');
+    _initSessColDrag();
   }
 
   function _startHbTicker() {
@@ -2395,6 +2440,11 @@ const Sessions = (() => {
     }
     _localCmdIds.delete(cmd_id);
     _setOutput(cmd_id, content, error);
+    /* Clear pending bar when output arrives — the server already cleared
+       the pending lock, but the UI only refreshes it on session.update
+       which may lag behind by up to STATE_POLL_INTERVAL seconds. */
+    const pb = $('#pending-bar');
+    if (pb) pb.classList.remove('visible');
     if (_persistCheckIds.has(cmd_id)) {
       _persistCheckIds.delete(cmd_id);
       setTimeout(() => { if ($('#tp-persist.on')) _renderPersist(); }, 600);
@@ -2542,6 +2592,7 @@ const Sessions = (() => {
       th.appendChild(handle);
       handle.addEventListener('mousedown', e => {
         e.preventDefault();
+        _resizingCol = true;
         if (tbl.style.tableLayout !== 'fixed') {
           ths.forEach(h => { h.style.width = h.offsetWidth + 'px'; });
           tbl.style.tableLayout = 'fixed';
@@ -2552,6 +2603,7 @@ const Sessions = (() => {
         document.body.style.cursor = 'col-resize';
         const onMove = ev => { th.style.width = Math.max(40, startWidth + ev.clientX - startX) + 'px'; };
         const onUp   = () => {
+          _resizingCol = false;
           handle.classList.remove('resizing');
           document.body.style.cursor = '';
           _saveWidths();
@@ -2560,6 +2612,45 @@ const Sessions = (() => {
         };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup',   onUp);
+      });
+    });
+  }
+
+  /* ── col drag-reorder (session table) ────────────────────────────────────── */
+  function _initSessColDrag() {
+    const tbl = $('#sess-table');
+    if (!tbl) return;
+    $$('thead th[draggable]', tbl).forEach(th => {
+      th.addEventListener('dragstart', e => {
+        if (_resizingCol) { e.preventDefault(); return; }
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', th.dataset.col);
+        th.classList.add('col-dragging');
+      });
+      th.addEventListener('dragend', () => {
+        th.classList.remove('col-dragging');
+        $$('thead th.col-drag-over', tbl).forEach(h => h.classList.remove('col-drag-over'));
+      });
+      th.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        th.classList.add('col-drag-over');
+      });
+      th.addEventListener('dragleave', () => th.classList.remove('col-drag-over'));
+      th.addEventListener('drop', e => {
+        e.preventDefault();
+        th.classList.remove('col-drag-over');
+        const fromKey = e.dataTransfer.getData('text/plain');
+        const toKey   = th.dataset.col;
+        if (fromKey === toKey) return;
+        const fromIdx = _sessColOrder.indexOf(fromKey);
+        const toIdx   = _sessColOrder.indexOf(toKey);
+        if (fromIdx < 0 || toIdx < 0) return;
+        _sessColOrder.splice(fromIdx, 1);
+        _sessColOrder.splice(toIdx, 0, fromKey);
+        localStorage.setItem('sess-col-order', JSON.stringify(_sessColOrder));
+        localStorage.removeItem('colw:sess-table');
+        renderList();
       });
     });
   }

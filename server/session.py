@@ -149,6 +149,8 @@ class ServerSessionManager:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: self._sm.load_all(run_hb_thread=False))
         now_dt = datetime.now(timezone.utc)
+        self._recovery_expired: list[tuple[str, PendingCommand]] = []
+        _flush_sids: list[str] = []
         async with self._lock:
             for s in self._sm.all():
                 self._apply_hb_multipliers(s)
@@ -166,8 +168,61 @@ class ServerSessionManager:
                                          if k in PendingCommand.__dataclass_fields__})
                     self._pending[s.id]       = p
                     self._cmd_session[p.cmd_id] = s.id
+                elif raw and raw.get("cmd_id"):
+                    # Expired but response may still be on cloud — schedule recovery read
+                    p = PendingCommand(**{k: v for k, v in raw.items()
+                                         if k in PendingCommand.__dataclass_fields__})
+                    self._recovery_expired.append((s.id, p))
+                    self._cmd_session[p.cmd_id] = s.id  # routing for _n_output
+                    self._pending[s.id] = None
+                    _flush_sids.append(s.id)
                 else:
                     self._pending[s.id] = None
+        # Clear expired _pending_cmd from disk so we don't retry every restart
+        for sid in _flush_sids:
+            self._flush_pending(sid)
+
+    def start_recovery_pollers(self) -> None:
+        """Start AsyncPoller threads for pending commands restored after restart.
+
+        Must be called AFTER notification hooks are installed so that _n_output()
+        can route through the server hub and clear pending state via WS broadcast.
+
+        Handles two cases:
+        - Active (TTL valid): full poller, pending bar shown in UI.
+        - Expired-but-unresolved: poller attempts to read a response that may
+          still be sitting on output_path (e.g. server was off overnight).
+          No pending bar, but response is recovered if present.
+        """
+        from providers._monitor import AsyncPoller
+
+        # Active pending commands — full polling
+        for sid, p in list(self._pending.items()):
+            if p is None:
+                continue
+            session = self._sm.get(sid)
+            if session is None or session.polling_stopped:
+                continue
+            poller = AsyncPoller(session, "", p.display or p.command,
+                                 p.cmd_id, session_token="")
+            with session.poller_lock:
+                session.poller = poller
+            poller.start()
+
+        # Expired commands — still attempt recovery (response may be on cloud)
+        for sid, p in self._recovery_expired:
+            session = self._sm.get(sid)
+            if session is None or session.polling_stopped:
+                continue
+            # Short timeout: just enough for 2-3 cloud reads. If response is
+            # there it'll be found on the first download; no point polling long.
+            poller = AsyncPoller(session, "", p.display or p.command,
+                                 p.cmd_id, session_token="",
+                                 timeout_override=30.0, silent_timeout=True)
+            with session.poller_lock:
+                session.poller = poller
+            poller.start()
+        self._recovery_expired = []
 
     # ── read ──────────────────────────────────────────────────────────────────
 
@@ -270,23 +325,26 @@ class ServerSessionManager:
         if cleared:
             self._flush_pending(session_id)
 
-    async def expire_locks(self) -> None:
-        """Background task: clear locks whose expiry time has passed."""
+    async def expire_locks(self) -> list[str]:
+        """Clear locks whose expiry time has passed.  Returns expired session IDs."""
         now = datetime.now(timezone.utc)
         expired_sids = []
         async with self._lock:
             for sid, p in list(self._pending.items()):
-                if p is not None and p.expires_at:
-                    try:
-                        exp = datetime.fromisoformat(p.expires_at)  # LOW-8
-                    except ValueError:
-                        exp = None
-                if p is not None and p.expires_at and exp is not None and exp < now:
-                    self._cmd_session.pop(p.cmd_id, None)
+                if p is None or not p.expires_at:
+                    continue
+                try:
+                    exp = datetime.fromisoformat(p.expires_at)  # LOW-8
+                except ValueError:
+                    continue
+                if exp < now:
+                    # Keep _cmd_session[cmd_id] alive so a recovery poller
+                    # can still route the response if the agent replies late.
                     self._pending[sid] = None
                     expired_sids.append(sid)
         for sid in expired_sids:
             self._flush_pending(sid)
+        return expired_sids
 
     # ── session lifecycle ─────────────────────────────────────────────────────
 
