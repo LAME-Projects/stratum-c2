@@ -170,6 +170,9 @@ def create_app(cfg: ServerConfig) -> FastAPI:
         count = len(sm.all())
         log.info("Sessions loaded: count=%d", count)
 
+        # Resume pollers for any pending commands that survived the restart
+        await loop.run_in_executor(None, sm.start_recovery_pollers)
+
         # Background tasks
         asyncio.create_task(ws_mgr.keepalive_loop())
         watcher = StateWatcher(sm, ws_mgr)

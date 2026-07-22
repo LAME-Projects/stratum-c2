@@ -178,3 +178,24 @@ def decrypt_output(raw: str, key_file: str,
         return plain.decode("utf-8", errors="replace")
     except Exception:
         return None
+
+
+# ── staging file encryption (server → agent, binary format) ───────────────────
+
+import struct as _struct
+
+
+def encrypt_staging(data: bytes, session_key_hex: str) -> bytes:
+    """Encrypt a file for staging on cloud (server → agent direction).
+
+    Binary format (no base64, for raw upload):
+      [4 LE: len(wrapped_aes)] [wrapped_aes] [GCM blob = nonce(12)||ct||tag(16)]
+
+    AES key is GCM-wrapped with session_key; file content is GCM-sealed with
+    that AES key.  Provides confidentiality + integrity.  Total overhead: 92 bytes.
+    """
+    session_key = bytes.fromhex(session_key_hex)
+    aes_key     = os.urandom(32)
+    wrapped_aes = _gcm_seal(session_key, aes_key)   # 12+32+16 = 60 bytes
+    blob        = _gcm_seal(aes_key, data)           # 12 + len(data) + 16
+    return _struct.pack("<I", len(wrapped_aes)) + wrapped_aes + blob
