@@ -560,24 +560,29 @@ const Sessions = (() => {
     div.innerHTML = hdr + body;
     hist.appendChild(div);
     requestAnimationFrame(() => { hist.scrollTop = hist.scrollHeight; });
+    setTimeout(() => { hist.scrollTop = hist.scrollHeight; }, 80);
   }
 
   function _setOutput(cmd_id, content, isError = false) {
     const outEl = document.getElementById(`out-${cmd_id}`);
     if (!outEl) return;
     const blank  = !isError && (!content || !content.trim());
+    const exitOk = !isError && /^\[exit code: 0\]\s*$/.test(content || '');
     const prefix = `<span class="cid">[${cmd_id.slice(0, 8)}]</span> `;
-    if (blank) {
-      outEl.innerHTML = prefix + '✓  done';
+    if (blank || exitOk) {
+      outEl.innerHTML = prefix + '✓  done — no output (exit 0)';
     } else {
       outEl.innerHTML = prefix + `<span class="co-out-label">Output:</span>\n` + escHtml(content);
     }
     outEl.classList.remove('pending', 'queued');
-    if (isError)    outEl.classList.add('error');
-    else if (blank) outEl.classList.add('co-done');
-    else            outEl.classList.add('hi');
+    if (isError)              outEl.classList.add('error');
+    else if (blank || exitOk) outEl.classList.add('co-done');
+    else                      outEl.classList.add('hi');
     const hist = outEl.closest('#shell-hist');
-    if (hist) requestAnimationFrame(() => { hist.scrollTop = hist.scrollHeight; });
+    if (hist) {
+      requestAnimationFrame(() => { hist.scrollTop = hist.scrollHeight; });
+      setTimeout(() => { hist.scrollTop = hist.scrollHeight; }, 80);
+    }
   }
 
   /* Like _setOutput but keeps the entry cancellable — used for "queued" agent commands
@@ -2511,6 +2516,9 @@ const Sessions = (() => {
     // Live-update History tab when a command completes for the active session
     const _histSid = session_id || _activeId;
     if (_histSid === _activeId && $('#tp-history.on')) _renderHistory();
+    // Ensure auto-scroll after all DOM updates settle
+    const hist = $('#shell-hist');
+    if (hist) setTimeout(() => { hist.scrollTop = hist.scrollHeight; }, 120);
   }
 
   function onHeartbeat(session_id, state) {
