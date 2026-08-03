@@ -198,6 +198,86 @@ fn cmd_shell(task: &Task, state: &Arc<AgentState>) -> TaskResponse {
         }
     };
 
+    // Native cd handling — subprocess cd doesn't affect the agent process.
+    // Detect bare "cd", "cd <path>", "cd ~" commands (trimmed, no pipes/chains).
+    let trimmed = cmd.trim();
+    let is_bare_cd = trimmed == "cd"
+        || trimmed.starts_with("cd ")
+        || trimmed.starts_with("cd\t");
+    if is_bare_cd && !trimmed.contains("&&") && !trimmed.contains("||")
+        && !trimmed.contains(';') && !trimmed.contains('|')
+    {
+        let target = trimmed[2..].trim();
+        let resolved = if target.is_empty() || target == "~" {
+            // cd with no args or cd ~ → home directory
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| "/".to_string())
+        } else if target == "-" {
+            // cd - → previous directory (not tracked, return error)
+            let out = format!("{}[exit code: 0]", warn_prefix);
+            let cur = state.operator_cwd.lock().unwrap().clone();
+            return TaskResponse {
+                id: task.id.clone(), kind: task.kind.clone(),
+                status: "ok".to_string(), output: out,
+                cwd: cur, session_token: task.session_token.clone().unwrap_or_default(),
+                ..Default::default()
+            };
+        } else if target.starts_with('/') || target.starts_with('\\') {
+            // Absolute path
+            target.to_string()
+        } else if target.starts_with("~/") {
+            // Home-relative
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| "/".to_string());
+            format!("{}/{}", home.trim_end_matches('/'), &target[2..])
+        } else {
+            // Relative path — resolve from current cwd
+            let base = std::path::Path::new(&cwd);
+            base.join(target).display().to_string()
+        };
+
+        // Canonicalize to resolve ".." and symlinks
+        let canon = std::fs::canonicalize(&resolved);
+        match canon {
+            Ok(p) if p.is_dir() => {
+                let new_cwd = p.display().to_string();
+                let _ = std::env::set_current_dir(&new_cwd);
+                *state.operator_cwd.lock().unwrap() = new_cwd.clone();
+                return TaskResponse {
+                    id: task.id.clone(), kind: task.kind.clone(),
+                    status: "ok".to_string(),
+                    output: format!("{}[exit code: 0]", warn_prefix),
+                    cwd: new_cwd,
+                    session_token: task.session_token.clone().unwrap_or_default(),
+                    ..Default::default()
+                };
+            }
+            Ok(p) => {
+                // Path exists but is not a directory
+                return TaskResponse {
+                    id: task.id.clone(), kind: task.kind.clone(),
+                    status: "error".to_string(),
+                    output: format!("cd: not a directory: {}", p.display()),
+                    cwd: cwd.clone(),
+                    session_token: task.session_token.clone().unwrap_or_default(),
+                    ..Default::default()
+                };
+            }
+            Err(_) => {
+                return TaskResponse {
+                    id: task.id.clone(), kind: task.kind.clone(),
+                    status: "error".to_string(),
+                    output: format!("cd: no such file or directory: {}", resolved),
+                    cwd: cwd.clone(),
+                    session_token: task.session_token.clone().unwrap_or_default(),
+                    ..Default::default()
+                };
+            }
+        }
+    }
+
     const CMD_TIMEOUT_SECS: u64 = 60;
     const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024; // 4 MB hard cap
 

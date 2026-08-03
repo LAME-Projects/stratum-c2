@@ -387,11 +387,15 @@ async def set_sleep(session_id: str, body: SleepRequest, request: Request,
     s  = _require_session(sm, session_id)
     if body.seconds < 5 or body.seconds > 86400:
         raise HTTPException(status_code=422, detail="seconds must be 5–86400")
-    s.agent_sleep            = body.seconds
+    # Save desired value but defer timing update until agent confirms
+    s._pending_sleep         = body.seconds
     s.profile.base_sleep     = body.seconds
     sm.save_session(session_id)
-    return await _send(request, session_id, f"SLEEP:{body.seconds}", username,
-                       display=f"/sleep {body.seconds}")
+    result = await _send(request, session_id, f"SLEEP:{body.seconds}", username,
+                         display=f"/sleep {body.seconds}")
+    if result.ok and result.cmd_id:
+        s._pending_sleep_cmd = result.cmd_id
+    return result
 
 
 @router.post("/{session_id}/jitter", response_model=CommandResponse)
@@ -401,11 +405,15 @@ async def set_jitter(session_id: str, body: JitterRequest, request: Request,
     s  = _require_session(sm, session_id)
     if body.percent < 0 or body.percent > 100:
         raise HTTPException(status_code=422, detail="percent must be 0–100")
-    s.agent_jitter               = body.percent
+    # Save desired value but defer timing update until agent confirms
+    s._pending_jitter            = body.percent
     s.profile.jitter_percent     = body.percent
     sm.save_session(session_id)
-    return await _send(request, session_id, f"JITTER:{body.percent}", username,
-                       display=f"/jitter {body.percent}")
+    result = await _send(request, session_id, f"JITTER:{body.percent}", username,
+                         display=f"/jitter {body.percent}")
+    if result.ok and result.cmd_id:
+        s._pending_jitter_cmd = result.cmd_id
+    return result
 
 
 @router.post("/{session_id}/kill", response_model=CommandResponse)

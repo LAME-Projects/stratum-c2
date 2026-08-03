@@ -428,6 +428,10 @@ class Session:
         self.agent_sleep:   int           = profile.base_sleep
         self.agent_jitter:  int           = profile.jitter_percent
         self._poll_timeout: Optional[int] = None
+        self._pending_sleep:  Optional[int] = None  # awaiting agent confirmation
+        self._pending_jitter: Optional[int] = None  # awaiting agent confirmation
+        self._pending_sleep_cmd:  Optional[str] = None  # cmd_id that will confirm sleep
+        self._pending_jitter_cmd: Optional[str] = None  # cmd_id that will confirm jitter
 
         # LOW-6: heartbeat timeout multipliers (configurable via server.yml)
         self.hb_warn_multiplier: int = 3

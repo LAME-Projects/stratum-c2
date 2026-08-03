@@ -194,10 +194,32 @@ def install_notification_hooks(
             # where expire_locks already cleared _pending but poller still ran).
             sm._cmd_session.pop(cmd_id, None)
 
+            # Apply deferred sleep/jitter once agent confirms the specific command
+            sess_obj = sm.get(sid) if sid else None
+            if sess_obj:
+                is_error = (content or "").startswith("ERROR")
+                if sess_obj._pending_sleep_cmd == cmd_id:
+                    if not is_error:
+                        sess_obj.agent_sleep = sess_obj._pending_sleep
+                        _log_cmd.info("sleep confirmed by agent: %ds (sid=%s)", sess_obj.agent_sleep, sid)
+                    else:
+                        _log_cmd.info("sleep change rejected (timeout/error), reverting profile (sid=%s)", sid)
+                        sess_obj.profile.base_sleep = sess_obj.agent_sleep
+                    sess_obj._pending_sleep = None
+                    sess_obj._pending_sleep_cmd = None
+                if sess_obj._pending_jitter_cmd == cmd_id:
+                    if not is_error:
+                        sess_obj.agent_jitter = sess_obj._pending_jitter
+                        _log_cmd.info("jitter confirmed by agent: %d%% (sid=%s)", sess_obj.agent_jitter, sid)
+                    else:
+                        _log_cmd.info("jitter change rejected (timeout/error), reverting profile (sid=%s)", sid)
+                        sess_obj.profile.jitter_percent = sess_obj.agent_jitter
+                    sess_obj._pending_jitter = None
+                    sess_obj._pending_jitter_cmd = None
+
             async def _handle():
                 if sid:
                     await sm.clear_pending(sid, cmd_id)
-                sess_obj = sm.get(sid) if sid else None
                 cwd = sess_obj.state.snapshot().get("remote_cwd", "") if sess_obj else ""
                 await ws.broadcast({
                     "type": "session.output",

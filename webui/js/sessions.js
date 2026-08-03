@@ -22,6 +22,7 @@ const Sessions = (() => {
   let _suggestItems = [];
   let _suggestIdx   = -1;
   let _resizingCol  = false;         // prevents drag while col-resize active
+  let _shellUserScrolled = false;    // true when user has manually scrolled up
 
   /* ── session table column definitions ────────────────────────────────────── */
   const _SESS_COLS = [
@@ -559,8 +560,6 @@ const Sessions = (() => {
 
     div.innerHTML = hdr + body;
     hist.appendChild(div);
-    requestAnimationFrame(() => { hist.scrollTop = hist.scrollHeight; });
-    setTimeout(() => { hist.scrollTop = hist.scrollHeight; }, 80);
   }
 
   function _setOutput(cmd_id, content, isError = false) {
@@ -578,11 +577,6 @@ const Sessions = (() => {
     if (isError)              outEl.classList.add('error');
     else if (blank || exitOk) outEl.classList.add('co-done');
     else                      outEl.classList.add('hi');
-    const hist = outEl.closest('#shell-hist');
-    if (hist) {
-      requestAnimationFrame(() => { hist.scrollTop = hist.scrollHeight; });
-      setTimeout(() => { hist.scrollTop = hist.scrollHeight; }, 80);
-    }
   }
 
   /* Like _setOutput but keeps the entry cancellable — used for "queued" agent commands
@@ -595,8 +589,6 @@ const Sessions = (() => {
     outEl.innerHTML = prefix + `<span class="cs-star">*</span> ` + escHtml(bodyText);
     outEl.classList.remove('pending');
     outEl.classList.add('queued');
-    const hist = outEl.closest('#shell-hist');
-    if (hist) requestAnimationFrame(() => { hist.scrollTop = hist.scrollHeight; });
   }
 
   function _loadHistory() {
@@ -688,6 +680,15 @@ const Sessions = (() => {
     if ((operator || '').toLowerCase() === (API.getUsername() || '').toLowerCase()) return;
     if (_localCmdIds.has(cmd_id)) return;        // backup: cmd_id promoted by this browser
     if (document.getElementById(`out-${cmd_id}`)) return;
+    // Cancel stale pending entries — the new command from another operator supersedes them
+    const hist = $('#shell-hist');
+    if (hist) {
+      $$('.co.pending, .co.queued', hist).forEach(el => {
+        el.textContent = 'cancelled — superseded by ' + (operator || 'another operator');
+        el.classList.remove('pending', 'queued');
+        el.classList.add('warn');
+      });
+    }
     _appendOutput({ ts, command, cmd_id, operator, pending: true });
     _applyQueuedState(cmd_id, command);
   }
@@ -2516,9 +2517,6 @@ const Sessions = (() => {
     // Live-update History tab when a command completes for the active session
     const _histSid = session_id || _activeId;
     if (_histSid === _activeId && $('#tp-history.on')) _renderHistory();
-    // Ensure auto-scroll after all DOM updates settle
-    const hist = $('#shell-hist');
-    if (hist) setTimeout(() => { hist.scrollTop = hist.scrollHeight; }, 120);
   }
 
   function onHeartbeat(session_id, state) {
@@ -2797,6 +2795,19 @@ const Sessions = (() => {
 
     const sendBtn = $('#btn-send');
     if (sendBtn) sendBtn.addEventListener('click', () => { const i = $('#cmd-in'); if (i) _sendCmd(i.value); });
+
+    /* ── Auto-scroll: MutationObserver on #shell-hist ──────────────────────── */
+    const shellHist = $('#shell-hist');
+    if (shellHist) {
+      shellHist.addEventListener('scroll', () => {
+        const gap = shellHist.scrollHeight - shellHist.scrollTop - shellHist.clientHeight;
+        _shellUserScrolled = gap > 60;
+      });
+      const _autoScroll = () => {
+        if (!_shellUserScrolled) shellHist.scrollTop = shellHist.scrollHeight;
+      };
+      new MutationObserver(_autoScroll).observe(shellHist, { childList: true, subtree: true, characterData: true });
+    }
 
     const pollBtn = $('#btn-poll-toggle');
     if (pollBtn) {

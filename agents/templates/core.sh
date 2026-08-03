@@ -1100,15 +1100,46 @@ print(base64.b64encode(wrapped).decode() + ':' + base64.b64encode(blob).decode()
 "
                 fi
             fi
-            log "[EXEC]: Executing command..."
-            _output="${_output}$(timeout "${MAX_EXEC_TIME:-300}" bash -c "$_cmd_str" 2>&1)"
-            _exit_code=$?
-            _new_cwd=$(pwd)
-            OPERATOR_CWD="$_new_cwd"
-            [ $_exit_code -ne 0 ] && _status="error"
-            log "[EXEC]: Output (${#_output} bytes), CWD=$_new_cwd, exit=$_exit_code"
+
+            # Native cd handling — subprocess cd doesn't affect our process
+            _bare_cd=""
+            case "$_cmd_str" in
+                cd)       _bare_cd="$HOME" ;;
+                cd\ *|cd	*)
+                    # Only if no pipes, chains, or semicolons
+                    case "$_cmd_str" in
+                        *\&\&*|*\|\|*|*\;*|*\|*) ;;
+                        *) _bare_cd="${_cmd_str#cd }" ; _bare_cd="${_bare_cd#cd	}" ;;
+                    esac
+                    ;;
+            esac
+
+            if [ -n "$_bare_cd" ]; then
+                # Expand ~ prefix
+                case "$_bare_cd" in
+                    "~")   _bare_cd="$HOME" ;;
+                    "~/"*) _bare_cd="$HOME/${_bare_cd#\~/}" ;;
+                esac
+                if cd "$_bare_cd" 2>/dev/null; then
+                    _new_cwd=$(pwd)
+                    OPERATOR_CWD="$_new_cwd"
+                    _output="[exit code: 0]"
+                else
+                    _output="cd: no such file or directory: $_bare_cd"
+                    _status="error"
+                    _new_cwd=$(pwd)
+                fi
+            else
+                log "[EXEC]: Executing command..."
+                _output="${_output}$(timeout "${MAX_EXEC_TIME:-300}" bash -c "$_cmd_str" 2>&1)"
+                _exit_code=$?
+                _new_cwd=$(pwd)
+                OPERATOR_CWD="$_new_cwd"
+                [ $_exit_code -ne 0 ] && _status="error"
+            fi
+            log "[EXEC]: Output (${#_output} bytes), CWD=$_new_cwd, exit=${_exit_code:-0}"
             [ "${VERBOSE_MODE:-0}" -eq 1 ] && printf '%s\n' "$_output"
-            unset _req_cwd _cmd_str _exit_code
+            unset _req_cwd _cmd_str _exit_code _bare_cd
             ;;
 
         *)
