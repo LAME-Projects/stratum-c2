@@ -184,6 +184,7 @@ def _session_summary(session, pending) -> dict:
         "s2_deleted":       session.profile.s2_deleted,
         "polling_stopped":  session.polling_stopped,
         "persist_probe_data": snap.get("persist_probe_data", {}),
+        "listeners":          snap.get("listeners", {}),
         "pending_cmd":   {
             "cmd_id":     pending.cmd_id,
             "command":    pending.display or pending.command,

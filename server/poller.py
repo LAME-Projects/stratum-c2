@@ -156,6 +156,83 @@ class HBScheduler:
         )
 
 
+import re as _re
+
+
+def _update_listener_state(sess_obj, content: str) -> None:
+    """Parse agent response to maintain persistent listener state in AgentState."""
+    if "[creds listen]" not in content:
+        return
+
+    with sess_obj.state._lock:
+        listeners = sess_obj.state.listeners
+        now_iso = _tz.now().isoformat()
+        changed = False
+
+        # ── listen start: "[creds listen] Active: HTTP-NTLM:80 + LLMNR + NBNS"
+        if "Active:" in content and "started" not in content.lower():
+            m = _re.search(r'Active:\s*(.+?)(?:\n|$)', content)
+            if m:
+                parts = m.group(1).split("+")
+                for part in parts:
+                    part = part.strip()
+                    pm = _re.match(r'(SMB|HTTP-NTLM|HTTP):(\d+)', part, _re.IGNORECASE)
+                    if pm:
+                        proto_raw = pm.group(1).lower()
+                        port = int(pm.group(2))
+                        proto = "http" if "http" in proto_raw else "smb"
+                        key = f"{proto}:{port}"
+                        if key not in listeners:
+                            listeners[key] = {
+                                "proto": proto,
+                                "port": port,
+                                "started_at": now_iso,
+                                "creds": [],
+                            }
+                            changed = True
+
+        # ── listen stop (all): "Stopped N listener(s)."
+        elif "Stopped" in content and "listener(s)" in content:
+            if listeners:
+                listeners.clear()
+                changed = True
+
+        # ── listen stop (specific): "Stopped http:80."
+        elif "Stopped" in content and "listener(s)" not in content:
+            m = _re.search(r'Stopped\s+([\w]+:\d+)', content)
+            if m:
+                key = m.group(1)
+                if key in listeners:
+                    del listeners[key]
+                    changed = True
+
+        # ── listen dump: parse credentials per listener
+        elif content.strip() and not content.startswith("[creds listen] No listeners"):
+            current_key = None
+            for line in content.split("\n"):
+                hdr = _re.match(r'\[([\w-]+):(\d+)\]\s+(\d+)\s+credential', line, _re.IGNORECASE)
+                if hdr:
+                    proto_raw = hdr.group(1).lower()
+                    port = int(hdr.group(2))
+                    proto = "http" if "http" in proto_raw else "smb"
+                    current_key = f"{proto}:{port}"
+                    if current_key not in listeners:
+                        listeners[current_key] = {
+                            "proto": proto,
+                            "port": port,
+                            "started_at": now_iso,
+                            "creds": [],
+                        }
+                        changed = True
+                    continue
+                if current_key and line.startswith("  ") and line.strip():
+                    cred_line = line.strip()
+                    entry = listeners.get(current_key)
+                    if entry and cred_line not in entry["creds"]:
+                        entry["creds"].append(cred_line)
+                        changed = True
+
+
 def install_notification_hooks(
     sm: "ServerSessionManager",
     ws: "ConnectionManager",
@@ -216,6 +293,9 @@ def install_notification_hooks(
                         sess_obj.profile.jitter_percent = sess_obj.agent_jitter
                     sess_obj._pending_jitter = None
                     sess_obj._pending_jitter_cmd = None
+
+                # ── Listener state tracking (persisted in AgentState) ─────
+                _update_listener_state(sess_obj, content or "")
 
             async def _handle():
                 if sid:

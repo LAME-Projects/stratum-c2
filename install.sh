@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # Stratum C2 — Install Script
-# Usage:
-#   ./install.sh              # install deps + runtime dirs
-#   ./install.sh --operator   # same as above
-#   ./install.sh --server     # full setup (server.yml, TLS cert, optional systemd)
+# Usage: ./install.sh
+# Installs ALL dependencies automatically (Rust, musl, clang, xwin, Python).
+# Only the systemd service install asks for confirmation.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -24,15 +23,13 @@ step() { echo -e "\n${C_BOLD}${C_INFO}── $* ${C_RST}${C_DIM}$(printf '%.0s�
 ask()  { echo -en "  ${C_WARN}[?]${C_RST} $* "; }
 
 # ── parse args ────────────────────────────────────────────────────────────────
-MODE="operator"
 for arg in "$@"; do
   case "$arg" in
-    --server)   MODE="server"   ;;
-    --operator) MODE="operator" ;;
     --help|-h)
-      echo "Usage: $0 [--operator|--server]"
-      echo "  --operator   Install deps + runtime dirs (default)"
-      echo "  --server     Operator setup + server.yml + TLS + optional systemd"
+      echo "Usage: $0"
+      echo "  Installs all dependencies, compiles toolchain, configures server."
+      echo "  All toolchain dependencies are installed automatically."
+      echo "  Only the systemd daemon install requires confirmation."
       exit 0 ;;
     *)
       err "Unknown argument: $arg"
@@ -45,7 +42,6 @@ done
 echo -e ""
 echo -e "${C_BOLD}${C_INFO}  ╔═══════════════════════════════════════════╗${C_RST}"
 echo -e "${C_BOLD}${C_INFO}  ║       STRATUM C2 — INSTALLER              ║${C_RST}"
-echo -e "${C_BOLD}${C_INFO}  ║  mode: ${C_WARN}$(printf '%-36s' "${MODE^^}")${C_INFO}║${C_RST}"
 echo -e "${C_BOLD}${C_INFO}  ╚═══════════════════════════════════════════╝${C_RST}"
 echo ""
 
@@ -126,24 +122,17 @@ if command -v cargo &>/dev/null; then
   ok "Cargo $CARGO_VER found"
   CARGO_OK=true
 else
-  warn "Rust/Cargo not found."
-  ask "Install rustup (Rust toolchain manager)? [y/N]:"
-  read -r ans </dev/tty || ans="n"
-  if [[ "$ans" =~ ^[Yy]$ ]]; then
-    info "Downloading and running rustup installer..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-    # Source cargo env for the rest of this script
-    # shellcheck source=/dev/null
-    source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
-    if command -v cargo &>/dev/null; then
-      CARGO_VER=$(cargo --version 2>/dev/null | awk '{print $2}')
-      ok "Cargo $CARGO_VER installed"
-      CARGO_OK=true
-    else
-      err "rustup install failed — binary builds unavailable"
-    fi
+  info "Rust/Cargo not found — installing rustup..."
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+  # Source cargo env for the rest of this script
+  # shellcheck source=/dev/null
+  source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.cargo/bin:$PATH"
+  if command -v cargo &>/dev/null; then
+    CARGO_VER=$(cargo --version 2>/dev/null | awk '{print $2}')
+    ok "Cargo $CARGO_VER installed"
+    CARGO_OK=true
   else
-    warn "Skipping Rust — native agent builds will be unavailable"
+    err "rustup install failed — binary builds unavailable"
   fi
 fi
 
@@ -159,22 +148,26 @@ if $CARGO_OK; then
   done
 
   if [ ${#MISSING_TARGETS[@]} -gt 0 ]; then
-    warn "Missing Rust targets: ${MISSING_TARGETS[*]}"
-    ask "Install missing targets? [y/N]:"
-    read -r ans </dev/tty || ans="n"
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      for tgt in "${MISSING_TARGETS[@]}"; do
-        info "Adding target $tgt..."
-        rustup target add "$tgt"
-        ok "Target $tgt added"
-      done
-    else
-      warn "Skipping — Windows/Linux cross-compilation may fail"
-    fi
+    info "Installing missing Rust targets: ${MISSING_TARGETS[*]}"
+    for tgt in "${MISSING_TARGETS[@]}"; do
+      rustup target add "$tgt"
+      ok "Target $tgt added"
+    done
   fi
 fi
 
-# ── 3c: clang / lld / llvm (required for Windows MSVC cross-compile) ─────────
+# ── 3c: musl-tools (required for static Linux ELF builds) ────────────────────
+if $CARGO_OK; then
+  if command -v musl-gcc &>/dev/null; then
+    ok "musl-gcc found"
+  else
+    info "musl-gcc not found — installing musl-tools..."
+    sudo apt-get install -y musl-tools
+    ok "musl-tools installed"
+  fi
+fi
+
+# ── 3d: clang / lld / llvm (required for Windows MSVC cross-compile) ─────────
 if $CARGO_OK; then
   MISSING_PKGS=()
   for pkg in clang lld llvm; do
@@ -184,46 +177,49 @@ if $CARGO_OK; then
   done
 
   if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
-    warn "Missing system packages: ${MISSING_PKGS[*]}"
-    ask "Install via apt? (sudo required) [y/N]:"
-    read -r ans </dev/tty || ans="n"
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      sudo apt-get install -y "${MISSING_PKGS[@]}"
-      ok "Installed: ${MISSING_PKGS[*]}"
-    else
-      warn "Skipping — Windows MSVC builds may fail without clang/lld/llvm"
-    fi
+    info "Installing missing packages: ${MISSING_PKGS[*]}"
+    sudo apt-get install -y "${MISSING_PKGS[@]}"
+    ok "Installed: ${MISSING_PKGS[*]}"
   else
     ok "clang / lld / llvm found"
   fi
+
+  # On some distros (Ubuntu/Debian), apt install clang does NOT create the
+  # MSVC-compatible symlinks (clang-cl, lld-link, llvm-lib, llvm-rc).
+  # These are just argv[0]-based personality switches — a symlink is enough.
+  _SYMLINKS=("clang-cl:clang" "lld-link:lld" "llvm-lib:llvm-ar" "llvm-rc:llvm-windres")
+  for _pair in "${_SYMLINKS[@]}"; do
+    _name="${_pair%%:*}"
+    _target="${_pair##*:}"
+    if ! command -v "$_name" &>/dev/null; then
+      _target_path=$(command -v "$_target" 2>/dev/null || true)
+      if [ -n "$_target_path" ]; then
+        sudo ln -sf "$_target_path" "/usr/local/bin/$_name"
+        ok "Created symlink: $_name → $_target_path"
+      else
+        warn "$_name not available ($_target not found)"
+      fi
+    fi
+  done
 fi
 
-# ── 3d: xwin (Windows SDK — ~1.5 GB download) ────────────────────────────────
+# ── 3e: xwin (Windows SDK — ~1.5 GB download) ────────────────────────────────
 if $CARGO_OK; then
   XWIN_DIR="${XWIN_DIR:-$HOME/.xwin}"
   if [ -d "$XWIN_DIR" ] && [ -d "$XWIN_DIR/crt" ]; then
     ok "xwin Windows SDK found ($XWIN_DIR)"
   else
-    warn "xwin Windows SDK not found — required for Windows MSVC agent builds."
-    info "This downloads ~1.5 GB of Microsoft SDK headers and libs."
-    ask "Install xwin + Windows SDK now? [y/N]:"
-    read -r ans </dev/tty || ans="n"
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      if ! command -v xwin &>/dev/null; then
-        info "Installing xwin via cargo..."
-        cargo install xwin --version 0.6.5 --locked
-      fi
-      info "Downloading Windows SDK (this may take several minutes)..."
-      xwin --accept-license splat --output "$XWIN_DIR"
-      if [ -d "$XWIN_DIR/crt" ]; then
-        ok "xwin Windows SDK installed → $XWIN_DIR"
-      else
-        err "xwin splat failed — check output above"
-      fi
+    info "xwin Windows SDK not found — installing (downloads ~1.5 GB)..."
+    if ! command -v xwin &>/dev/null; then
+      info "Installing xwin via cargo..."
+      cargo install xwin --version 0.6.5 --locked
+    fi
+    info "Downloading Windows SDK (this may take several minutes)..."
+    xwin --accept-license splat --output "$XWIN_DIR"
+    if [ -d "$XWIN_DIR/crt" ]; then
+      ok "xwin Windows SDK installed → $XWIN_DIR"
     else
-      warn "Skipping xwin — Windows MSVC agent builds will be unavailable"
-      info "Install later: cargo install xwin --version 0.6.5 --locked"
-      info "               xwin --accept-license splat --output ~/.xwin"
+      err "xwin splat failed — check output above"
     fi
   fi
 fi
@@ -262,89 +258,88 @@ done
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SERVER-ONLY STEPS
-# ─────────────────────────────────────────────────────────────────────────────
-if [ "$MODE" = "server" ]; then
+# STEP 6 — Server configuration
+# ──────────────────────────────────────────────────────────────────────────────
 
-  # ── server.yml ─────────────────────────────────────────────────────────────
-  step "server.yml"
+# ── server.yml ───────────────────────────────────────────────────────────────────
+step "server.yml"
 
-  if [ -f "server.yml" ]; then
-    ok "server.yml already exists (not overwriting)"
-  else
-    cp server.yml.example server.yml
-    chmod 600 server.yml
-    ok "Copied server.yml.example → server.yml"
-    warn "Edit server.yml: set users/passwords before running the server"
-  fi
+if [ -f "server.yml" ]; then
+  ok "server.yml already exists (not overwriting)"
+else
+  cp server.yml.example server.yml
+  chmod 600 server.yml
+  ok "Copied server.yml.example → server.yml"
+  warn "Edit server.yml: set users/passwords before running the server"
+fi
 
-  # ── JWT secret ─────────────────────────────────────────────────────────────
-  step "JWT secret"
+# ── JWT secret ─────────────────────────────────────────────────────────────
+step "JWT secret"
 
-  CURRENT_SECRET=$(grep 'jwt_secret:' server.yml | awk -F'"' '{print $2}' | tr -d '[:space:]')
-  if [ -z "$CURRENT_SECRET" ]; then
-    JWT_SECRET=$("$PYTHON" -c "import secrets; print(secrets.token_hex(32))")
-    # Replace `jwt_secret: ""` or `jwt_secret: ''` or `jwt_secret:` (empty) with the new value
-    sed -i "s|jwt_secret:.*|jwt_secret: \"${JWT_SECRET}\"|" server.yml
-    ok "JWT secret generated and written to server.yml"
-  else
-    ok "JWT secret already set in server.yml"
-  fi
+CURRENT_SECRET=$(grep 'jwt_secret:' server.yml | awk -F'"' '{print $2}' | tr -d '[:space:]')
+if [ -z "$CURRENT_SECRET" ]; then
+  JWT_SECRET=$("$PYTHON" -c "import secrets; print(secrets.token_hex(32))")
+  # Replace `jwt_secret: ""` or `jwt_secret: ''` or `jwt_secret:` (empty) with the new value
+  sed -i "s|jwt_secret:.*|jwt_secret: \"${JWT_SECRET}\"|" server.yml
+  ok "JWT secret generated and written to server.yml"
+else
+  ok "JWT secret already set in server.yml"
+fi
 
-  # ── TLS certificate ─────────────────────────────────────────────────────────
-  step "TLS certificate"
+# ── TLS certificate ─────────────────────────────────────────────────────────
+step "TLS certificate"
 
-  CERT_PATH=$(grep 'cert:' server.yml | head -1 | awk '{print $2}')
-  KEY_PATH=$(grep '^\s*key:' server.yml | head -1 | awk '{print $2}')
-  CERT_PATH="${CERT_PATH:-certs/server.crt}"
-  KEY_PATH="${KEY_PATH:-certs/server.key}"
+CERT_PATH=$(grep 'cert:' server.yml | head -1 | awk '{print $2}')
+KEY_PATH=$(grep '^\s*key:' server.yml | head -1 | awk '{print $2}')
+CERT_PATH="${CERT_PATH:-certs/server.crt}"
+KEY_PATH="${KEY_PATH:-certs/server.key}"
 
-  if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
-    ok "TLS certificate already exists ($CERT_PATH)"
-    FP=$("$PYTHON" -c "
+if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
+  ok "TLS certificate already exists ($CERT_PATH)"
+  FP=$("$PYTHON" -c "
 from server.tls import fingerprint
 print(fingerprint('${CERT_PATH}'))
 " 2>/dev/null || echo "")
-    [ -n "$FP" ] && info "SHA-256: $FP"
-  else
-    "$PYTHON" -c "
+  [ -n "$FP" ] && info "SHA-256: $FP"
+else
+  "$PYTHON" -c "
 import sys; sys.path.insert(0, '.')
 from server.tls import ensure_cert
 fp = ensure_cert('${CERT_PATH}', '${KEY_PATH}')
 print(fp)
 " > /tmp/_stratum_fp.txt 2>&1
-    if [ $? -eq 0 ]; then
-      FP=$(cat /tmp/_stratum_fp.txt)
-      rm -f /tmp/_stratum_fp.txt
-      ok "Self-signed TLS certificate generated"
-      info "SHA-256: $FP"
-      info "Confirm this fingerprint in your browser on first connect."
-    else
-      warn "TLS cert pre-generation failed — will be generated at first server start"
-      cat /tmp/_stratum_fp.txt 2>/dev/null || true
-      rm -f /tmp/_stratum_fp.txt
-    fi
-  fi
-
-  # ── systemd unit (optional) ─────────────────────────────────────────────────
-  step "systemd service (optional)"
-
-  INSTALL_SYSTEMD=false
-  if command -v systemctl &>/dev/null; then
-    ask "Install systemd service (stratum-server.service)? [y/N]:"
-    read -r ans </dev/tty || ans="n"
-    [[ "$ans" =~ ^[Yy]$ ]] && INSTALL_SYSTEMD=true
+  if [ $? -eq 0 ]; then
+    FP=$(cat /tmp/_stratum_fp.txt)
+    rm -f /tmp/_stratum_fp.txt
+    ok "Self-signed TLS certificate generated"
+    info "SHA-256: $FP"
+    info "Confirm this fingerprint in your browser on first connect."
   else
-    info "systemd not available — skipping"
+    warn "TLS cert pre-generation failed — will be generated at first server start"
+    cat /tmp/_stratum_fp.txt 2>/dev/null || true
+    rm -f /tmp/_stratum_fp.txt
   fi
+fi
 
-  if $INSTALL_SYSTEMD; then
-    PROJ_DIR="$SCRIPT_DIR"
-    PYTHON_BIN=$(command -v "$PYTHON")
-    RUN_USER="${SUDO_USER:-$(whoami)}"
-    SERVICE_FILE="/etc/systemd/system/stratum-server.service"
+# ── systemd unit (optional) ─────────────────────────────────────────────────
+step "systemd service (optional)"
 
-    SERVICE_CONTENT="[Unit]
+INSTALL_SYSTEMD=false
+if command -v systemctl &>/dev/null; then
+  ask "Install systemd service (stratum-server.service)? [y/N]:"
+  read -r ans </dev/tty || ans="n"
+  [[ "$ans" =~ ^[Yy]$ ]] && INSTALL_SYSTEMD=true
+else
+  info "systemd not available — skipping"
+fi
+
+if $INSTALL_SYSTEMD; then
+  PROJ_DIR="$SCRIPT_DIR"
+  PYTHON_BIN=$(command -v "$PYTHON")
+  RUN_USER="${SUDO_USER:-$(whoami)}"
+  SERVICE_FILE="/etc/systemd/system/stratum-server.service"
+
+  SERVICE_CONTENT="[Unit]
 Description=Stratum C2 Server
 After=network.target
 
@@ -361,28 +356,28 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target"
 
-    if [ "$(id -u)" -eq 0 ]; then
-      echo "$SERVICE_CONTENT" > "$SERVICE_FILE"
-      systemctl daemon-reload
+  if [ "$(id -u)" -eq 0 ]; then
+    echo "$SERVICE_CONTENT" > "$SERVICE_FILE"
+    systemctl daemon-reload
+    ok "Service installed: $SERVICE_FILE"
+    info "Enable with: sudo systemctl enable --now stratum-server"
+  else
+    # Write to temp then sudo-copy
+    TMP_SVC=$(mktemp)
+    echo "$SERVICE_CONTENT" > "$TMP_SVC"
+    if sudo cp "$TMP_SVC" "$SERVICE_FILE" && sudo systemctl daemon-reload; then
+      rm -f "$TMP_SVC"
       ok "Service installed: $SERVICE_FILE"
       info "Enable with: sudo systemctl enable --now stratum-server"
     else
-      # Write to temp then sudo-copy
-      TMP_SVC=$(mktemp)
-      echo "$SERVICE_CONTENT" > "$TMP_SVC"
-      if sudo cp "$TMP_SVC" "$SERVICE_FILE" && sudo systemctl daemon-reload; then
-        rm -f "$TMP_SVC"
-        ok "Service installed: $SERVICE_FILE"
-        info "Enable with: sudo systemctl enable --now stratum-server"
-      else
-        rm -f "$TMP_SVC"
-        warn "Could not install systemd service (need sudo). Content:"
-        echo "$SERVICE_CONTENT" | sed 's/^/    /'
-      fi
+      rm -f "$TMP_SVC"
+      warn "Could not install systemd service (need sudo). Content:"
+      echo "$SERVICE_CONTENT" | sed 's/^/    /'
     fi
   fi
+fi
 
-fi  # end server-only steps
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DONE
@@ -393,14 +388,8 @@ echo -e "${C_BOLD}${C_OK}  ║  Installation complete ✓                  ║${
 echo -e "${C_BOLD}${C_OK}  ╚═══════════════════════════════════════════╝${C_RST}"
 echo ""
 
-if [ "$MODE" = "server" ]; then
-  echo -e "  ${C_BOLD}Next steps:${C_RST}"
-  echo -e "  ${C_DIM}1.${C_RST} Edit   ${C_WARN}server.yml${C_RST}  — set usernames/passwords"
-  echo -e "  ${C_DIM}2.${C_RST} Run    ${C_INFO}python3 stratum-server.py${C_RST}"
-  echo -e "  ${C_DIM}3.${C_RST} Open   ${C_INFO}https://<host>:<port>${C_RST}  in your browser"
-else
-  echo -e "  ${C_BOLD}Next steps:${C_RST}"
-  echo -e "  ${C_DIM}1.${C_RST} Run    ${C_INFO}./install.sh --server${C_RST}  for full server setup, or"
-  echo -e "  ${C_DIM}2.${C_RST} Run    ${C_INFO}python3 stratum-server.py${C_RST}  if server.yml is already configured"
-fi
+echo -e "  ${C_BOLD}Next steps:${C_RST}"
+echo -e "  ${C_DIM}1.${C_RST} Edit   ${C_WARN}server.yml${C_RST}  — set usernames/passwords"
+echo -e "  ${C_DIM}2.${C_RST} Run    ${C_INFO}python3 stratum-server.py${C_RST}"
+echo -e "  ${C_DIM}3.${C_RST} Open   ${C_INFO}https://<host>:<port>${C_RST}  in your browser"
 echo ""

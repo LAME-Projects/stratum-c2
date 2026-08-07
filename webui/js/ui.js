@@ -172,7 +172,7 @@ function confirm(title, msg) {
     const ov = document.getElementById('confirm-modal');
     if (!ov) { resolve(window.confirm(msg)); return; }
     $('#confirm-title', ov).textContent = title;
-    $('#confirm-msg',   ov).textContent = msg;
+    $('#confirm-msg',   ov).innerText = msg;
 
     const yes = $('#confirm-yes', ov);
     const no  = $('#confirm-no',  ov);

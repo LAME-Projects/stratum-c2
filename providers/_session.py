@@ -165,6 +165,7 @@ class AgentState:
         self.last_seen_at: Optional[float] = None
         self.last_hb_seq:  int = -1
         self.persist_probe_data: dict = {}
+        self.listeners: dict = {}  # key → {proto, port, started_at, creds: [...] }
 
     def update(self, **kw):
         with self._lock:
@@ -608,10 +609,16 @@ class SessionManager:
             data["_pending_cmd"] = pending_cmd
         else:
             data.pop("_pending_cmd", None)
-        tmp_path = profile_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(data, indent=2))
-        tmp_path.chmod(0o600)
-        tmp_path.replace(profile_path)
+        # Use a unique temp filename to avoid race between poller and command threads.
+        import os as _os
+        import threading as _th
+        tmp_path = profile_path.with_suffix(f".tmp.{_os.getpid()}.{_th.get_ident()}")
+        try:
+            tmp_path.write_text(json.dumps(data, indent=2))
+            tmp_path.chmod(0o600)
+            tmp_path.replace(profile_path)
+        except FileNotFoundError:
+            pass  # Another thread won the race — state is already persisted
 
     def remove(self, session_id: str) -> bool:
         with self._lock:

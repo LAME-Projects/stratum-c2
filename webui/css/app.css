@@ -491,6 +491,27 @@ table.sess td.bold { color: var(--text); font-weight: 500; }
 .status-pill.unknown { background: rgba(255,255,255,.04); border: 1px solid var(--border); color: var(--text-muted); }
 .status-pill.stopped { background: rgba(80,80,90,.15); border: 1px solid rgba(120,120,140,.25); color: var(--text-dim); }
 .status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: pdot 2.5s ease-in-out infinite; }
+/* Listener badge */
+.listen-badge {
+  display: inline-flex; align-items: center; gap: .3rem; margin-left: .7rem;
+  font-size: .62rem; font-family: var(--mono); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  padding: .18rem .55rem; border-radius: 3px;
+  background: rgba(251,146,60,.12); border: 1px solid rgba(251,146,60,.35); color: #fb923c;
+  cursor: help; user-select: none; animation: listen-pulse 2.5s ease-in-out infinite;
+}
+.listen-badge-dot { width: 5px; height: 5px; border-radius: 50%; background: #fb923c; }
+@keyframes listen-pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
+.listen-badge[data-expanded] { flex-direction: column; align-items: flex-start; gap: .25rem; padding: .35rem .6rem; position: relative; }
+.listen-badge-memo {
+  display: none; font-size: .58rem; font-weight: 500; letter-spacing: 0; text-transform: none;
+  color: var(--text-dim); line-height: 1.4; white-space: normal; margin-top: .2rem; max-width: 420px;
+}
+.listen-badge[data-expanded] .listen-badge-memo { display: block; }
+.listen-entry { margin-bottom: .4rem; }
+.listen-entry b { color: #fb923c; }
+.listen-creds { margin: .15rem 0 0 .6rem; padding: 0; list-style: none; font-size: .55rem; color: var(--text-muted); }
+.listen-creds li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 380px; }
+
 .btn-poll-toggle { margin-left: auto; margin-top: 4px; font-size: .67rem; font-family: var(--mono); font-weight: 600; letter-spacing: .07em; padding: .22rem .65rem; border-radius: 3px; border: 1px solid; cursor: pointer; transition: opacity .15s; }
 .btn-poll-toggle:disabled { opacity: .5; cursor: default; }
 .btn-poll-toggle.stopping { background: rgba(80,55,55,.3); border-color: rgba(150,80,80,.4); color: var(--text-dim); }

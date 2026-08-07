@@ -1039,13 +1039,22 @@ class ProviderWizard(ABC):
         # MSVC-compatible cross-compilation via clang-cl + lld-link + xwin Windows SDK.
         # Preferred over MinGW: produces MSVC-ABI PE files (correct .pdata, SEH, no
         # GCC runtime fingerprint) — harder to identify with tools like RIFT or DIE.
-        _xwin_dir = Path.home() / ".xwin"
+        # xwin SDK location: respect XWIN_DIR env, then check home, then SUDO_USER home.
+        _xwin_dir = None
+        for _candidate in [
+            Path(os.environ.get("XWIN_DIR", "")) if os.environ.get("XWIN_DIR") else None,
+            Path.home() / ".xwin",
+            Path(f"/home/{os.environ.get('SUDO_USER', '')}/.xwin") if os.environ.get("SUDO_USER") else None,
+        ]:
+            if _candidate and _candidate.is_dir() and (_candidate / "crt").is_dir():
+                _xwin_dir = _candidate
+                break
         _has_msvc_cl = (
             bool(_shutil.which("clang-cl")) and
             bool(_shutil.which("lld-link")) and
-            _xwin_dir.is_dir()
+            _xwin_dir is not None
         )
-        _xd = str(_xwin_dir)
+        _xd = str(_xwin_dir) if _xwin_dir else ""
         _msvc_env = {
             "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "lld-link",
             "CC_x86_64_pc_windows_msvc":  "clang-cl",
@@ -1370,10 +1379,20 @@ class ProviderWizard(ABC):
                         info(f"  Launch → rundll32.exe {_dll_name},Run")
                         info(f"  Launch → regsvr32 /s {_dll_name}")
                 else:
-                    warn("MSVC toolchain not found — skipping Windows native agent")
-                    warn("  apt install clang lld && cargo install xwin")
-                    warn("  xwin --accept-license splat --output ~/.xwin")
-                    warn("  rustup target add x86_64-pc-windows-msvc")
+                    # Diagnostic: show exactly which check failed
+                    _diag = []
+                    if not _shutil.which("clang-cl"):
+                        _diag.append("clang-cl not in PATH")
+                    if not _shutil.which("lld-link"):
+                        _diag.append("lld-link not in PATH")
+                    if _xwin_dir is None:
+                        _diag.append(f"xwin SDK not found (checked: {Path.home()}/.xwin"
+                                     f"{', /home/' + os.environ.get('SUDO_USER','') + '/.xwin' if os.environ.get('SUDO_USER') else ''})")
+                    warn(f"MSVC toolchain not found — skipping Windows native agent")
+                    warn(f"  Reason: {'; '.join(_diag)}")
+                    warn("  Fix: apt install clang lld && cargo install xwin")
+                    warn("       xwin --accept-license splat --output ~/.xwin")
+                    warn("       rustup target add x86_64-pc-windows-msvc")
 
                 # Linux ELF — musl-static, fully self-contained, zero runtime deps
                 _lin_tgt = "x86_64-unknown-linux-musl"

@@ -4,7 +4,7 @@
 
 <div align="center">
 
-**Cloud Persistence Framework · v1.0**
+**Cloud Persistence Framework · v1.1**
 
 *A fallback foothold that routes through infrastructure defenders can't block.*
 
@@ -202,6 +202,12 @@ Multi-operator, real-time, browser-based. Every operator sees the same sessions 
 /persist probe       — non-destructive feasibility check, all techniques
 /persist install <id>— install a persistence technique
 /persist remove <id> — remove a specific technique
+/creds harvest       — collect credential files (DPAPI, SSH keys, browser DBs, cloud creds)
+/creds coerce        — force local auth to capture NTLMv2 / enumerate SSH agents
+/creds sam           — dump SAM/SYSTEM/SECURITY hives (Windows, requires SYSTEM)
+/creds listen start [proto:port] — start credential listener (smb:445, http:80)
+/creds listen stop [proto:port]  — stop specific or all listeners
+/creds listen dump   — retrieve captured NTLMv2 + Basic creds per listener
 /kill                — remove all persistence + wipe artifacts + terminate agent
 /download <path>     — pull file from target
 /upload <path>       — push file to target
@@ -269,6 +275,21 @@ This software is provided for defensive security research, penetration testing t
 **Unauthorized access to computer systems is a criminal offense** and can result in severe civil and criminal penalties, including fines and imprisonment.
 
 By using this software, you acknowledge that you have read this disclaimer and agree to use Stratum only for lawful purposes with proper authorization.
+
+---
+
+## Changelog
+
+### v1.1
+
+- **Credential harvesting module** (`/creds`) — harvest DPAPI/SSH/browser/cloud creds, coerce local auth, dump SAM hives
+- **Multi-protocol listener** — simultaneous SMB + HTTP NTLM listeners on arbitrary ports (`/creds listen start http:80`)
+- **NTLMv2 + Basic auth capture** — HTTP listener advertises both; LLMNR/NBNS poisoners auto-start
+- **Multiple concurrent listeners** — start/stop individually (`/creds listen stop http:80`) or all at once
+- **Persistent listener state** — active listeners, start time, and captured credentials survive server reboots
+- **WebUI listener badge** — expandable badge shows per-listener status, protocol, uptime, and credentials in real-time
+- **Shell command suggestions** — autocomplete for all `/creds` subcommands with descriptions
+- **Windows port-conflict warning** — popup warns when starting SMB on port 445 (occupied by LanmanServer)
 
 ---
 

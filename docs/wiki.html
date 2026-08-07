@@ -703,6 +703,7 @@ a:hover{color:#f87171;text-decoration:none}
       <a href="#s13-3" data-section="s13">6.3 Persistence Commands</a>
       <a href="#s13-4" data-section="s13">6.4 File Operations</a>
       <a href="#s13-5" data-section="s13">6.5 Tradecraft Commands</a>
+      <a href="#s13-6" data-section="s13">6.6 Credential Harvesting</a>
     </div>
 
     <div class="toc-divider"></div>
@@ -3940,6 +3941,57 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
 <div class="cmd-row"><span class="cmd-name">/blobsave</span><span class="cmd-desc">Manually trigger the agent to write (or refresh) the hw-keyed ddb blob to disk. Useful after a config change or if the blob was deleted. The blob allows cold restarts without a cloud fetch.</span></div>
 <div class="cmd-row"><span class="cmd-name">/poll/stop</span><span class="cmd-desc">Pause the server-side heartbeat polling for this session (no network activity from the server side).</span></div>
 <div class="cmd-row"><span class="cmd-name">/poll/resume</span><span class="cmd-desc">Resume heartbeat polling after <code>/poll/stop</code>.</span></div>
+
+<h3 id="s13-6">6.6 Credential Harvesting</h3>
+<p>The <code>/creds</code> family collects credential material from the target for offline cracking or lateral movement. It is designed for the Stratum use-case: grab what you need to re-establish access, then exfiltrate through the cloud channel.</p>
+
+<div class="cmd-row"><span class="cmd-name">/creds harvest</span><span class="cmd-desc">Passive file-based credential collection. Gathers browser credential databases (Chrome, Edge, Firefox), DPAPI blobs &amp; master keys, SSH keys, Kerberos ccache, cloud credentials (AWS, Azure, GCP, Docker, Kube), WiFi profiles, PuTTY sessions, Windows Vault, GNOME keyring, NetworkManager profiles, and shell history secrets. All files staged to the cloud channel automatically.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds coerce</span><span class="cmd-desc">Active credential capture via forced authentication. <strong>Windows:</strong> triggers local named-pipe coercion (SpoolSample / EfsRpc) to capture the machine account NTLMv2 hash. <strong>Linux:</strong> enumerates accessible SSH agent sockets and lists loaded keys (usable for agent hijacking).</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds sam</span><span class="cmd-desc">Dump SAM, SYSTEM, and SECURITY registry hives (Windows only, requires SYSTEM or elevated Admin). Uses <code>reg save</code> with Volume Shadow Copy fallback. Hives staged to cloud for offline cracking with <code>secretsdump.py</code>.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds listen start [proto:port]</span><span class="cmd-desc">Start a credential listener. Supports <code>smb:445</code> (NTLMv2 via SMB), <code>http:80</code> (NTLMv2 + Basic auth via HTTP 401). Multiple listeners can run simultaneously on different proto:port combinations. LLMNR/NBNS poisoners auto-start with the first listener and stop with the last. Default: <code>smb:445</code>.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds listen stop [proto:port]</span><span class="cmd-desc">Stop listeners. Without arguments: stops all listeners + poisoners. With a spec (e.g. <code>http:80</code>): stops only that specific listener. Poisoners stop automatically when the last listener is removed.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds listen dump</span><span class="cmd-desc">Retrieve all captured credentials from all active listeners. Shows per-listener breakdown (NTLMv2 count + Basic auth count), uptime, and raw credential lines. NTLMv2 output is in hashcat <code>-m 5600</code> format. Also reports LLMNR/NBNS poisoner response counts.</span></div>
+
+<h4>Listener Protocol Details</h4>
+<table>
+  <tr><th>Protocol</th><th>Syntax</th><th>Captures</th><th>Use Case</th></tr>
+  <tr><td>SMB</td><td><code>/creds listen start smb:445</code></td><td>NTLMv2 hashes</td><td>Coerced auth, file share access, pass-the-hash relay</td></tr>
+  <tr><td>HTTP NTLM</td><td><code>/creds listen start http:80</code></td><td>NTLMv2 + Basic (user:pass)</td><td>Browser auto-auth (Intranet zone), phishing links, WPAD</td></tr>
+</table>
+<p>The HTTP listener sends a <code>401 Unauthorized</code> with both <code>WWW-Authenticate: NTLM</code> and <code>WWW-Authenticate: Basic realm="Secured Area"</code>. Windows browsers in the Intranet zone auto-send NTLMv2; users on other networks see a credential prompt and Basic auth is captured.</p>
+
+<h4>Credential Harvesting — Platform Matrix</h4>
+<table>
+  <tr><th>Source</th><th>Windows</th><th>Linux</th><th>Privilege</th></tr>
+  <tr><td>Browser DBs (Chrome, Edge, Firefox)</td><td>✓</td><td>✓ (Firefox)</td><td>User</td></tr>
+  <tr><td>DPAPI blobs &amp; master keys</td><td>✓</td><td>—</td><td>User</td></tr>
+  <tr><td>SSH keys &amp; config</td><td>—</td><td>✓</td><td>User</td></tr>
+  <tr><td>Kerberos ccache</td><td>—</td><td>✓</td><td>User</td></tr>
+  <tr><td>Cloud credentials (AWS/Azure/GCP/Docker/Kube)</td><td>—</td><td>✓</td><td>User</td></tr>
+  <tr><td>WiFi profiles (cleartext keys)</td><td>✓</td><td>✓ (root)</td><td>User / Root</td></tr>
+  <tr><td>Windows Vault</td><td>✓</td><td>—</td><td>User</td></tr>
+  <tr><td>GNOME Keyring</td><td>—</td><td>✓</td><td>User</td></tr>
+  <tr><td>SAM/SYSTEM/SECURITY hives</td><td>✓</td><td>—</td><td>SYSTEM</td></tr>
+  <tr><td>SMB/HTTP listener (NTLMv2 + Basic)</td><td>✓</td><td>✓</td><td>Root (port &lt;1024) / User (high port)</td></tr>
+  <tr><td>SSH agent hijack</td><td>—</td><td>✓</td><td>User (same UID) / Root</td></tr>
+</table>
+
+<div class="callout callout-info">
+  <div class="callout-title">Listener badge &amp; persistence</div>
+  When one or more listeners are active, an orange pulsing badge appears in the session header showing the listener count (or protocol if single). Click to expand and see per-listener details: protocol, port, start time, and captured credentials. This state is <strong>persistent across server reboots</strong> — the badge reappears automatically when the session is loaded. It updates in real-time as new credentials are captured via <code>/creds listen dump</code>.
+</div>
+
+<div class="callout callout-warning">
+  <div class="callout-title">OPSEC considerations</div>
+  <ul>
+    <li><code>/creds harvest</code> reads many files rapidly — may trigger EDR file-access telemetry. Run during low-monitoring windows.</li>
+    <li><code>/creds sam</code> executes <code>reg save</code> or creates a VSS snapshot — both generate Windows event logs.</li>
+    <li><code>/creds listen start smb:445</code> on Windows will fail — port 445 is occupied by LanmanServer. Use <code>http:80</code> or a high port like <code>smb:8445</code>.</li>
+    <li>LLMNR/NBNS poisoners respond to multicast name queries — detectable by network monitoring tools (e.g. Respounder, MDI). Use in isolated segments.</li>
+    <li>Multiple listeners increase the attack surface but also the detection surface — each open port is visible in <code>netstat</code>.</li>
+    <li>All harvested files are exfiltrated via the normal Stratum cloud channel — large dumps (SAM hives, browser DBs) may take multiple poll cycles.</li>
+  </ul>
+</div>
 </section>
 
 <!-- ════════════════════════ §14 ADVANCED ════ -->
