@@ -24,6 +24,14 @@ impl Task {
     }
 }
 
+#[derive(Serialize, Default, Clone)]
+pub struct StagedFile {
+    pub cloud_path:   String,
+    pub filename:     String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub source_path:  String,
+}
+
 #[derive(Serialize, Default)]
 pub struct TaskResponse {
     pub id:            String,
@@ -33,6 +41,8 @@ pub struct TaskResponse {
     pub output:        String,
     pub cwd:           String,
     pub staging_path:  String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub staging_files: Vec<StagedFile>,
     pub artifacts:     Vec<Artifact>,
     pub session_token: String,
 }
@@ -72,6 +82,18 @@ impl TaskResponse {
             status:        "ok".to_string(),
             output,
             staging_path,
+            session_token: Self::token(task),
+            ..Default::default()
+        }
+    }
+
+    pub fn ok_staged_files(task: &Task, output: String, files: Vec<StagedFile>) -> Self {
+        Self {
+            id:            task.id.clone(),
+            kind:          task.kind.clone(),
+            status:        "ok".to_string(),
+            output,
+            staging_files: files,
             session_token: Self::token(task),
             ..Default::default()
         }

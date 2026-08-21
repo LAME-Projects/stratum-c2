@@ -798,9 +798,11 @@ const Deploy = (() => {
     sec.innerHTML = '<div class="cfg-section-hdr">Channel Files <span class="hint-lbl">(paths on the cloud storage)</span></div>';
     wrap.appendChild(sec);
 
-    const fileFields = channelFields.filter(f => ['input_file','output_file','heartbeat_file'].includes(f.name));
-    const otherFields = channelFields.filter(f => !['input_file','output_file','heartbeat_file'].includes(f.name));
+    const fileFields   = channelFields.filter(f => ['input_file','output_file','heartbeat_file'].includes(f.name));
+    const folderField  = channelFields.find(f => f.name === 'folder_path');
+    const otherFields  = channelFields.filter(f => !['input_file','output_file','heartbeat_file','folder_path'].includes(f.name));
 
+    /* ── Randomize filenames toggle ── */
     if (fileFields.length) {
       const togRow = document.createElement('label');
       togRow.className = 'tog-label';
@@ -831,6 +833,42 @@ const Deploy = (() => {
       });
     }
 
+    /* ── Folder path mode selector ── */
+    if (folderField) {
+      const folderSec = document.createElement('div');
+      folderSec.className = 'cfg-section';
+      folderSec.style.marginTop = '.6rem';
+      folderSec.innerHTML = `
+        <div class="cfg-section-hdr">Folder Path</div>
+        <div class="folder-mode-radios" style="display:flex;flex-direction:column;gap:.45rem;margin-bottom:.6rem">
+          <label class="radio-label">
+            <input type="radio" name="ch-folder-mode" value="hex" checked>
+            <span>Random hex <span class="hint-lbl">(e.g. /a8f3c1b2 — no fingerprint)</span></span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="ch-folder-mode" value="realistic">
+            <span>Random realistic <span class="hint-lbl">(e.g. /Reports_Q3, /Backups42 — blends with real folders)</span></span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="ch-folder-mode" value="manual">
+            <span>Manual</span>
+          </label>
+        </div>
+        <div id="ch-folder-input" style="display:none">
+          <div class="form-group" style="margin-bottom:0">
+            <input type="text" id="cred-folder_path"
+                   value="${escHtml(String(_creds[folderField.name] !== undefined ? _creds[folderField.name] : (folderField.default ?? '')))}" autocomplete="off" placeholder="/MyFolder">
+          </div>
+        </div>`;
+      wrap.appendChild(folderSec);
+
+      folderSec.querySelectorAll('input[name="ch-folder-mode"]').forEach(r => {
+        r.addEventListener('change', () => {
+          document.getElementById('ch-folder-input').style.display = r.value === 'manual' ? '' : 'none';
+        });
+      });
+    }
+
     otherFields.forEach(f => {
       const val = _creds[f.name] !== undefined ? _creds[f.name] : (f.default ?? '');
       const grp = document.createElement('div');
@@ -842,21 +880,46 @@ const Deploy = (() => {
       wrap.appendChild(grp);
     });
 
+    /* ── Session Label ── */
+    const lblSec = document.createElement('div');
+    lblSec.className = 'cfg-section';
+    lblSec.style.marginTop = '1rem';
+    lblSec.innerHTML = `
+      <div class="cfg-section-hdr">Session Label <span class="hint-lbl">(optional — identifies this session in the dashboard)</span></div>
+      <div class="form-group" style="margin-bottom:0">
+        <div class="form-row" style="align-items:center;gap:.5rem">
+          <input type="text" id="ch-session-label" value="${escHtml(_creds.session_label || '')}" placeholder="e.g. webserver-01, dc-corp" style="flex:1" autocomplete="off">
+          <button class="btn-guide" id="ch-label-suggest" title="Label suggestions based on target context" style="white-space:nowrap">
+            💡 Suggest
+          </button>
+        </div>
+      </div>`;
+    wrap.appendChild(lblSec);
+    setTimeout(() => {
+      document.getElementById('ch-label-suggest')?.addEventListener('click', _openLabelModal);
+    }, 0);
+
     return wrap;
   }
 
   function _collectChannelFields() {
-    const randomize = document.getElementById('ch-randomize')?.checked ?? true;
-    const fileNames = new Set(['input_file', 'output_file', 'heartbeat_file']);
+    const randomize  = document.getElementById('ch-randomize')?.checked ?? true;
+    const folderMode = document.querySelector('input[name="ch-folder-mode"]:checked')?.value || 'hex';
+    const fileNames  = new Set(['input_file', 'output_file', 'heartbeat_file']);
     const fields = (_providers[_provId] || {}).fields || [];
     fields.filter(f => f.group === 'channel').forEach(f => {
       if (randomize && fileNames.has(f.name)) {
         _creds[f.name] = '__random__';
+      } else if (f.name === 'folder_path') {
+        if (folderMode === 'hex')            _creds[f.name] = '__random__';
+        else if (folderMode === 'realistic') _creds[f.name] = '__random_folder__';
+        else { const inp = document.getElementById('cred-folder_path'); if (inp) _creds[f.name] = inp.value; }
       } else {
         const inp = document.getElementById(`cred-${f.name}`);
         if (inp) _creds[f.name] = inp.value;
       }
     });
+    _creds.session_label = document.getElementById('ch-session-label')?.value?.trim() || '';
   }
 
   /* ── 1c: Full credential form (new credentials) ─────────────────────────── */
@@ -970,19 +1033,25 @@ const Deploy = (() => {
   }
 
   function _collectStep1() {
-    const randomize = document.getElementById('ch-randomize')?.checked ?? true;
-    const fileNames = new Set(['input_file', 'output_file', 'heartbeat_file']);
+    const randomize  = document.getElementById('ch-randomize')?.checked ?? true;
+    const folderMode = document.querySelector('input[name="ch-folder-mode"]:checked')?.value || 'hex';
+    const fileNames  = new Set(['input_file', 'output_file', 'heartbeat_file']);
     const fields = (_providers[_provId] || {}).fields || [];
     _creds = {};
     fields.forEach(f => {
       if (randomize && fileNames.has(f.name)) {
         _creds[f.name] = '__random__';
+      } else if (f.name === 'folder_path') {
+        if (folderMode === 'hex')            _creds[f.name] = '__random__';
+        else if (folderMode === 'realistic') _creds[f.name] = '__random_folder__';
+        else { const inp = document.getElementById('cred-folder_path'); if (inp) _creds[f.name] = inp.value; }
       } else {
         const inp = document.getElementById(`cred-${f.name}`);
         if (inp) _creds[f.name] = inp.value;
       }
     });
     _creds._label = document.getElementById('cred-label')?.value?.trim() || '';
+    _creds.session_label = document.getElementById('ch-session-label')?.value?.trim() || '';
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
@@ -1107,23 +1176,13 @@ const Deploy = (() => {
     const tagWrap = document.createElement('div');
     tagWrap.className = 'cfg-section';
     tagWrap.innerHTML = `
-      <div class="cfg-section-hdr">Identification</div>
-      <div class="form-group" style="margin-bottom:.5rem">
-        <label>Session Label <span class="hint-lbl">(optional)</span></label>
-        <div class="form-row" style="align-items:center;gap:.5rem">
-          <input type="text" id="cfg-label" value="${escHtml(String(_cfgDefault('session_label') || ''))}" placeholder="e.g. webserver-01, dc-corp" style="flex:1">
-          <button class="btn-guide" id="cfg-label-suggest" title="Label suggestions based on target context" style="white-space:nowrap">
-            💡 Suggest
-          </button>
-        </div>
-      </div>
-      <label class="tog-label" style="margin-top:.4rem">
+      <div class="cfg-section-hdr">Options</div>
+      <label class="tog-label">
         <input type="checkbox" id="cfg-debug_mode"${debugVal ? ' checked' : ''}>
         <span class="tog-track"><span class="tog-thumb"></span></span>
         <span>Debug mode <span class="hint-lbl">(verbose output — dev only)</span></span>
       </label>`;
     body.appendChild(tagWrap);
-    document.getElementById('cfg-label-suggest').addEventListener('click', _openLabelModal);
 
     const agentWrap = document.createElement('div');
     agentWrap.className = 'cfg-section';
@@ -1265,7 +1324,7 @@ const Deploy = (() => {
         </div>
         <div class="opsec-card-action">Use →</div>`;
       card.addEventListener('click', () => {
-        const inp = document.getElementById('cfg-label');
+        const inp = document.getElementById('ch-session-label') || document.getElementById('cfg-label');
         if (inp) { inp.value = entry.name; inp.dispatchEvent(new Event('input')); }
         document.getElementById('label-overlay')?.classList.remove('open');
       });
@@ -1428,7 +1487,7 @@ const Deploy = (() => {
     if (bpw) _cmVals.blob_path_win   = bpw.value || '%APPDATA%\\Microsoft\\Windows\\Themes\\.ddb';
     const dbg = document.getElementById('cfg-debug_mode');
     if (dbg) _cmVals.debug_mode = dbg.checked;
-    _cmVals.session_label    = document.getElementById('cfg-label')?.value || '';
+    _cmVals.session_label    = _creds.session_label || '';
     _cmVals.agent_name_win   = document.getElementById('cfg-agent_name_win')?.value?.trim()   || '';
     _cmVals.agent_name_linux = document.getElementById('cfg-agent_name_linux')?.value?.trim() || '';
   }
@@ -1666,11 +1725,66 @@ const Deploy = (() => {
     Modal.open('deploy-modal');
   }
 
-  function close() {
+  async function close(cancelTask = false) {
+    if (_step === 3 && _taskId && cancelTask === false) {
+      const choice = await _askDeployAction();
+      if (choice === 'stay') return;
+      cancelTask = (choice === 'abort');
+    }
     _stopOAuth();
     if (_sse) { _sse.close(); _sse = null; }
-    if (_taskId) { API.cancelDeploy(_taskId).catch(() => {}); _taskId = null; }
+    if (_taskId) {
+      if (cancelTask) {
+        try { await API.cancelDeploy(_taskId); } catch (_) {}
+        Toast.warning('Deploy aborted', 'Artifacts and cloud files are being rolled back.');
+      } else {
+        Toast.info('Deploy in background', 'The deploy continues running — session will appear when ready.');
+      }
+      _taskId = null;
+    }
     Modal.close('deploy-modal');
+  }
+
+  function _askDeployAction() {
+    return new Promise(resolve => {
+      let overlay = document.getElementById('deploy-action-overlay');
+      if (overlay) overlay.remove();
+      overlay = document.createElement('div');
+      overlay.id = 'deploy-action-overlay';
+      overlay.className = 'modal-overlay open';
+      overlay.style.zIndex = '9999';
+      overlay.innerHTML = `
+        <div class="modal" style="max-width:420px;width:90vw;padding:1.5rem">
+          <div class="modal-header" style="margin-bottom:.8rem">
+            <span class="modal-title">Deploy in progress</span>
+          </div>
+          <p style="font-size:.82rem;color:var(--text-muted);margin:0 0 1.2rem">
+            The deploy is still running. What would you like to do?
+          </p>
+          <div style="display:flex;flex-direction:column;gap:.5rem">
+            <button class="btn-deploy-action" id="da-bg"
+              style="padding:.55rem .8rem;border-radius:6px;border:1px solid var(--border);background:var(--surface-bright);color:var(--text);cursor:pointer;text-align:left">
+              <strong>Continue in background</strong>
+              <div style="font-size:.72rem;color:var(--text-muted);margin-top:.15rem">Session will appear when ready</div>
+            </button>
+            <button class="btn-deploy-action" id="da-abort"
+              style="padding:.55rem .8rem;border-radius:6px;border:1px solid var(--accent);background:rgba(255,60,60,.08);color:var(--accent-bright);cursor:pointer;text-align:left">
+              <strong>Abort deploy</strong>
+              <div style="font-size:.72rem;color:var(--text-muted);margin-top:.15rem">Cancel build, remove generated files and cloud artifacts</div>
+            </button>
+            <button class="btn-deploy-action" id="da-stay"
+              style="padding:.45rem .8rem;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-muted);cursor:pointer;text-align:center;font-size:.78rem">
+              Stay on this page
+            </button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      const cleanup = () => { overlay.remove(); };
+      document.getElementById('da-bg').addEventListener('click', () => { cleanup(); resolve('background'); });
+      document.getElementById('da-abort').addEventListener('click', () => { cleanup(); resolve('abort'); });
+      document.getElementById('da-stay').addEventListener('click', () => { cleanup(); resolve('stay'); });
+      overlay.addEventListener('click', e => { if (e.target === overlay) { cleanup(); resolve('stay'); } });
+    });
   }
 
   /* ── init ────────────────────────────────────────────────────────────────── */
@@ -1686,19 +1800,14 @@ const Deploy = (() => {
     _btnPrev()?.addEventListener('click', _goPrev);
     _btnNext()?.addEventListener('click', () => { if (_step < STEPS.length - 1) _goNext(); });
 
-    document.getElementById('deploy-close')?.addEventListener('click', close);
+    document.getElementById('deploy-close')?.addEventListener('click', () => close());
 
     document.getElementById('guide-close')?.addEventListener('click', () => Modal.close('guide-modal'));
     document.getElementById('guide-ok')?.addEventListener('click',    () => Modal.close('guide-modal'));
 
-    m.addEventListener('click', async (e) => {
+    m.addEventListener('click', (e) => {
       if (e.target !== m) return;
-      if (_step === 3 && _taskId) {
-        const ok = await confirm('Cancel Deploy', 'Cancel the running deploy?');
-        if (ok) close();
-      } else {
-        close();
-      }
+      close();
     });
 
     document.getElementById('btn-deploy')?.addEventListener('click', open);

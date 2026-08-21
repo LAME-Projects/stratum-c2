@@ -85,13 +85,14 @@ from server.session import ServerSessionManager
 from server.tls import ensure_cert
 from server.ws import ConnectionManager
 
-from server.routers import auth, sessions, chat, ws, deploy, operators, credentials, tradecraft, prefs, server_settings, history_archives
+from server.routers import auth, sessions, chat, ws, deploy, operators, credentials, tradecraft, prefs, server_settings, history_archives, update
+from server.version import __version__
 
 
 def create_app(cfg: ServerConfig) -> FastAPI:
     app = FastAPI(
         title="API",
-        version="1.0",
+        version=__version__,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -136,6 +137,7 @@ def create_app(cfg: ServerConfig) -> FastAPI:
     app.include_router(prefs.router)
     app.include_router(server_settings.router)
     app.include_router(history_archives.router)
+    app.include_router(update.router)
 
     # ── static WebGUI (served from webui/ if present) ────────────────────────
     webgui = Path("webui")
@@ -190,10 +192,20 @@ def create_app(cfg: ServerConfig) -> FastAPI:
                     pass
 
         asyncio.create_task(_auth_prune_loop())
+
+        if cfg.auto_update.enabled and cfg.auto_update.repo:
+            from server.updater import check_for_update
+            log.info("Update check enabled — repo=%s", cfg.auto_update.repo)
+            asyncio.create_task(check_for_update(cfg.auto_update.repo))
+        elif cfg.auto_update.enabled and not cfg.auto_update.repo:
+            log.info("Update check skipped — no repo configured in auto_update.repo")
+        else:
+            log.info("Update check disabled")
+
         log.debug("Background tasks started: keepalive, state-watcher, hb-scheduler, lock-reaper, auth-pruner")
 
-        log.info("Server ready — https://%s:%d  log_level=%s",
-                 cfg.host, cfg.port, cfg.settings.log_level)
+        log.info("Server ready — v%s  https://%s:%d  log_level=%s",
+                 __version__, cfg.host, cfg.port, cfg.settings.log_level)
 
     @app.on_event("shutdown")
     async def _shutdown():

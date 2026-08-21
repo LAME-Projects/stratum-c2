@@ -61,6 +61,7 @@ class _DeployTask:
         self.status      = "running"
         self.session_id: Optional[str] = None
         self._error:     Optional[str] = None
+        self._cancelled: bool = False
         self._q: queue.Queue = queue.Queue()
         self.ws          = ws
         self.loop        = loop
@@ -74,6 +75,7 @@ class _DeployTask:
              session=None, sm=None) -> None:
         self.session_id = session_id
         self._error     = error
+        self._cancelled = error == "Cancelled by operator"
         self.status     = "failed" if error else "done"
         if error:
             self._q.put(f"✗ {error}")
@@ -83,7 +85,10 @@ class _DeployTask:
         if self.ws and self.loop:
             import asyncio
             async def _broadcast():
-                if self._error:
+                if self._cancelled:
+                    await notify(self.ws, "warn", "Deploy Cancelled",
+                                 f"{self.provider} deploy cancelled by operator")
+                elif self._error:
                     await notify(self.ws, "error", "Deploy Failed",
                                  f"{self.provider} → {self.session_id}" if self.session_id else self.provider)
                 elif session:
@@ -556,6 +561,7 @@ def _run_wizard(task: "_DeployTask", provider: str, config: dict,
     import providers.base as _base
     from providers.all import PROVIDERS
     from providers import WizardError as _WizardError
+    from providers._notifications import CancelledError as _CancelledError
 
     task.push(f"[deploy] starting {provider} wizard…")
 
@@ -576,6 +582,7 @@ def _run_wizard(task: "_DeployTask", provider: str, config: dict,
         "blob_path_linux": "linux_blob_path",
         "blob_path_win":   "windows_blob_path",
         "debug_mode":      "enable_debug_output",
+        "session_label":   "label",
         # Google Drive: form sends app_key/app_secret, config expects client_id/client_secret
         "app_key":    "client_id",
         "app_secret": "client_secret",
@@ -598,6 +605,9 @@ def _run_wizard(task: "_DeployTask", provider: str, config: dict,
                 sv = str(val)
                 if sv == "__random__":
                     sv = "/" + _sec.token_hex(4)
+                elif sv == "__random_folder__":
+                    from providers._wizard import _random_folder
+                    sv = _random_folder()
                 task.push(f"  {prompt_text}: {sv}")
                 return sv
         task.push(f"  {prompt_text}: {default} (default)")
@@ -725,6 +735,10 @@ def _run_wizard(task: "_DeployTask", provider: str, config: dict,
                         if sv == "__random__":
                             sv = "/" + _sec.token_hex(4)
                             task.push(f"  {k}: {sv} (randomized)")
+                        elif sv == "__random_folder__":
+                            from providers._wizard import _random_folder
+                            sv = _random_folder()
+                            task.push(f"  {k}: {sv} (randomized)")
                         if sv:
                             setattr(cfg_obj, k, sv)
                 # Provider-specific IDs (folder_id, site_id) may come from the form
@@ -790,6 +804,9 @@ def _run_wizard(task: "_DeployTask", provider: str, config: dict,
 
     except (_WizardAbort, _WizardError) as e:
         task.done(error=str(e))
+    except _CancelledError:
+        task.push("✗ Deploy cancelled — all artifacts rolled back")
+        task.done(error="Cancelled by operator")
     except Exception as e:
         import logging as _log
         _log.getLogger(__name__).error("Deploy task %s failed: %s", task.task_id, _tb.format_exc())
@@ -850,4 +867,4 @@ def cancel_deploy(task_id: str, username: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Task not found")
     if task.status == "running":
         task._cancel.set()
-        task.done(error="Cancelled by operator")
+        task.push("⚠ Cancel requested — waiting for rollback…")

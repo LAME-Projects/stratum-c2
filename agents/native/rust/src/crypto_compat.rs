@@ -8,6 +8,7 @@
 //!   GCM: 32-byte key only.
 //!   CBC: 48-byte key+IV.
 
+use crate::s;
 use aes::Aes256;
 use cbc::{Decryptor, Encryptor};
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
@@ -19,7 +20,7 @@ use rand::RngCore;
 
 const ITER:      u32   = 210_000;
 const CBC_MAGIC: &[u8] = b"Salted__";
-const GCM_PFX:   &str  = "SGCM:";
+fn gcm_pfx() -> String { s!("SGCM:") }
 
 // ── GCM ───────────────────────────────────────────────────────────────────────
 
@@ -54,7 +55,7 @@ fn gcm_encrypt(password: &str, plaintext: &[u8]) -> String {
     out.extend_from_slice(&salt);
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ct_tag);
-    format!("{}{}", GCM_PFX, B64.encode(out))
+    format!("{}{}", gcm_pfx(), B64.encode(out))
 }
 
 // ── CBC (legacy) ──────────────────────────────────────────────────────────────
@@ -81,7 +82,8 @@ fn cbc_decrypt(password: &str, b64: &str) -> Option<String> {
 
 /// Decrypt stage2 / config blob. Accepts both GCM (current) and CBC (legacy) formats.
 pub fn stratum_decrypt(password: &str, blob: &str) -> Option<String> {
-    if let Some(b64) = blob.strip_prefix(GCM_PFX) {
+    let pfx = gcm_pfx();
+    if let Some(b64) = blob.strip_prefix(&pfx) {
         gcm_decrypt(password, b64)
     } else {
         cbc_decrypt(password, blob)
@@ -91,7 +93,8 @@ pub fn stratum_decrypt(password: &str, blob: &str) -> Option<String> {
 /// Decrypt to raw bytes — for binary payloads (e.g. Windows DLL stage2)
 /// where the plaintext is not valid UTF-8.  GCM format only.
 pub fn stratum_decrypt_bytes(password: &str, blob: &str) -> Option<Vec<u8>> {
-    let b64 = blob.strip_prefix(GCM_PFX)?;
+    let pfx = gcm_pfx();
+    let b64 = blob.strip_prefix(&pfx)?;
     let raw = B64.decode(b64.trim()).ok()?;
     if raw.len() < 36 { return None; }
     let (salt, rest)       = raw.split_at(8);

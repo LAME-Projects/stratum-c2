@@ -161,7 +161,8 @@ import re as _re
 
 def _update_listener_state(sess_obj, content: str) -> None:
     """Parse agent response to maintain persistent listener state in AgentState."""
-    if "[creds listen]" not in content:
+    # listen_dump() output with credentials starts with "[SMB:445]" etc, no "[creds listen]" prefix
+    if "[creds listen]" not in content and not _re.search(r'\[(SMB|HTTP[-\w]*):(\d+)\]\s+\d+\s+credential', content, _re.IGNORECASE):
         return
 
     with sess_obj.state._lock:
@@ -180,7 +181,7 @@ def _update_listener_state(sess_obj, content: str) -> None:
                     if pm:
                         proto_raw = pm.group(1).lower()
                         port = int(pm.group(2))
-                        proto = "http" if "http" in proto_raw else "smb"
+                        proto = "http-ntlm" if "ntlm" in proto_raw else "http" if "http" in proto_raw else "smb"
                         key = f"{proto}:{port}"
                         if key not in listeners:
                             listeners[key] = {
@@ -214,7 +215,7 @@ def _update_listener_state(sess_obj, content: str) -> None:
                 if hdr:
                     proto_raw = hdr.group(1).lower()
                     port = int(hdr.group(2))
-                    proto = "http" if "http" in proto_raw else "smb"
+                    proto = "http-ntlm" if "ntlm" in proto_raw else "http" if "http" in proto_raw else "smb"
                     current_key = f"{proto}:{port}"
                     if current_key not in listeners:
                         listeners[current_key] = {

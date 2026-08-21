@@ -95,6 +95,7 @@ const API = (() => {
   function sleep(id, seconds)            { return post(`/api/v1/sessions/${id}/sleep`, { seconds }); }
   function jitter(id, percent)           { return post(`/api/v1/sessions/${id}/jitter`, { percent }); }
   function killAgent(id)                 { return post(`/api/v1/sessions/${id}/kill`, {}); }
+  function toggleLock(id)                { return post(`/api/v1/sessions/${id}/lock`, {}); }
   function persist(id, action)              { return post(`/api/v1/sessions/${id}/persist`, { action }); }
   function persistProbe(id, techniques = null) { return post(`/api/v1/sessions/${id}/persist/probe`, techniques ? { techniques } : {}); }
   function persistInstall(id, technique)    { return post(`/api/v1/sessions/${id}/persist/install`, { technique }); }
@@ -214,15 +215,31 @@ const API = (() => {
     });
   }
 
+  /* ── Captured credentials (per-session) ──────────────────────────────────── */
+  function listCredentials(id)             { return get(`/api/v1/sessions/${id}/credentials`); }
+  function addCredential(id, data)         { return post(`/api/v1/sessions/${id}/credentials`, data); }
+  function updateCredential(id, cid, data) { return _req('PUT', `/api/v1/sessions/${id}/credentials/${cid}`, data); }
+  function deleteCredential(id, cid)       { return del(`/api/v1/sessions/${id}/credentials/${cid}`); }
+
+  function updateStatus()    { return get('/api/v1/update/status'); }
+  function updatePreflight() { return get('/api/v1/update/preflight'); }
+  function applyUpdate()     { return post('/api/v1/update/apply', {}); }
+  function checkUpdate()     { return post('/api/v1/update/check', {}); }
+  async function getChangelog() {
+    const res = await fetch('/api/v1/update/changelog', { credentials: 'same-origin' });
+    return res.text();
+  }
+
   return {
     setAuth, getUsername, getDisplay, isLoggedIn,
     login, oidcHandleCallback, oidcStart, authMode, logout, me,
     sessions, session, killSession, wipeSession,
-    sendCommand, sysinfo, sleep, jitter, killAgent,
+    sendCommand, sysinfo, sleep, jitter, killAgent, toggleLock,
     persist, persistProbe, persistInstall, persistRemove, persistStatus,
     timestomp, download, uploadFile, execInline,
     history, artifacts, downloadedFiles, staging, stagingFile, downloadedFileUrl,
     stopPolling, resumePolling, deleteDownload, listUploads, markUploadRemoved, restoreUpload,
+    listCredentials, addCredential, updateCredential, deleteCredential,
     providers, startDeploy, cancelDeploy, deployStreamUrl, oauthExchange, oauthStart, oauthResult,
     credList, credDelete,
     tradecraftList, tradecraftDelete,
@@ -231,5 +248,6 @@ const API = (() => {
     getPrefs, savePrefs,
     getServerSettings, patchServerSettings, getServerTime,
     listArchives, readArchive, archiveArtifacts, deleteArchive,
+    updateStatus, updatePreflight, applyUpdate, checkUpdate, getChangelog,
   };
 })();

@@ -587,7 +587,8 @@ a:hover{color:#f87171;text-decoration:none}
       <a href="#s3-2" data-section="s3">3.2 Script Agents (bash / PS1)</a>
       <a href="#s3-3" data-section="s3">3.3 Native Rust Agent</a>
       <a href="#s3-4" data-section="s3">3.4 Shellcode &amp; Loaders</a>
-      <a href="#s3-5" data-section="s3">3.5 Choosing the Right Agent</a>
+      <a href="#s3-5" data-section="s3">3.5 Agent Feature Parity</a>
+      <a href="#s3-6" data-section="s3">3.6 Choosing the Right Agent</a>
     </div>
 
     <div class="toc-divider"></div>
@@ -715,6 +716,10 @@ a:hover{color:#f87171;text-decoration:none}
       <a href="#s14-4" data-section="s14">7.4 Kill Date</a>
       <a href="#s14-5" data-section="s14">7.5 Blob Management</a>
       <a href="#s14-6" data-section="s14">7.6 Credential Profiles</a>
+      <a href="#s14-7" data-section="s14">7.7 Auto-Update System</a>
+      <a href="#s14-8" data-section="s14">7.8 Agent Version Mismatch</a>
+      <a href="#s14-9" data-section="s14">7.9 Context Menus</a>
+      <a href="#s14-10" data-section="s14">7.10 Session Lock</a>
     </div>
 
   </div><!-- /toc-user -->
@@ -1402,7 +1407,7 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 <span class="var">transport</span> = providers/dropbox/transport/agent.sh   <span class="cmt"># token refresh, upload, download</span>
 <span class="var">core</span>     = agents/templates/core.sh               <span class="cmt"># C2 loop, crypto, persistence</span>
 <span class="var">agent</span>    = transport + "\n\n" + core              <span class="cmt"># concatenated, then placeholders substituted</span></code></pre>
-<p>The script agents implement the full feature set: RSA+AES cryptography in pure bash/PowerShell, heartbeat reporting, command dispatch, persistence installation, timestomping, file transfer, and artifact tracking.</p>
+<p>The script agents implement the core feature set: RSA+AES cryptography in pure bash/PowerShell, heartbeat reporting, command dispatch, persistence installation, timestomping, file transfer, and artifact tracking. See §3.5 for the full feature parity matrix — the Rust native agent is the operational reference implementation with the complete tradecraft module.</p>
 
 <p><strong>Encryption layers in the bash stub:</strong></p>
 <div class="flow-box"><span class="fc">─── Bash stub crypto layers ────────────────────────────────────────────────</span>
@@ -1506,6 +1511,15 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   │                exfil       → bulk file pull by glob pattern          │
   │                timestomp   → copy timestamps from reference file     │
   │                timestomp_set → set timestamps to ISO-8601 value      │
+  │                creds_*     → credential harvesting module (creds.rs) │
+  │                              harvest, sam, coerce, listen_start/     │
+  │                              listen_stop, listen_dump                │
+  │                bof_exec    → in-memory BOF execution (inlinexec.rs)  │
+  │                assembly_exec → .NET assembly in-memory (inlinexec)   │
+  │                assembly_exec_ab → .NET assembly + AMSI bypass        │
+  │                memexec     → raw PE/ELF in-memory execution          │
+  │                script_exec → fileless script via stdin pipe           │
+  │                script_exec_ab → fileless script + AMSI bypass        │
   │                                                                      │
   │  5. <span class="fe">ENCRYPT RESPONSE</span>                                               │
   │     gen fresh AES-256-GCM key + 12-byte nonce                        │
@@ -1523,6 +1537,7 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 
   <span class="cmt">Source files:  main.rs (loop) · transport.rs (cloud I/O) · crypto.rs (RSA+AES)
                persist.rs (techniques) · sysinfo.rs (SYSINFO collection)
+               creds.rs (credential harvesting) · inlinexec.rs (BOF/assembly/memexec)
                staged.rs / stageless_enc.rs (startup mode logic)</span></div>
 
 <h3 id="s3-4">3.4 Shellcode &amp; Loaders</h3>
@@ -1567,14 +1582,84 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 
 <p><strong>PE Loader (<code>agents/native/windows/</code>):</strong> A PE/DLL that embeds the PowerShell agent and executes it via <code>CreateThread</code> → PowerShell in-process. Can be invoked via <code>rundll32.exe agent.dll,Run</code> or <code>regsvr32 /s agent.dll</code>.</p>
 
-<h3 id="s3-5">3.5 Choosing the Right Agent</h3>
+<h3 id="s3-5">3.5 Agent Feature Parity</h3>
+
+<p>The three beacon types share the same C2 protocol and cloud channel but differ significantly in tradecraft capabilities. <strong>The Rust native agent is the operational reference implementation</strong> — it has full feature coverage on both Linux and Windows. The script agents (bash, PowerShell) provide reliable core C2 functionality but do not implement the complete tradecraft module.</p>
+
+<h4>Complete Feature Matrix</h4>
+<table>
+  <tr><th>Feature</th><th>Rust Native</th><th>PowerShell</th><th>Bash</th><th>Notes</th></tr>
+  <tr><th colspan="5" style="text-align:left; background:var(--bg-code); padding:6px 10px;">Core C2</th></tr>
+  <tr><td>Heartbeat / beacon</td><td>✓</td><td>✓</td><td>✓</td><td>All agents share the same cloud wire format</td></tr>
+  <tr><td>RSA-4096 + AES-256-GCM crypto</td><td>✓</td><td>✓</td><td>✓</td><td>PS1 uses .NET crypto; bash shells out to python3</td></tr>
+  <tr><td>Shell pass-through</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>/sysinfo</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>/env</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>/sleep, /jitter</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>/download, /upload</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>/exfil (glob staging)</td><td>✓</td><td>—</td><td>✓</td><td>PS1: use /download or shell equivalent</td></tr>
+  <tr><td>/timestomp, /timestomp_set</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>/stop, /kill</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Artifact tracking</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>HW-keyed ddb blob (cold restart)</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Kill date / maintenance window</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><th colspan="5" style="text-align:left; background:var(--bg-code); padding:6px 10px;">Persistence</th></tr>
+  <tr><td>/persist probe</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>/persist install / remove / status</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+  <tr><td>Linux techniques (cron, systemd, rc.local)</td><td>✓</td><td>—</td><td>✓</td><td>PS1 is Windows-only</td></tr>
+  <tr><td>Windows techniques (schtask, registry, WMI, service)</td><td>✓</td><td>✓</td><td>—</td><td>Bash is Linux-only</td></tr>
+  <tr><th colspan="5" style="text-align:left; background:var(--bg-code); padding:6px 10px;">Credential Harvesting (/creds)</th></tr>
+  <tr><td>/creds harvest</td><td>✓</td><td>✓</td><td>—</td><td>Rust: full cross-platform (Linux+Windows). PS1: Windows-only</td></tr>
+  <tr><td>/creds harvest decrypt</td><td>✓</td><td>✓</td><td>—</td><td>DPAPI + Chromium AES-GCM decryption</td></tr>
+  <tr><td>/creds sam</td><td>✓</td><td>✓</td><td>—</td><td>Rust: in-memory via registry API (SYSTEM or elevated Admin). PS1: reg.exe hive save + stage for offline</td></tr>
+  <tr><td>/creds coerce</td><td>✓</td><td>✓</td><td>—</td><td>Rust: SpoolSample+EfsRpc (Win), SSH-agent+Kerberos (Linux). PS1: SpoolSample only</td></tr>
+  <tr><td>/creds listen start/stop/dump</td><td>✓</td><td>✓</td><td>—</td><td>Rust: multi-threaded. PS1: poll-based. Protocols: smb (NTLMv2), http (plaintext Basic), http-ntlm (NTLMv2)</td></tr>
+  <tr><td>LLMNR / NBNS poisoning</td><td>✓</td><td>✓</td><td>—</td><td>Auto-starts with first listener</td></tr>
+  <tr><td>Credential deduplication</td><td>✓</td><td>✓</td><td>—</td><td>By identity key (user::domain for NTLMv2, user:pass for Basic)</td></tr>
+  <tr><th colspan="5" style="text-align:left; background:var(--bg-code); padding:6px 10px;">In-Memory Execution</th></tr>
+  <tr><td>/bof (BOF execution)</td><td>✓</td><td>—</td><td>—</td><td>COFF loader — Rust only, Windows only</td></tr>
+  <tr><td>/assembly (.NET in-memory)</td><td>✓</td><td>—</td><td>—</td><td>CLR hosting — Rust only, Windows only</td></tr>
+  <tr><td>/assembly-amsibypass (.NET + AMSI bypass)</td><td>✓</td><td>—</td><td>—</td><td>CLR hosting + HW breakpoint on AmsiScanBuffer — Rust only, Windows only</td></tr>
+  <tr><td>/memexec (PE/ELF in-memory)</td><td>✓</td><td>—</td><td>—</td><td>Win: reflective PE loading. Linux: memfd_create — Rust only, cross-platform</td></tr>
+  <tr><td>/script (fileless script exec)</td><td>✓</td><td>—</td><td>—</td><td>Pipe to stdin — Rust only, cross-platform (PS/cmd/bash/sh/python)</td></tr>
+  <tr><td>/script-amsibypass (script + AMSI bypass)</td><td>✓</td><td>—</td><td>—</td><td>Pipe to stdin + HW breakpoint on AmsiScanBuffer — Rust only, Windows PS only</td></tr>
+  <tr><th colspan="5" style="text-align:left; background:var(--bg-code); padding:6px 10px;">PS1-Only</th></tr>
+  <tr><td>/blobsave (manual ddb refresh)</td><td>—</td><td>✓</td><td>—</td><td>Rust handles ddb automatically; bash has equivalent logic</td></tr>
+  <tr><td>/persist (bare shorthand)</td><td>—</td><td>✓</td><td>—</td><td>PS1 convenience alias → persist_action dispatch</td></tr>
+</table>
+
+<h4>Why The Gaps Exist</h4>
+
+<p><strong>Bash has no /creds module.</strong> Credential harvesting requires binary protocol manipulation (SMB2/NTLMSSP handshake, ASN.1/DER encoding, SPNEGO wrapping), in-memory cryptographic operations (AES-GCM, DPAPI, RC4/DES for SAM), and concurrent I/O (TCP listeners + UDP poisoners running alongside the beacon loop). Bash has no native support for any of these — implementing SMB2+NTLMSSP in pure bash would require thousands of lines of <code>printf</code>/<code>xxd</code> hex manipulation with no type safety, and would produce a fragile, unmaintainable module with no realistic path to correctness. The Rust native agent runs on Linux with full <code>/creds</code> support including in-memory SAM-equivalent (<code>/etc/shadow</code> parsing), SSH key harvesting, browser credential extraction, and the complete listener/poisoner stack. For Linux targets that need credential harvesting, deploy the Rust agent.</p>
+
+<p><strong>Bash has no /bof, /assembly, /assembly-amsibypass, /memexec, /script, /script-amsibypass.</strong> In-memory execution (COFF loading, CLR hosting, reflective PE/ELF loading) and fileless script execution require capabilities that are fundamentally impossible in a shell interpreter. These capabilities exist only in the compiled Rust agent.</p>
+
+<p><strong>PowerShell /creds has implementation-level differences from Rust.</strong></p>
+<ul>
+  <li><strong>SAM extraction:</strong> Rust reads SAM/SYSTEM hives in-memory via registry API with <code>REG_OPTION_BACKUP_RESTORE</code> — zero processes spawned, zero files on disk, zero command-line telemetry. <code>RtlAdjustPrivilege</code> auto-enables <code>SeBackupPrivilege</code>, so SAM works from elevated Admin (not just SYSTEM). PS1 uses <code>reg.exe save</code> to dump hives to temp files, stages them for offline cracking with <code>secretsdump.py</code>, then deletes the temp files. The PS1 approach leaves brief forensic artifacts (temp hive files, <code>reg.exe</code> in process logs) that the Rust approach avoids entirely.</li>
+  <li><strong>Coercion:</strong> Rust implements both SpoolSample (MS-RPRN) and EfsRpc (MS-EFSR) on Windows, plus SSH-agent hijack and Kerberos ccache enumeration on Linux. PS1 implements SpoolSample only (Windows-only agent).</li>
+  <li><strong>Listeners:</strong> Rust runs SMB/HTTP listeners as dedicated threads — connections are accepted and processed in real-time regardless of beacon sleep interval. PS1 uses a poll-based architecture where pending connections are checked once per beacon cycle. With a 60-second sleep, a client connection arriving at second 1 will not be processed until second 60. For low-sleep deployments (5–15s) this is operationally acceptable; for long-sleep deployments (60s+) the Rust agent is strongly preferred for listener tasks.</li>
+  <li><strong>Harvest cross-platform:</strong> Rust harvest covers both Linux (SSH keys, GPG, cloud creds, NetworkManager WiFi, <code>/etc/shadow</code>, Kerberos ccache, GNOME Keyring, browser profiles) and Windows (DPAPI, Chrome/Edge, Firefox, WiFi, RDP, Vault, cloud creds, FileZilla, mRemoteNG, PowerShell history, Git). PS1 covers Windows only.</li>
+</ul>
+
+<p><strong>PowerShell has no /bof, /assembly, /assembly-amsibypass, /memexec, /script, /script-amsibypass.</strong> While PowerShell can theoretically host CLR assemblies and P/Invoke native code, reliable COFF loading, reflective PE execution, and fileless script piping require low-level control over memory layout that PowerShell's managed runtime does not provide safely. The Rust agent implements these as compiled native code with direct control over memory allocation and protection flags.</p>
+
+<div class="callout callout-info">
+  <div class="callout-title">Operational recommendation</div>
+  For any engagement requiring credential harvesting, in-memory execution, or maximum OPSEC on tradecraft operations: <strong>deploy the Rust native agent</strong>. It is the only beacon with complete feature coverage on both platforms. Use script agents for initial access, compatibility fallback (no Rust toolchain available), or when the target environment restricts binary execution but allows script interpreters.
+</div>
+
+<h3 id="s3-6">3.6 Choosing the Right Agent</h3>
 <table>
   <tr><th>Situation</th><th>Recommended Agent</th><th>Rationale</th></tr>
-  <tr><td>Default Linux deployment</td><td><code>.sh</code> or <code>.elf</code></td><td>Script works everywhere; ELF preferred if bash isn't in PATH</td></tr>
-  <tr><td>Low-footprint Linux</td><td>ELF loader</td><td>Single binary, fileless script execution via memfd</td></tr>
-  <tr><td>Default Windows deployment</td><td><code>.ps1</code> or <code>.exe</code></td><td>PS1 works on default Windows; EXE preferred if PS execution is restricted</td></tr>
+  <tr><td>Default Linux deployment</td><td><code>.elf</code> (Rust native)</td><td>Full feature parity including /creds, /bof, /memexec. Musl-static, zero dependencies</td></tr>
+  <tr><td>Minimal Linux (no Rust toolchain)</td><td><code>.sh</code> or ELF loader</td><td>Script works everywhere; no /creds but core C2 + persistence is complete</td></tr>
+  <tr><td>Default Windows deployment</td><td><code>.exe</code> (Rust native)</td><td>Full feature parity including in-memory SAM, /creds, /bof. No interpreter in process tree</td></tr>
+  <tr><td>Windows (no Rust toolchain)</td><td><code>.ps1</code></td><td>Core C2 + persistence + /creds (harvest, sam, coerce, listen). Requires PS7+ (.NET 6+)</td></tr>
   <tr><td>EDR-heavy Windows environment</td><td><code>.exe</code> (MSVC-ABI)</td><td>No PowerShell in process tree; MSVC import table; binary-level entropy balanced</td></tr>
-  <tr><td>Injection / reflective load</td><td><code>.bin</code> shellcode</td><td>Flat PE-free blob, inject into any host process</td></tr>
+  <tr><td>Credential harvesting / listeners</td><td>Rust native (any format)</td><td>Multi-threaded listeners, in-memory SAM, cross-platform harvest. PS1 is poll-based with higher OPSEC cost on SAM</td></tr>
+  <tr><td>In-memory execution (BOF/assembly)</td><td>Rust native only</td><td>COFF loading, CLR hosting, reflective PE/ELF — not available in script agents</td></tr>
+  <tr><td>Injection / reflective load</td><td><code>.bin</code> shellcode</td><td>Flat PE-free blob, inject into any host process. Carries the full Rust agent</td></tr>
   <tr><td>DLL sideloading</td><td><code>.dll</code></td><td>Drops into legitimate DLL search paths; rundll32/regsvr32 invocation</td></tr>
 </table>
 
@@ -3127,8 +3212,20 @@ oidc:
   </div>
 </div>
 
+<p>The channel section includes two randomization toggles and a session label field:</p>
 <ul>
-  <li><strong>Cloud Folder Path</strong> — private folder in your cloud account. Use a path that looks innocuous (<code>/documents/updates</code>, <code>/backup/system</code>). Must be empty and writable.</li>
+  <li><strong>Randomize filenames</strong> (toggle, default: on) — generates random hex names for <code>input_file</code>, <code>output_file</code>, and <code>heartbeat_file</code>. When off, the fields appear for manual entry.</li>
+  <li><strong>Folder Path</strong> — three modes via radio selector:
+    <ul>
+      <li><strong>Random hex</strong> (default) — generates an 8-char hex path like <code>/a8f3c1b2</code>. No fingerprint, no static pattern.</li>
+      <li><strong>Random realistic</strong> — generates a plausible folder name like <code>/Reports_Q3</code> or <code>/Backups42</code> from a prefix+suffix dictionary. Blends with real cloud content.</li>
+      <li><strong>Manual</strong> — reveals a text input for a custom folder path.</li>
+    </ul>
+  </li>
+  <li><strong>Session Label</strong> (text input + 💡 Suggest button) — operator-assigned name for the session (e.g. <code>webserver-01</code>, <code>dc-corp</code>). Shown in the session list and header. If left empty, the folder path is used as the display name. The Suggest button opens a modal with context-aware label suggestions grouped by category (EDR, cloud, infrastructure, etc.).</li>
+</ul>
+<p>Step 2 (Configuration) sets the beacon timing and guardrails:</p>
+<ul>
   <li><strong>Sleep Interval + Jitter</strong> — beacon timing. 60s interval with 20% jitter produces 48–72s actual intervals, breaking fixed-interval network signatures.</li>
   <li><strong>Maintenance Window</strong> — optional time range during which the agent will not beacon. Restricts activity to off-hours to reduce detection exposure.</li>
 </ul>
@@ -3221,10 +3318,30 @@ stub.exe        <span class="cmt"># run directly or inject via preferred loader<
   <div class="callout-title">Configurable thresholds</div>
   The LIVE/IDLE/DEAD boundaries scale with the agent's configured sleep interval and are tunable per-server via <code>hb_warn_multiplier</code> and <code>hb_dead_multiplier</code> in <code>server.yml</code>. A session with a 5-minute sleep uses different absolute thresholds than one with 60 s — so a long-haul session at 300 s sleep is never incorrectly marked DEAD after a single missed beacon.
 </div>
+<p><strong>Table columns</strong> (drag to reorder; order persisted in localStorage):</p>
+<table>
+  <thead><tr><th>Column</th><th>Content</th></tr></thead>
+  <tbody>
+    <tr><td>Status</td><td>Live status pill (LIVE / IDLE / DEAD / CLOUD / STOP) + lock icon if session is locked</td></tr>
+    <tr><td>Provider</td><td>Cloud storage provider icon and name</td></tr>
+    <tr><td>Label</td><td>Session label if set by the operator; falls back to the cloud folder path if no label was assigned</td></tr>
+    <tr><td>ID</td><td>First 6 hex chars of the session UUID</td></tr>
+    <tr><td>User</td><td>Target username (with <code>*</code> star if admin/root/SYSTEM)</td></tr>
+    <tr><td>Host</td><td>Target hostname</td></tr>
+    <tr><td>Domain</td><td>Target domain</td></tr>
+    <tr><td>OS</td><td>Operating system badge (Win / Linux)</td></tr>
+    <tr><td>Int IP</td><td>Internal IP address</td></tr>
+    <tr><td>Ext IP</td><td>External IP address</td></tr>
+    <tr><td>PID</td><td>Agent process ID</td></tr>
+    <tr><td>Process</td><td>Agent process name</td></tr>
+    <tr><td>Last HB</td><td>Time since last heartbeat (live countdown)</td></tr>
+    <tr><td>Next Checkin</td><td>Estimated time until next beacon (based on sleep interval)</td></tr>
+  </tbody>
+</table>
 <p>Click any row to select the session and populate the detail area below the resize handle.</p>
 
 <h3 id="s12-3">5.3 Session REPL</h3>
-<p>Clicking a row in the sessions table selects that session and populates the detail area below the resize handle. The detail area opens with the <strong>session header</strong> — the cloud folder path, a live status pill, and a <strong>■ Stop Poll</strong> button — followed by a metadata row (session ID, provider, last heartbeat, sleep, jitter, OS) and a tab bar. The <strong>Shell</strong> tab (default) is a terminal-style interface: type any shell command to send it encrypted to the agent, or use slash-prefixed control commands for built-in operations. There is no separate sidebar — all session metadata appears in the header rows above the tab bar.</p>
+<p>Clicking a row in the sessions table selects that session and populates the detail area below the resize handle. The detail area opens with the <strong>session header</strong> — the session label (or folder path if no label is set), a live status pill, and a <strong>■ Stop Poll</strong> button — followed by a metadata row (session ID, provider, last heartbeat, sleep, jitter, OS) and a tab bar. The <strong>Shell</strong> tab (default) is a terminal-style interface: type any shell command to send it encrypted to the agent, or use slash-prefixed control commands for built-in operations. There is no separate sidebar — all session metadata appears in the header rows above the tab bar.</p>
 
 <!-- WebGUI mockup: Session REPL — Windows PS> -->
 <div class="mock-wrap">
@@ -3563,8 +3680,9 @@ stub.exe        <span class="cmt"># run directly or inject via preferred loader<
     <tr><td><strong>History</strong></td><td>Full searchable log of every command and response for this session. Includes timestamp, operator who issued each command, CMD ID, and full output. Supports keyword search. One-click <strong>⬇ Export XLSX</strong> generates a multi-sheet Excel report (see §5.7).</td></tr>
     <tr><td><strong>Artifacts</strong></td><td>Three sub-sections: exfiltrated files (pulled from target with <code>/download</code>), on-target artifacts (files written on target — agents, persistence scripts), and uploaded files (pushed with <code>/upload</code>). See §5.8 for the full artifact workflow.</td></tr>
     <tr><td><strong>Persist</strong></td><td>Visual overview of all persistence techniques available for this target's OS. Shows installed / not-installed / unknown status per technique with one-click install, remove, and status-check buttons.</td></tr>
+    <tr><td><strong>Credentials</strong></td><td>Auto-populated credential store. Credentials are extracted automatically from <code>/creds harvest</code>, <code>/creds sam</code>, <code>/creds coerce</code>, and <code>/creds listen dump</code> output — including NTLMv2 (from SMB and <code>http-ntlm</code> listeners), HTTP Basic (from <code>http</code> listeners), SAM hashes, shadow hashes, browser passwords, Git tokens, AWS keys + session tokens, SSH plaintext private keys (with artifact download note), Docker and WiFi credentials. Listen dump output is parsed per-section so each credential is attributed to its correct listener protocol. Column order: Source · Protocol · Host · Domain · Notes · Username · Secret · Type · Actions. The <strong>⊕ Show</strong> button on each row opens a detail popup with the full untruncated secret in a scrollable monospace box and a <strong>Copy Secret</strong> button. Columns are resizable (drag handles, persisted in localStorage). Operators can also add entries manually. All credentials sync in real time across operators via WebSocket. Included in the XLSX export as a dedicated sheet.</td></tr>
     <tr><td><strong>Control</strong></td><td>Session control panel: sleep interval, jitter percentage, command timeout, and <code>/blobsave</code> for manual hw-keyed blob management.</td></tr>
-    <tr><td><strong>Info</strong></td><td>Full session profile: all heartbeat fields (OS, host, user, IPs, PID, process, domain, CWD), deployment configuration (provider, folder, files, mode, key paths), and raw session state.</td></tr>
+    <tr><td><strong>Info</strong></td><td>Full session profile: all heartbeat fields (OS, host, user, IPs, PID, process, domain, CWD), deployment configuration (provider, deploy mode, folder path, channel files, session label), guardrails (kill date, active window), and version info.</td></tr>
   </tbody>
 </table>
 
@@ -3609,7 +3727,7 @@ stub.exe        <span class="cmt"># run directly or inject via preferred loader<
 <p>The file is append-only during the session. If the server restarts and the same session reconnects, a <code>--- resumed ---</code> separator row is appended so different operator runs are distinguishable in the file. Artifact events are interleaved as special rows with <code>ARTIFACT</code> or <code>ARTIFACT_REMOVED</code> as the ID — this keeps the on-target artifact state self-contained in a single file.</p>
 
 <h4>XLSX Export (3-sheet report)</h4>
-<p>The <strong>⬇ Export XLSX</strong> button in the History tab generates an Excel workbook with three sheets:</p>
+<p>The <strong>⬇ Export XLSX</strong> button in the History tab generates an Excel workbook with four sheets:</p>
 <table>
   <thead><tr><th>Sheet</th><th>Columns</th><th>Contents</th></tr></thead>
   <tbody>
@@ -3628,11 +3746,16 @@ stub.exe        <span class="cmt"># run directly or inject via preferred loader<
       <td>Timestamp · Filename · Remote Path · Size (bytes) · CMD ID · Status</td>
       <td>Files pushed to the target via <code>/upload</code>. Status is <em>on target</em> or <em>removed</em> (updated when operator marks deletion). Paired with the Artifacts sheet for a complete on-target footprint picture.</td>
     </tr>
+    <tr>
+      <td><strong>Credentials</strong></td>
+      <td>Timestamp · Source · Protocol · Host · Domain · Notes · Username · Secret · Type · Port · Operator</td>
+      <td>All credentials collected during the session — auto-extracted from <code>/creds</code> command output and manually added entries. Types include NTLMv2, NTLM, password, hash, token, basic, ssh_key, cookie, and others. Source indicates how the credential was obtained (harvest, sam, listen, coerce, manual). Listener credentials are attributed to their correct protocol (smb, http, http-ntlm) based on per-section dump parsing.</td>
+    </tr>
   </tbody>
 </table>
 <div class="callout callout-info">
   <div class="callout-title">Same format in History Archives</div>
-  The XLSX available for download in <strong>History Archives</strong> uses the same three-sheet format, generated server-side from the CSV log and the uploads record. The data is always current at the moment of download — no stale snapshots.
+  The XLSX available for download in <strong>History Archives</strong> uses the same four-sheet format, generated server-side from the CSV log, uploads record, and credentials store. The data is always current at the moment of download — no stale snapshots.
 </div>
 
 <h4>History Archives</h4>
@@ -3945,10 +4068,16 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
 <h3 id="s13-6">6.6 Credential Harvesting</h3>
 <p>The <code>/creds</code> family collects credential material from the target for offline cracking or lateral movement. It is designed for the Stratum use-case: grab what you need to re-establish access, then exfiltrate through the cloud channel.</p>
 
-<div class="cmd-row"><span class="cmd-name">/creds harvest</span><span class="cmd-desc">Passive file-based credential collection. Gathers browser credential databases (Chrome, Edge, Firefox), DPAPI blobs &amp; master keys, SSH keys, Kerberos ccache, cloud credentials (AWS, Azure, GCP, Docker, Kube), WiFi profiles, PuTTY sessions, Windows Vault, GNOME keyring, NetworkManager profiles, and shell history secrets. All files staged to the cloud channel automatically.</span></div>
+<div class="callout callout-warn">
+  <div class="callout-title">Agent support: Rust native + PowerShell only</div>
+  The <code>/creds</code> module requires binary protocol capabilities (SMB2/NTLMSSP, ASN.1/DER, AES-GCM) that the bash agent cannot provide. Deploy the <strong>Rust native agent</strong> for full cross-platform credential harvesting (Linux + Windows), or the <strong>PowerShell agent</strong> for Windows-only coverage. The bash agent will return <code>ERROR: unknown task type</code> for any <code>/creds</code> command. See §3.5 for the complete feature parity matrix and implementation-level differences between Rust and PS1.
+</div>
+
+<div class="cmd-row"><span class="cmd-name">/creds harvest</span><span class="cmd-desc">Smart credential harvesting with inline decryption where OPSEC-safe. Firefox passwords are decrypted in-memory (no DPAPI calls, zero monitored APIs) — if a Firefox master password is set, <code>logins.json</code> + <code>key4.db</code> are staged for offline cracking with <code>firefox_decrypt</code> + hashcat. Cloud credentials (AWS, Azure, GCloud, Docker, Kube) are parsed and displayed inline. SSH keys are classified as encrypted/plaintext. <strong>Windows:</strong> FileZilla credentials (sitemanager.xml/recentservers.xml), mRemoteNG connections (confCons.xml, staged for offline decrypt with default key <code>mR3m</code>), PowerShell history secrets grep (ConsoleHost_history.txt), unattend/sysprep XML files (staged if containing passwords), Git credentials. <strong>Linux:</strong> <code>/etc/shadow</code> hashes (root), NetworkManager WiFi keys, Kerberos ccache metadata, GNOME Keyring, SSSD cache, bash/zsh history secrets grep. Files that cannot be decrypted on-target (DPAPI blobs, master keys, Chrome v20, Vault) are staged with human-readable names — decrypt offline with <code>mimikatz dpapi::</code> or <code>DPAPImk2john</code> using the user's password or domain backup key. After the Summary line, contextual <strong>Hints</strong> are printed based on what was found — offline cracking workflows for Firefox master password (hashcat <code>-m 26100</code>), DPAPI blobs (mimikatz/DPAPImk2john), Chrome/Edge (DPAPI key extraction), mRemoteNG (default key <code>mR3m</code>, AES-GCM PBKDF2-SHA1), unattend.xml (base64-encoded passwords), and a reminder to try <code>/creds harvest decrypt</code> when running without the decrypt flag.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds harvest decrypt</span><span class="cmd-desc"><strong>OPSEC↑</strong> — Also attempts Chrome/Edge password decryption via <code>CryptUnprotectData</code> (DPAPI) and DPAPI credential blob decryption. Works for Chrome v10 passwords (pre-ABE) and same-session DPAPI blobs. Higher detection risk: EDR solutions may hook <code>CryptUnprotectData</code> and generate Event ID 16385 (DPAPI Activity). Use in low-monitoring windows.</span></div>
 <div class="cmd-row"><span class="cmd-name">/creds coerce</span><span class="cmd-desc">Active credential capture via forced authentication. <strong>Windows:</strong> triggers local named-pipe coercion (SpoolSample / EfsRpc) to capture the machine account NTLMv2 hash. <strong>Linux:</strong> enumerates accessible SSH agent sockets and lists loaded keys (usable for agent hijacking).</span></div>
-<div class="cmd-row"><span class="cmd-name">/creds sam</span><span class="cmd-desc">Dump SAM, SYSTEM, and SECURITY registry hives (Windows only, requires SYSTEM or elevated Admin). Uses <code>reg save</code> with Volume Shadow Copy fallback. Hives staged to cloud for offline cracking with <code>secretsdump.py</code>.</span></div>
-<div class="cmd-row"><span class="cmd-name">/creds listen start [proto:port]</span><span class="cmd-desc">Start a credential listener. Supports <code>smb:445</code> (NTLMv2 via SMB), <code>http:80</code> (NTLMv2 + Basic auth via HTTP 401). Multiple listeners can run simultaneously on different proto:port combinations. LLMNR/NBNS poisoners auto-start with the first listener and stop with the last. Default: <code>smb:445</code>.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds sam</span><span class="cmd-desc">In-memory SAM hash extraction (Windows only, requires SYSTEM). Reads bootkey from SYSTEM registry class names and decrypts SAM user hashes entirely in memory via <code>RegOpenKeyExW</code> + <code>RegQueryMultipleValuesW</code> with <code>REG_OPTION_BACKUP_RESTORE</code>. Zero child processes, zero files on disk, zero flagged command lines. Output in <code>user:RID:lm_hash:nt_hash:::</code> format.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds listen start [proto:port]</span><span class="cmd-desc">Start a credential listener. Supports <code>smb:445</code> (NTLMv2 via SMB), <code>http:80</code> (plaintext credentials via HTTP Basic auth), <code>http-ntlm:80</code> (NTLMv2 via HTTP NTLM negotiation). Multiple listeners can run simultaneously on different proto:port combinations. LLMNR/NBNS poisoners auto-start with the first listener and stop with the last. Default: <code>smb:445</code>.</span></div>
 <div class="cmd-row"><span class="cmd-name">/creds listen stop [proto:port]</span><span class="cmd-desc">Stop listeners. Without arguments: stops all listeners + poisoners. With a spec (e.g. <code>http:80</code>): stops only that specific listener. Poisoners stop automatically when the last listener is removed.</span></div>
 <div class="cmd-row"><span class="cmd-name">/creds listen dump</span><span class="cmd-desc">Retrieve all captured credentials from all active listeners. Shows per-listener breakdown (NTLMv2 count + Basic auth count), uptime, and raw credential lines. NTLMv2 output is in hashcat <code>-m 5600</code> format. Also reports LLMNR/NBNS poisoner response counts.</span></div>
 
@@ -3956,14 +4085,16 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
 <table>
   <tr><th>Protocol</th><th>Syntax</th><th>Captures</th><th>Use Case</th></tr>
   <tr><td>SMB</td><td><code>/creds listen start smb:445</code></td><td>NTLMv2 hashes</td><td>Coerced auth, file share access, pass-the-hash relay</td></tr>
-  <tr><td>HTTP NTLM</td><td><code>/creds listen start http:80</code></td><td>NTLMv2 + Basic (user:pass)</td><td>Browser auto-auth (Intranet zone), phishing links, WPAD</td></tr>
+  <tr><td>HTTP Basic</td><td><code>/creds listen start http:80</code></td><td>Plaintext user:pass</td><td>Credential phishing, API key capture, curl/wget/script auth</td></tr>
+  <tr><td>HTTP NTLM</td><td><code>/creds listen start http-ntlm:80</code></td><td>NTLMv2 hashes</td><td>Browser auto-auth (Intranet zone), phishing links, WPAD</td></tr>
 </table>
-<p>The HTTP listener sends a <code>401 Unauthorized</code> with both <code>WWW-Authenticate: NTLM</code> and <code>WWW-Authenticate: Basic realm="Secured Area"</code>. Windows browsers in the Intranet zone auto-send NTLMv2; users on other networks see a credential prompt and Basic auth is captured.</p>
+<p>The <code>http</code> listener sends a <code>401 Unauthorized</code> with only <code>WWW-Authenticate: Basic</code>, forcing the browser to show a login prompt and send credentials as Base64-encoded <code>user:pass</code> — plaintext capture. The <code>http-ntlm</code> listener advertises both <code>WWW-Authenticate: NTLM</code> and <code>Basic</code>; browsers that support NTLM (Chrome, Edge, Firefox on Windows in Intranet zone) will negotiate NTLMv2 — the captured credential is always an NTLMv2 hash, never plaintext.</p>
 
 <h4>Credential Harvesting — Platform Matrix</h4>
 <table>
   <tr><th>Source</th><th>Windows</th><th>Linux</th><th>Privilege</th></tr>
-  <tr><td>Browser DBs (Chrome, Edge, Firefox)</td><td>✓</td><td>✓ (Firefox)</td><td>User</td></tr>
+  <tr><td>Firefox passwords (decrypted inline)</td><td>✓</td><td>✓</td><td>User</td></tr>
+  <tr><td>Chrome/Edge passwords (decrypt)</td><td>✓</td><td>—</td><td>User</td></tr>
   <tr><td>DPAPI blobs &amp; master keys</td><td>✓</td><td>—</td><td>User</td></tr>
   <tr><td>SSH keys &amp; config</td><td>—</td><td>✓</td><td>User</td></tr>
   <tr><td>Kerberos ccache</td><td>—</td><td>✓</td><td>User</td></tr>
@@ -3971,27 +4102,55 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
   <tr><td>WiFi profiles (cleartext keys)</td><td>✓</td><td>✓ (root)</td><td>User / Root</td></tr>
   <tr><td>Windows Vault</td><td>✓</td><td>—</td><td>User</td></tr>
   <tr><td>GNOME Keyring</td><td>—</td><td>✓</td><td>User</td></tr>
-  <tr><td>SAM/SYSTEM/SECURITY hives</td><td>✓</td><td>—</td><td>SYSTEM</td></tr>
-  <tr><td>SMB/HTTP listener (NTLMv2 + Basic)</td><td>✓</td><td>✓</td><td>Root (port &lt;1024) / User (high port)</td></tr>
+  <tr><td>SAM hashes (in-memory)</td><td>✓</td><td>—</td><td>SYSTEM</td></tr>
+  <tr><td>SMB/HTTP listener (NTLMv2)</td><td>✓</td><td>✓</td><td>Root (port &lt;1024) / User (high port)</td></tr>
+  <tr><td>HTTP Basic listener (plaintext)</td><td>✓</td><td>✓</td><td>Root (port &lt;1024) / User (high port)</td></tr>
   <tr><td>SSH agent hijack</td><td>—</td><td>✓</td><td>User (same UID) / Root</td></tr>
 </table>
 
 <div class="callout callout-info">
   <div class="callout-title">Listener badge &amp; persistence</div>
-  When one or more listeners are active, an orange pulsing badge appears in the session header showing the listener count (or protocol if single). Click to expand and see per-listener details: protocol, port, start time, and captured credentials. This state is <strong>persistent across server reboots</strong> — the badge reappears automatically when the session is loaded. It updates in real-time as new credentials are captured via <code>/creds listen dump</code>.
+  When one or more listeners are active, an orange pulsing badge appears in the session header showing the listener count (or protocol if single). Click to expand and see: active protocols, start time, and credential count. This state is <strong>persistent across server reboots</strong> — the badge reappears automatically when the session is loaded. It updates in real-time as new credentials are captured via <code>/creds listen dump</code>. Captured credentials are auto-populated in the <strong>Credentials</strong> tab with the correct listener protocol attribution. Click the <strong>⊕ Show</strong> button on any credential row to open a detail popup with the full secret visible and a Copy button.
 </div>
 
 <div class="callout callout-warning">
   <div class="callout-title">OPSEC considerations</div>
   <ul>
-    <li><code>/creds harvest</code> reads many files rapidly — may trigger EDR file-access telemetry. Run during low-monitoring windows.</li>
-    <li><code>/creds sam</code> executes <code>reg save</code> or creates a VSS snapshot — both generate Windows event logs.</li>
-    <li><code>/creds listen start smb:445</code> on Windows will fail — port 445 is occupied by LanmanServer. Use <code>http:80</code> or a high port like <code>smb:8445</code>.</li>
+    <li><code>/creds harvest</code> reads files and decrypts Firefox passwords using pure crypto (no Windows API hooks). Cloud creds, SSH keys, shadow hashes are passive file reads. Low detection risk.</li>
+    <li><code>/creds harvest decrypt</code> calls <code>CryptUnprotectData</code> (DPAPI) — generates Event ID 16385 and may trigger EDR hooks on the DPAPI API. Use only when the risk is acceptable.</li>
+    <li><code>/creds sam</code> reads registry keys via API with <code>REG_OPTION_BACKUP_RESTORE</code> — no <code>reg.exe</code> process, no hive files on disk, no command-line telemetry. Generates minimal registry access events (ID 4656/4663) which are typically not forwarded unless audit-object-access is explicitly enabled.</li>
+    <li><code>/creds listen start smb:445</code> on Windows will fail — port 445 is occupied by LanmanServer. Use <code>http:80</code> (Basic), <code>http-ntlm:80</code> (NTLM), or a high port like <code>smb:8445</code>.</li>
     <li>LLMNR/NBNS poisoners respond to multicast name queries — detectable by network monitoring tools (e.g. Respounder, MDI). Use in isolated segments.</li>
     <li>Multiple listeners increase the attack surface but also the detection surface — each open port is visible in <code>netstat</code>.</li>
-    <li>All harvested files are exfiltrated via the normal Stratum cloud channel — large dumps (SAM hives, browser DBs) may take multiple poll cycles.</li>
+    <li><code>/creds harvest</code> files are exfiltrated via the normal Stratum cloud channel — large dumps (browser DBs) may take multiple poll cycles.</li>
   </ul>
 </div>
+<h3 id="s13-7">6.7 In-Memory &amp; Fileless Execution</h3>
+<p>These commands load and run binaries or scripts without writing anything to disk on the target. Binaries are executed in the agent's process memory; scripts are piped to the interpreter's stdin. All commands are <strong>Rust native agent only</strong>. Platform support varies per command — see the callout below.</p>
+
+<div class="callout callout-warn">
+  <div class="callout-title">Agent support: Rust native only</div>
+  In-memory and fileless execution requires low-level memory management (VirtualAlloc, COM vtable calls, section mapping, relocation patching, stdin pipe control) that is fundamentally impossible in script interpreters. Deploy the <strong>Rust native agent</strong> for BOF, .NET assembly, PE/ELF in-memory execution, and fileless script execution. Platform support: <code>/bof</code>, <code>/assembly</code>, <code>/assembly-amsibypass</code> are Windows only. <code>/memexec</code>, <code>/script</code> are cross-platform (Win+Linux). <code>/script-amsibypass</code> is Windows PowerShell only.
+</div>
+
+<div class="cmd-row"><span class="cmd-name">/bof &lt;file.o&gt; [args]</span><span class="cmd-desc">Execute a Beacon Object File (COFF) in-memory. The agent parses COFF headers, resolves relocations and imports, maps sections with correct permissions, and calls the entry point. Output is captured via internal output buffer. Windows only.</span></div>
+<div class="cmd-row"><span class="cmd-name">/assembly &lt;file.exe&gt; [args]</span><span class="cmd-desc">Execute a .NET assembly in-memory via CLR hosting. The agent initializes the .NET CLR (v4.0.30319), creates an AppDomain, loads the assembly bytes via <code>_AppDomain::Load_3</code>, and invokes the entry point via <code>_MethodInfo::Invoke_3</code>. Console output is captured via pipe redirection with a dedicated reader thread (prevents deadlocks on large output). An embedded ConsoleReset helper rebinds <code>Console.Out</code> after pipe redirect. Supports passing command-line arguments as <code>string[] args</code>. Windows only.</span></div>
+<div class="cmd-row"><span class="cmd-name">/assembly-amsibypass &lt;file.exe&gt; [args]</span><span class="cmd-desc">Same as <code>/assembly</code> but with a patchless AMSI bypass applied before loading the assembly. The agent sets a CPU hardware breakpoint (DR0) on <code>AmsiScanBuffer</code> and installs a Vectored Exception Handler. When AMSI calls <code>AmsiScanBuffer</code>, the CPU raises a debug exception; the VEH intercepts, sets the return value to <code>AMSI_RESULT_CLEAN</code>, and skips the function body. Zero <code>VirtualProtect</code>, zero memory writes on <code>amsi.dll</code> — evades <code>Behavior:Win32/AMSI_Patch_T</code> behavioral detections. The breakpoint is removed after execution. Use this when Defender blocks assemblies like Rubeus, Seatbelt, or SharpUp. <strong>OPSEC note:</strong> patchless — no memory modifications to <code>amsi.dll</code>. Breakpoint is per-execution, not persistent.</span></div>
+<div class="cmd-row"><span class="cmd-name">/memexec &lt;file&gt; [args]</span><span class="cmd-desc">Execute a native binary entirely in-memory — nothing written to disk. <strong>Windows:</strong> reflective PE loading — maps sections, applies relocations, resolves imports, calls entry point. <strong>Linux:</strong> <code>memfd_create</code> + <code>execve</code> — creates an anonymous file descriptor in memory, writes ELF bytes, executes via <code>/proc/self/fd/N</code>. Cross-platform (Win+Linux), Rust native agent only.</span></div>
+<div class="cmd-row"><span class="cmd-name">/script &lt;file&gt; [interpreter]</span><span class="cmd-desc">Execute a script entirely fileless. The script is staged in the cloud provider, downloaded to agent memory, and piped to the interpreter's stdin — nothing is written to disk. Interpreter auto-detection: <code>.ps1</code> or hint <code>ps1</code> → PowerShell; <code>.bat</code>/<code>.cmd</code> or hint <code>cmd</code> → CMD; shebang <code>#!/bin/bash</code> → bash; shebang <code>#!/usr/bin/python</code> or hint <code>python</code> → python3; default → PowerShell on Windows, <code>/bin/sh</code> on Linux. The optional second argument overrides auto-detection: <code>ps1</code>, <code>cmd</code>, <code>bash</code>, <code>python</code>, <code>sh</code>. Windows processes run with <code>CREATE_NO_WINDOW</code>. Cross-platform.</span></div>
+<div class="cmd-row"><span class="cmd-name">/script-amsibypass &lt;file&gt; [interpreter]</span><span class="cmd-desc">Same as <code>/script</code> but with patchless AMSI bypass: sets a CPU hardware breakpoint (DR0) on <code>AmsiScanBuffer</code> + Vectored Exception Handler before spawning PowerShell. The VEH intercepts AMSI scan calls and returns <code>AMSI_RESULT_CLEAN</code> without modifying any memory in <code>amsi.dll</code>. Evades <code>Behavior:Win32/AMSI_Patch_T</code> detections. Breakpoint removed after execution. Windows PowerShell only — on Linux the AMSI flag is ignored and the script runs normally.</span></div>
+
+<h4>In-Memory &amp; Fileless Execution — OPSEC Matrix</h4>
+<table>
+  <tr><th>Command</th><th>Platform</th><th>Disk Artifacts</th><th>Process Creation</th><th>API Hooks Risk</th><th>Notes</th></tr>
+  <tr><td><code>/bof</code></td><td>Win</td><td>None</td><td>None</td><td>Low</td><td>COFF runs in agent process space</td></tr>
+  <tr><td><code>/assembly</code></td><td>Win</td><td>None</td><td>None</td><td>Medium</td><td>CLR hosting + AMSI scan by default. Defender may block known tools</td></tr>
+  <tr><td><code>/assembly-amsibypass</code></td><td>Win</td><td>None</td><td>None</td><td>Low-Medium</td><td>HW breakpoint (DR0) + VEH — patchless, no VirtualProtect on amsi.dll. SetThreadContext theoretically observable via ETW-TI but not flagged by current AV/EDR</td></tr>
+  <tr><td><code>/memexec</code></td><td>Win+Linux</td><td>None</td><td>None (Win) / Child (Linux)</td><td>Low</td><td>Win: reflective PE in-process. Linux: memfd_create + execve</td></tr>
+  <tr><td><code>/script</code></td><td>Win+Linux</td><td>None</td><td>Interpreter process</td><td>Medium</td><td>Stdin pipe — clean cmd line. Win: AMSI + Script Block Logging inspect content</td></tr>
+  <tr><td><code>/script-amsibypass</code></td><td>Win (PS)</td><td>None</td><td>powershell.exe</td><td>Low-Medium</td><td>HW breakpoint (DR0) + VEH — patchless, no VirtualProtect on amsi.dll. SBL 4104 still captures script content if Script Block Logging enabled</td></tr>
+</table>
+
 </section>
 
 <!-- ════════════════════════ §14 ADVANCED ════ -->
@@ -4115,6 +4274,95 @@ POST /api/v1/credentials/dropbox
 <span class="cmt"># Delete a profile</span>
 DELETE /api/v1/credentials/dropbox/{profile_id}</code></pre>
 <p>Credential profiles are stored in <code>credentials/{provider}.json</code>, managed by the Deploy Wizard and WebGUI. Back up this file separately — it is not part of the server's exported data.</p>
+
+<h3 id="s14-7">7.7 Auto-Update System</h3>
+
+<p>Stratum checks GitHub for new releases <strong>once at server startup</strong>. If a newer version is available, operators see an amber banner in the topbar after login. Clicking the banner opens a modal with release notes and an "Update Now" button.</p>
+
+<h4>Configuration</h4>
+<pre><code><span class="cmt"># server.yml</span>
+auto_update:
+  enabled: true
+  repo: "OWNER/stratum-c2"  <span class="cmt"># GitHub owner/repo</span></code></pre>
+
+<p>Set <code>enabled: false</code> or leave <code>repo</code> empty to disable the check entirely.</p>
+
+<h4>Update Process</h4>
+<ol>
+  <li><strong>Preflight</strong> — verifies git is installed, the project is a git repository, and checks working tree status</li>
+  <li><strong>Fetch &amp; merge</strong> — runs <code>git fetch origin main</code> + <code>git merge origin/main --no-edit</code></li>
+  <li><strong>Dependencies</strong> — if <code>requirements.txt</code> changed, runs <code>pip install -r requirements.txt</code></li>
+  <li><strong>Notification</strong> — broadcasts result to all connected operators via WebSocket</li>
+</ol>
+
+<h4>Data Safety</h4>
+<p>All operational data is in <code>.gitignore</code> and <strong>never touched by git merge</strong>:</p>
+<ul>
+  <li><code>sessions/</code> — session profiles and state</li>
+  <li><code>keys/</code> — RSA keypairs</li>
+  <li><code>logs/</code> — command history and chat logs</li>
+  <li><code>credentials/</code> — provider credential profiles</li>
+  <li><code>server.yml</code> — server configuration</li>
+  <li><code>certs/</code> — TLS certificates</li>
+</ul>
+<p>On merge conflict, the update aborts cleanly via <code>git merge --abort</code> — no damage. Restart is always the operator's choice.</p>
+
+<h4>REST Endpoints</h4>
+<pre><code>GET  /api/v1/update/status     <span class="cmt"># current update state</span>
+GET  /api/v1/update/preflight  <span class="cmt"># pre-flight checks</span>
+POST /api/v1/update/apply      <span class="cmt"># apply update</span>
+POST /api/v1/update/check      <span class="cmt"># force re-check</span></code></pre>
+
+<h3 id="s14-8">7.8 Agent Version Mismatch</h3>
+
+<p>Each agent records the Stratum version it was deployed with (<code>SessionProfile.stratum_version</code>). When viewing a session deployed with an older version, the WebUI shows:</p>
+<ul>
+  <li>An <strong>amber badge</strong> ("⚠ Agent outdated") in the session header</li>
+  <li>A <strong>warning cell</strong> ("Deployed With: ⚠ vX.Y.Z") in the Info tab under Guardrails</li>
+</ul>
+<p>Old sessions without the field (pre-v1.2) default to an empty string — no warning is shown. The warning is informational only; it does not block any operations.</p>
+
+<h3 id="s14-9">7.9 Context Menus</h3>
+
+<p>Right-clicking on specific areas of the WebGUI opens a context menu with quick actions (similar to Cobalt Strike's beacon context menu). The browser's default menu is preserved for areas without custom menus.</p>
+
+<h4>Zones</h4>
+<table>
+  <thead><tr><th>Zone</th><th>Actions</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Session table row</strong></td><td>Interact, Lock/Unlock Session, /sysinfo, /status, /sleep, /jitter, /persist probe, /creds harvest, Copy (ID, IP, Host), /kill, /stop, Delete</td></tr>
+    <tr><td><strong>Shell output</strong></td><td>Copy Selection, Copy All Output, Clear Shell, Select All</td></tr>
+    <tr><td><strong>Session header</strong></td><td>Copy Session ID, Copy Folder Path, Copy Internal/External IP</td></tr>
+    <tr><td><strong>Topbar</strong></td><td>About, Check for Updates</td></tr>
+  </tbody>
+</table>
+
+<h3 id="s14-10">7.10 Session Lock</h3>
+
+<p>Sessions can be locked to prevent accidental destructive operations during an engagement. A locked session cannot be killed, stopped, deleted, or wiped — by any operator.</p>
+
+<h4>How to use</h4>
+<ul>
+  <li>Right-click a session row → <strong>Lock Session</strong> (or <strong>Unlock Session</strong> to release)</li>
+  <li>A 🔒 badge appears next to the status pill in the session list</li>
+  <li>A blue <strong>🔒 Locked</strong> badge appears in the session detail header</li>
+  <li>The Info tab shows a "Lock" row when the session is locked</li>
+</ul>
+
+<h4>What is blocked</h4>
+<table>
+  <thead><tr><th>Action</th><th>Blocked when locked</th></tr></thead>
+  <tbody>
+    <tr><td><code>/kill</code></td><td>Yes — server returns HTTP 423</td></tr>
+    <tr><td><code>/stop</code> (EXIT)</td><td>Yes — server returns HTTP 423</td></tr>
+    <tr><td>Delete Session</td><td>Yes — server returns HTTP 423</td></tr>
+    <tr><td>Wipe Session</td><td>Yes — server returns HTTP 423</td></tr>
+    <tr><td><code>/sysinfo</code>, <code>/creds</code>, shell commands</td><td>No — normal operations continue</td></tr>
+  </tbody>
+</table>
+
+<h4>Persistence</h4>
+<p>Lock state is stored in the session profile JSON (<code>sessions/{id}.json</code>) and survives server reboots. All operators see lock/unlock events in real-time via WebSocket broadcast.</p>
 
 </section>
 <!-- end §10–14 -->

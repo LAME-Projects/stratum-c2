@@ -42,3 +42,12 @@ pub fn key_rt(i: usize) -> u8 {
         ^ (i as u8).wrapping_mul(0x6D).wrapping_add((i as u8).wrapping_mul(i as u8));
     (v << 3) | (v >> 5)
 }
+
+#[macro_export]
+macro_rules! sb {
+    ($lit:literal) => {{
+        let mut _s = $crate::s!($lit);
+        _s.push('\0');
+        _s.into_bytes()
+    }};
+}

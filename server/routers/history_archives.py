@@ -131,6 +131,35 @@ def _build_xlsx(log_dir: Path, csv_path: Path) -> io.BytesIO:
         ul_rows,
     )
 
+    # Credentials
+    cred_rows: list[list] = []
+    if session_id:
+        cred_path = log_dir / f"credentials_{session_id}.json"
+        if cred_path.exists():
+            try:
+                cred_records = json.loads(cred_path.read_text())
+                for c in cred_records:
+                    cred_rows.append([
+                        c.get("timestamp", ""),
+                        c.get("source", ""),
+                        c.get("username", ""),
+                        c.get("secret", ""),
+                        c.get("secret_type", ""),
+                        c.get("domain", ""),
+                        c.get("protocol", ""),
+                        c.get("host", ""),
+                        c.get("port", ""),
+                        c.get("notes", ""),
+                        c.get("operator", ""),
+                    ])
+            except Exception:
+                pass
+    _add_sheet(
+        "Credentials",
+        ["Timestamp", "Source", "Username", "Secret", "Type", "Domain", "Protocol", "Host", "Port", "Notes", "Operator"],
+        cred_rows,
+    )
+
     # Remove default empty sheet
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]

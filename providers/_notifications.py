@@ -18,9 +18,20 @@ _log = logging.getLogger("stratum.cmd")
 _tl = threading.local()
 
 
+class CancelledError(Exception):
+    """Raised when the operator cancels a running deploy."""
+
+
 def _set_cancel_event(ev: "Optional[threading.Event]") -> None:
     """Register a cancel event for the current wizard thread."""
     _tl.cancel_event = ev
+
+
+def _check_cancelled() -> None:
+    """Raise CancelledError if the cancel event is set."""
+    cancel: "Optional[threading.Event]" = getattr(_tl, "cancel_event", None)
+    if cancel is not None and cancel.is_set():
+        raise CancelledError("Cancelled by operator")
 
 
 def _cancelable_run(cmd: list, **kwargs) -> "subprocess.CompletedProcess":
@@ -68,8 +79,7 @@ def _cancelable_run(cmd: list, **kwargs) -> "subprocess.CompletedProcess":
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 _t_out.join(timeout=2); _t_err.join(timeout=2)
-                raise subprocess.CalledProcessError(-1, cmd,
-                    output=b"", stderr=b"Cancelled by operator")
+                raise CancelledError("Cancelled by operator")
 
     _t_out.join(); _t_err.join()
     stdout_b = _out_buf.getvalue()

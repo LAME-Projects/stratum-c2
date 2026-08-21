@@ -110,3 +110,6 @@ desktop.ini
 *.bak
 *.tmp
 *.log
+
+# ── Local design notes (never push) ───────────────────────────────────────────
+notes/

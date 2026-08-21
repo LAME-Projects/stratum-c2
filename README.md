@@ -4,7 +4,7 @@
 
 <div align="center">
 
-**Cloud Persistence Framework · v1.1**
+**Cloud Persistence Framework · v1.2**
 
 *A fallback foothold that routes through infrastructure defenders can't block.*
 
@@ -202,12 +202,19 @@ Multi-operator, real-time, browser-based. Every operator sees the same sessions 
 /persist probe       — non-destructive feasibility check, all techniques
 /persist install <id>— install a persistence technique
 /persist remove <id> — remove a specific technique
-/creds harvest       — collect credential files (DPAPI, SSH keys, browser DBs, cloud creds)
+/creds harvest       — collect credentials (Firefox/cloud parsed inline, rest staged)
+/creds harvest decrypt  — + decrypt Chrome/Edge/DPAPI via CryptUnprotectData (OPSEC↑)
 /creds coerce        — force local auth to capture NTLMv2 / enumerate SSH agents
-/creds sam           — dump SAM/SYSTEM/SECURITY hives (Windows, requires SYSTEM)
-/creds listen start [proto:port] — start credential listener (smb:445, http:80)
+/creds sam           — in-memory SAM hash extraction (Windows, requires SYSTEM or elevated Admin)
+/creds listen start [proto:port] — start credential listener (smb:445, http:80, http-ntlm:80)
 /creds listen stop [proto:port]  — stop specific or all listeners
-/creds listen dump   — retrieve captured NTLMv2 + Basic creds per listener
+/creds listen dump   — retrieve captured NTLMv2 + Basic creds (auto-populates Credentials tab)
+/bof <file.o> [args] — execute Beacon Object File (COFF) in-memory (Windows, Rust only)
+/assembly <file.exe> [args]         — execute .NET assembly via CLR hosting (Windows, Rust only)
+/assembly-amsibypass <file.exe> [args] — .NET assembly + AMSI bypass (Windows, Rust only)
+/memexec <file> [args]              — execute PE/ELF in-memory (Win: reflective, Linux: memfd — Rust only)
+/script <file> [interpreter]       — execute script fileless via stdin pipe (Win+Linux, Rust only)
+/script-amsibypass <file> [interp] — fileless script + AMSI bypass (Win PS only, Rust only)
 /kill                — remove all persistence + wipe artifacts + terminate agent
 /download <path>     — pull file from target
 /upload <path>       — push file to target
@@ -217,7 +224,7 @@ Multi-operator, real-time, browser-based. Every operator sees the same sessions 
 /exit                — stop agent process (persistence survives)
 ```
 
-Each session has dedicated tabs: **Shell** · **Info** (live sysinfo panel) · **Artifacts** · **Staging** · **Persist** · **History**. Global views: **Sessions** · **Deploy** · **Archives** · **Tradecraft** · **Settings**.
+Each session has dedicated tabs: **Shell** · **History** · **Artifacts** · **Persist** · **Credentials** · **Control** · **Info**. Global views: **Sessions** · **Deploy** · **Archives** · **Tradecraft** · **Settings**.
 
 <div align="center">
   <img src="docs/screenshots/scene19-infotab.png" alt="Info tab — live system profile" width="900" />
@@ -280,16 +287,7 @@ By using this software, you acknowledge that you have read this disclaimer and a
 
 ## Changelog
 
-### v1.1
-
-- **Credential harvesting module** (`/creds`) — harvest DPAPI/SSH/browser/cloud creds, coerce local auth, dump SAM hives
-- **Multi-protocol listener** — simultaneous SMB + HTTP NTLM listeners on arbitrary ports (`/creds listen start http:80`)
-- **NTLMv2 + Basic auth capture** — HTTP listener advertises both; LLMNR/NBNS poisoners auto-start
-- **Multiple concurrent listeners** — start/stop individually (`/creds listen stop http:80`) or all at once
-- **Persistent listener state** — active listeners, start time, and captured credentials survive server reboots
-- **WebUI listener badge** — expandable badge shows per-listener status, protocol, uptime, and credentials in real-time
-- **Shell command suggestions** — autocomplete for all `/creds` subcommands with descriptions
-- **Windows port-conflict warning** — popup warns when starting SMB on port 445 (occupied by LanmanServer)
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ---
 

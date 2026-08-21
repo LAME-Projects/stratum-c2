@@ -278,6 +278,8 @@
     Chat.init(username);
     Tradecraft.init();
 
+    ContextMenu.init();
+
     /* ws — operator list comes from server.hello, no need to pre-seed with [] */
     _initWS();
   }
@@ -311,8 +313,36 @@
 
     WS.on('server.hello', (ev) => {
       const p = ev.payload;
+      if (p.server_version) {
+        window._serverVersion = p.server_version;
+        const vLabel = `v${p.server_version}`;
+        const loginVer = document.getElementById('login-version');
+        if (loginVer) loginVer.textContent = `Stratum C2 ${vLabel}`;
+        const aboutVer = document.getElementById('about-version');
+        if (aboutVer) aboutVer.textContent = `${vLabel} — Cloud Persistence Framework`;
+      }
+      if (p.update && p.update.available) {
+        const dismissed = localStorage.getItem('stratum_dismissed_version');
+        if (dismissed !== p.update.latest) _showUpdateBanner(p.update);
+      }
+      _updateVersionBadge(p.server_version, p.update);
       if (p.sessions)  Sessions.setAll(p.sessions);
       if (p.operators) _updateOperators(p.operators);
+    });
+
+    WS.on('update.complete', (ev) => {
+      const p = ev.payload || {};
+      if (p.ok) {
+        Toast.ok('Update Complete', p.message || 'Restart the server to apply changes.');
+        const banner = document.getElementById('update-banner');
+        if (banner) banner.style.display = 'none';
+        Modal.close('update-modal');
+        _pendingUpdate = null;
+        _updateVersionBadge(p.new_version || window._serverVersion, null);
+        _openChangelog();
+      } else {
+        Toast.error('Update Failed', p.error || 'Unknown error');
+      }
     });
 
     WS.on('session.new', (ev) => {
@@ -358,6 +388,16 @@
       const { host, by } = ev.payload;
       if ((by || '').toLowerCase() !== (API.getUsername() || '').toLowerCase())
         Toast.info('Poll resumed', `${by} resumed polling on ${host || ev.payload.session_id}`);
+    });
+
+    WS.on('session.locked', (ev) => {
+      const { session_id, locked, by } = ev.payload;
+      Sessions.setLocked(session_id, locked);
+      const action = locked ? 'locked' : 'unlocked';
+      if ((by || '').toLowerCase() !== (API.getUsername() || '').toLowerCase())
+        Toast.info(`Session ${action}`, `${by} ${action} session ${session_id.slice(0, 6)}`);
+      else
+        Toast.ok(`Session ${action}`, `${session_id.slice(0, 6)} ${action}`);
     });
 
     WS.on('server.timezone', (ev) => {
@@ -455,6 +495,10 @@
 
     WS.on('session.artifacts.changed', (ev) => {
       Sessions.onArtifactsChanged(ev.payload?.session_id);
+    });
+
+    WS.on('session.credentials.changed', (ev) => {
+      Sessions.onCredentialsChanged(ev.payload?.session_id);
     });
 
     /* Generic notification broadcast — central notification system */
@@ -563,6 +607,121 @@
 
     WS.connect();
   }
+
+  /* ── update banner / modal ─────────────────────────────────────────────── */
+  let _pendingUpdate = null;
+
+  function _showUpdateBanner(info) {
+    _pendingUpdate = info;
+    const banner = document.getElementById('update-banner');
+    const text   = document.getElementById('update-banner-text');
+    const btn    = document.getElementById('update-banner-btn');
+    if (!banner) return;
+    if (text) text.textContent = `v${info.latest} available`;
+    banner.style.display = '';
+    if (btn) btn.onclick = () => _openUpdateModal(info);
+    _openUpdateModal(info);
+  }
+
+  function _openUpdateModal(info) {
+    _pendingUpdate = info;
+    const cur   = document.getElementById('update-current');
+    const lat   = document.getElementById('update-latest');
+    const date  = document.getElementById('update-date');
+    const notes = document.getElementById('update-notes');
+    const prog  = document.getElementById('update-progress');
+    const footer= document.getElementById('update-footer');
+
+    if (cur)   cur.textContent   = `v${info.current}`;
+    if (lat)   lat.textContent   = `v${info.latest}`;
+    if (date)  date.textContent  = info.published_at ? `Released ${new Date(info.published_at).toLocaleDateString()}` : '';
+    if (notes) notes.textContent = info.release_notes || 'No release notes available.';
+    if (prog)  prog.style.display = 'none';
+    if (footer) footer.style.display = '';
+
+    const dismissBtn = document.getElementById('update-dismiss-btn');
+    const laterBtn   = document.getElementById('update-later-btn');
+    const applyBtn   = document.getElementById('update-apply-btn');
+
+    if (dismissBtn) dismissBtn.onclick = () => {
+      localStorage.setItem('stratum_dismissed_version', info.latest);
+      Modal.close('update-modal');
+      const banner = document.getElementById('update-banner');
+      if (banner) banner.style.display = 'none';
+    };
+
+    if (laterBtn) laterBtn.onclick = () => {
+      Modal.close('update-modal');
+    };
+
+    if (applyBtn) applyBtn.onclick = async () => {
+      applyBtn.disabled = true;
+      applyBtn.textContent = 'Checking…';
+      try {
+        const pf = await API.updatePreflight();
+        if (!pf.ok) {
+          Toast.error('Preflight Failed', (pf.errors || []).join('; ') || 'Cannot proceed');
+          applyBtn.disabled = false;
+          applyBtn.textContent = 'Update Now';
+          return;
+        }
+        if (pf.warnings && pf.warnings.length) {
+          pf.warnings.forEach(w => Toast.warning('Warning', w));
+        }
+        applyBtn.textContent = 'Updating…';
+        if (footer) footer.style.display = 'none';
+        if (prog)  prog.style.display = '';
+        const result = await API.applyUpdate();
+        if (result.ok) {
+          const progText = document.getElementById('update-progress-text');
+          if (progText) progText.textContent = result.message + ' — restart the server when ready.';
+        } else {
+          Toast.error('Update Failed', result.error || 'Unknown error');
+          if (prog)   prog.style.display = 'none';
+          if (footer) footer.style.display = '';
+          applyBtn.disabled = false;
+          applyBtn.textContent = 'Retry';
+        }
+      } catch (e) {
+        Toast.error('Update Error', e.message || 'Network error');
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Retry';
+        if (prog)   prog.style.display = 'none';
+        if (footer) footer.style.display = '';
+      }
+    };
+
+    Modal.open('update-modal');
+  }
+
+  /* ── version badge (bottom-right) ────────────────────────────────────── */
+  function _updateVersionBadge(version, update) {
+    const el = document.getElementById('version-badge');
+    if (!el) return;
+    const ver = version ? `v${version}` : '';
+    if (update && update.available) {
+      el.innerHTML = `${ver} <span class="vb-update" title="Click to view update details">· update available</span>`;
+      el.querySelector('.vb-update')?.addEventListener('click', () => {
+        if (_pendingUpdate) _openUpdateModal(_pendingUpdate);
+      });
+    } else {
+      el.textContent = ver;
+    }
+  }
+
+  /* ── changelog modal ─────────────────────────────────────────────────── */
+  async function _openChangelog() {
+    const el = document.getElementById('changelog-content');
+    if (el) el.textContent = 'Loading…';
+    Modal.open('changelog-modal');
+    try {
+      const text = await API.getChangelog();
+      if (el) el.textContent = text || 'No changelog available.';
+    } catch {
+      if (el) el.textContent = 'Failed to load changelog.';
+    }
+  }
+  window.openChangelog = _openChangelog;
 
   /* ── chat panel resize (horizontal) ────────────────────────────────────── */
   function _initChatResize(chatPanel, chatHandle) {

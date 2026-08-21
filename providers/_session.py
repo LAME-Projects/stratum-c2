@@ -120,6 +120,8 @@ class SessionProfile:
     kill_date:        str = ""   # "YYYY-MM-DD" or "" — baked at deploy time
     window_start:     str = ""   # "HH:MM" or ""
     window_end:       str = ""   # "HH:MM" or ""
+    stratum_version:  str = ""   # server version at deploy time
+    locked:           bool = False  # operator lock — prevents kill/stop/delete/wipe
 
     @property
     def input_path(self)     -> str: return self.folder_path + self.input_file
@@ -229,6 +231,15 @@ class SessionHistory:
             with open(self._csv_path, "a", newline="") as f:
                 ts, cid, cmd, _, operator = self.entries[-1]
                 csv.writer(f).writerow([ts.isoformat(), self.session_id, cid, cmd, resp, operator])
+
+    def log_download(self, cmd_id: str, remote_label: str, local_path: str, size: int):
+        self._ensure_csv()
+        resp = f"saved: {local_path}  ({size:,} bytes)"
+        with open(self._csv_path, "a", newline="") as f:
+            csv.writer(f).writerow([
+                _tz.now().isoformat(), self.session_id, cmd_id,
+                f"/download {remote_label}", resp, "",
+            ])
 
     def record_artifact(self, kind: str, path: str):
         """Append an ARTIFACT row to the CSV (files written on target)."""

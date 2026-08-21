@@ -96,11 +96,14 @@ const Tradecraft = (() => {
 
     const mode        = _MODE_META[dep.mode] || { label: dep.mode || '—', cls: 'badge-plain' };
     const date        = _fmtDate(dep.generated || dep.created_at);
-    const displayName = (dep.folder || '').replace(/^\/+/, '') || dep.session_id || dep.name;
+    const folderName  = (dep.folder || '').replace(/^\/+/, '');
+    const label       = dep.label || folderName || dep.name;
+    const sid         = dep.session_id || '';
 
     row.innerHTML = `
       <div class="tc-meta">
-        <span class="tc-name">${escHtml(displayName)}</span>
+        <span class="tc-name">${escHtml(label)}</span>
+        ${sid ? `<span class="tc-sid" title="Session ID">${escHtml(sid)}</span>` : ''}
         <span class="tc-badge ${escHtml(mode.cls)}">${escHtml(mode.label)}</span>
         <span class="tc-meta-item">📅 ${escHtml(date)}</span>
         <span class="tc-meta-item">📦 ${escHtml(dep.total_size_str || '—')}</span>

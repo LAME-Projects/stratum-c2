@@ -23,7 +23,11 @@ def _yml_path(request: Request) -> Path:
 
 @router.get("/settings")
 def get_settings(request: Request, _: str = Depends(get_current_user)):
-    return {"timezone": str(_tz.current_zone())}
+    cfg = request.app.state.cfg
+    return {
+        "timezone": str(_tz.current_zone()),
+        "auto_update_enabled": cfg.auto_update.enabled,
+    }
 
 
 @router.get("/time")
@@ -39,6 +43,7 @@ def get_server_time(_: str = Depends(get_current_user)):
 
 class ServerSettingsPatch(BaseModel):
     timezone: str | None = None
+    auto_update_enabled: bool | None = None
 
 
 @router.patch("/settings")
@@ -53,11 +58,9 @@ async def patch_settings(body: ServerSettingsPatch, request: Request,
         except (ZoneInfoNotFoundError, KeyError, Exception):
             raise HTTPException(status_code=422, detail=f"Unknown timezone: '{tz_name}'")
 
-        # Apply immediately (no restart needed)
         _tz.configure(tz_name)
         cfg.settings.timezone = tz_name
 
-        # Persist to server.yml
         yml = Path(cfg._yml_path)
         if yml.exists():
             with open(yml) as f:
@@ -71,4 +74,18 @@ async def patch_settings(body: ServerSettingsPatch, request: Request,
             "payload": {"timezone": tz_name, "by": username},
         })
 
-    return {"timezone": str(_tz.current_zone())}
+    if body.auto_update_enabled is not None:
+        cfg.auto_update.enabled = body.auto_update_enabled
+
+        yml = Path(cfg._yml_path)
+        if yml.exists():
+            with open(yml) as f:
+                data = yaml.safe_load(f) or {}
+            data.setdefault("auto_update", {})["enabled"] = body.auto_update_enabled
+            with open(yml, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+
+    return {
+        "timezone": str(_tz.current_zone()),
+        "auto_update_enabled": cfg.auto_update.enabled,
+    }

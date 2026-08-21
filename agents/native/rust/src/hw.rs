@@ -3,6 +3,7 @@
 //! fingerprint(salt) = sha256(hw_id + mac + salt) — mirrors the bash _hw() function.
 //! Blob format: openssl-enc(hw_fingerprint, "STRATUM:" + payload), base64.
 
+use crate::s;
 use sha2::{Sha256, Digest};
 
 /// Compute per-machine fingerprint: sha256(hw_id.trim() + mac.trim() + salt).
@@ -79,15 +80,17 @@ fn hw_id() -> String {
 fn hw_id() -> String {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let rp = s!(r"HKLM\SOFTWARE\Microsoft\Cryptography");
+    let rv = s!("MachineGuid");
     std::process::Command::new("reg")
-        .args(["query", r"HKLM\SOFTWARE\Microsoft\Cryptography", "/v", "MachineGuid"])
+        .args(["query", &rp, "/v", &rv])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| {
             s.lines()
-             .find(|l| l.contains("MachineGuid"))
+             .find(|l| l.contains(&rv))
              .and_then(|l| l.split_whitespace().last().map(str::to_string))
         })
         .unwrap_or_else(|| "x".to_string())

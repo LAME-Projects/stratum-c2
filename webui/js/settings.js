@@ -337,7 +337,7 @@ const Settings = (() => {
     _updatePreview();
     _modalClockTimer = setInterval(_updatePreview, 1000);
 
-    // Sync actual TZ from server (updates selection if different from cached _navTz)
+    // Sync actual settings from server
     try {
       const r = await API.getServerSettings();
       const serverTz = r.timezone || 'UTC';
@@ -345,6 +345,8 @@ const Settings = (() => {
         if (!flt?.value) _buildTzOptions(_ALL_ZONES, serverTz);
         _updatePreview();
       }
+      const auCb = document.getElementById('srv-autoupdate-cb');
+      if (auCb) auCb.checked = !!r.auto_update_enabled;
     } catch {
       if (msg) { msg.textContent = 'Could not load current settings.'; msg.style.color = 'var(--danger)'; }
     }
@@ -414,8 +416,30 @@ const Settings = (() => {
       }
     });
 
+    // Auto-update toggle
+    document.getElementById('srv-autoupdate-cb')?.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      try {
+        await API.patchServerSettings({ auto_update_enabled: enabled });
+        Toast.success('Auto-Update', enabled ? 'Enabled' : 'Disabled');
+      } catch (err) {
+        e.target.checked = !enabled;
+        Toast.error('Error', err?.message || 'Failed to save setting');
+      }
+    });
+
+    // About → Changelog button
+    document.getElementById('about-changelog-btn')?.addEventListener('click', () => {
+      Modal.close('about-modal');
+      if (window.openChangelog) window.openChangelog();
+    });
+
     // Start navbar clock — fetch TZ from server on boot
-    API.getServerSettings().then(r => _startNavClock(r.timezone || 'UTC')).catch(() => _startNavClock('UTC'));
+    API.getServerSettings().then(r => {
+      _startNavClock(r.timezone || 'UTC');
+      const auCb = document.getElementById('srv-autoupdate-cb');
+      if (auCb) auCb.checked = !!r.auto_update_enabled;
+    }).catch(() => _startNavClock('UTC'));
 
     const slider = document.getElementById('font-size-slider');
     const lbl    = document.getElementById('font-size-label');

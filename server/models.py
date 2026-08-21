@@ -136,6 +136,35 @@ class StagedFile(BaseModel):
     name: str
     path: str   # full cloud path, used for proxy download
 
+# ── captured credentials ──────────────────────────────────────────────────────
+
+class CredentialEntry(BaseModel):
+    id: str = ""
+    timestamp: str = ""
+    session_id: str = ""
+    source: str = ""
+    username: str = ""
+    secret: str = ""
+    secret_type: str = "password"
+    domain: str = ""
+    protocol: str = ""
+    host: str = ""
+    port: str = ""
+    notes: str = ""
+    operator: str = ""
+
+class CredentialRequest(BaseModel):
+    username: str
+    secret: str
+    secret_type: str = "password"
+    source: str = "manual"
+    domain: str = ""
+    protocol: str = ""
+    host: str = ""
+    port: str = ""
+    notes: str = ""
+
+
 # ── deploy ────────────────────────────────────────────────────────────────────
 
 class DeployRequest(BaseModel):
@@ -179,12 +208,16 @@ def _session_summary(session, pending) -> dict:
         "agent_pid":     snap.get("agent_pid", ""),
         "agent_process": snap.get("agent_process", ""),
         "input_file":    session.profile.input_file,
+        "output_file":   session.profile.output_file,
+        "heartbeat_file": session.profile.heartbeat_file,
         "added_at":         session.profile.added_at,
         "s2_uploaded_at":   session.profile.s2_uploaded_at,
         "s2_deleted":       session.profile.s2_deleted,
         "polling_stopped":  session.polling_stopped,
         "persist_probe_data": snap.get("persist_probe_data", {}),
         "listeners":          snap.get("listeners", {}),
+        "stratum_version":    getattr(session.profile, 'stratum_version', ''),
+        "locked":             getattr(session.profile, 'locked', False),
         "pending_cmd":   {
             "cmd_id":     pending.cmd_id,
             "command":    pending.display or pending.command,

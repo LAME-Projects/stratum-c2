@@ -73,6 +73,12 @@ class Settings:
 
 
 @dataclass
+class AutoUpdateConfig:
+    enabled: bool = True
+    repo: str     = "LAME-Projects/stratum-c2"
+
+
+@dataclass
 class ServerConfig:
     host: str                   = "0.0.0.0"
     port: int                   = 7443
@@ -83,8 +89,9 @@ class ServerConfig:
     auth_mode: str              = "local"
     users: list[User]           = field(default_factory=list)
     oidc: Optional[OIDCConfig]  = None
-    settings: Settings          = field(default_factory=Settings)
-    _yml_path: str              = "server.yml"
+    settings: Settings                  = field(default_factory=Settings)
+    auto_update: AutoUpdateConfig       = field(default_factory=AutoUpdateConfig)
+    _yml_path: str                      = "server.yml"
 
     def find_user(self, username: str) -> Optional[User]:
         for u in self.users:
@@ -242,6 +249,12 @@ def load(path: Path = DEFAULT_PATH) -> ServerConfig:
         max_upload_mb=int(s.get("max_upload_mb", 512)),
     )
 
+    au = data.get("auto_update", {}) or {}
+    auto_update = AutoUpdateConfig(
+        enabled=bool(au.get("enabled", True)),
+        repo=str(au.get("repo", "") or ""),
+    )
+
     cfg = ServerConfig(
         host=srv.get("host", "0.0.0.0"),
         port=int(srv.get("port", 7443)),
@@ -253,6 +266,7 @@ def load(path: Path = DEFAULT_PATH) -> ServerConfig:
         users=users,
         oidc=oidc,
         settings=settings,
+        auto_update=auto_update,
     )
     cfg._yml_path = str(path)
     _validate(cfg, data)

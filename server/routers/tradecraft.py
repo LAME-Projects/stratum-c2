@@ -46,6 +46,7 @@ def _parse_guide(path: Path) -> dict:
                 ("Generated:",  "generated"),
                 ("Provider:",   "provider"),
                 ("Mode:",       "mode"),
+                ("Label:",      "label"),
                 ("Folder:",     "folder"),
                 ("Sleep:",      "sleep"),
             ):
@@ -103,6 +104,7 @@ def list_deployments(username: str = Depends(get_current_user)):
             "session_id":       guide.get("session_id", ""),
             "generated":        guide.get("generated", ""),
             "mode":             guide.get("mode", ""),
+            "label":            guide.get("label", ""),
             "folder":           guide.get("folder", ""),
             "sleep":            guide.get("sleep", ""),
             "files":            files,

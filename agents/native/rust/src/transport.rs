@@ -33,11 +33,11 @@ struct TokenCache {
 }
 
 fn http_client() -> Agent {
-    #[cfg(windows)]
+    #[cfg(all(windows, stratum_debug))]
     macro_rules! wlog {
         ($s:literal) => { unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(concat!($s, "\0").as_ptr()); } }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(all(windows, stratum_debug)))]
     macro_rules! wlog { ($s:literal) => {} }
 
     wlog!("[tr] 1: Agent::config_builder()");

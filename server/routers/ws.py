@@ -30,6 +30,8 @@ from core import tz as _tz
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from server import auth as auth_mod
+from server.updater import get_update_info
+from server.version import __version__
 from server.ws import ConnectionManager
 
 router = APIRouter(prefix="/api/v1", tags=["ws"])
@@ -75,9 +77,11 @@ async def ws_endpoint(websocket: WebSocket):
             "type": "server.hello",
             "ts":   _ts(),
             "payload": {
-                "username":  username,
-                "sessions":  sessions_payload,
-                "operators": operators_payload,
+                "username":       username,
+                "sessions":       sessions_payload,
+                "operators":      operators_payload,
+                "server_version": __version__,
+                "update":         get_update_info(),
             },
         })
 

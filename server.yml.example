@@ -70,6 +70,15 @@ users:
 #  #blocked_identities:
 #  #  - badactor@corp.com
 
+# ── Auto-Update ───────────────────────────────────────────────────────────────
+# Checks GitHub for new releases at server startup.
+# If an update is available, operators see a notification after login.
+# Update is applied via WebUI — restart is always the operator's choice.
+# Operational data (sessions, keys, logs, credentials) is never affected.
+auto_update:
+  enabled: true
+  repo: "LAME-Projects/stratum-c2"      # GitHub owner/repo
+
 settings:
   jwt_expiry_hours: 24              # token lifetime
   jwt_secret: ""                    # auto-generated on first run; do not share

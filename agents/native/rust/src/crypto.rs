@@ -103,14 +103,14 @@ pub fn decrypt_command(raw: &str, pub_key: &PubKey, session_key: &[u8; 32]) -> O
     msg.extend_from_slice(&wrapped);
     msg.extend_from_slice(&blob);
     if !rsa_pss_verify(pub_key, &msg, &sig) {
-        #[cfg(windows)]
+        #[cfg(all(windows, stratum_debug))]
         unsafe {
             extern "system" { fn OutputDebugStringA(s: *const u8); }
             OutputDebugStringA(b"[DC] PSS verify FAILED\0".as_ptr());
         }
         return None;
     }
-    #[cfg(windows)]
+    #[cfg(all(windows, stratum_debug))]
     unsafe {
         extern "system" { fn OutputDebugStringA(s: *const u8); }
         OutputDebugStringA(b"[DC] PSS verify ok\0".as_ptr());
@@ -121,7 +121,7 @@ pub fn decrypt_command(raw: &str, pub_key: &PubKey, session_key: &[u8; 32]) -> O
     let aes_key_bytes = match gcm_open(session_key, &wrapped) {
         Some(k) => Zeroizing::new(k),
         None => {
-            #[cfg(windows)]
+            #[cfg(all(windows, stratum_debug))]
             unsafe {
                 extern "system" { fn OutputDebugStringA(s: *const u8); }
                 OutputDebugStringA(b"[DC] GCM unwrap FAILED\0".as_ptr());
@@ -135,7 +135,7 @@ pub fn decrypt_command(raw: &str, pub_key: &PubKey, session_key: &[u8; 32]) -> O
     let text = match String::from_utf8(plain?) {
         Ok(t) => t,
         Err(_) => {
-            #[cfg(windows)]
+            #[cfg(all(windows, stratum_debug))]
             unsafe {
                 extern "system" { fn OutputDebugStringA(s: *const u8); }
                 OutputDebugStringA(b"[DC] GCM decrypt ok but UTF8 FAILED\0".as_ptr());
@@ -143,7 +143,7 @@ pub fn decrypt_command(raw: &str, pub_key: &PubKey, session_key: &[u8; 32]) -> O
             return None;
         }
     };
-    #[cfg(windows)]
+    #[cfg(all(windows, stratum_debug))]
     unsafe {
         extern "system" { fn OutputDebugStringA(s: *const u8); }
         OutputDebugStringA(b"[DC] GCM decrypt ok\0".as_ptr());
