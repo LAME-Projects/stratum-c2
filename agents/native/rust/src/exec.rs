@@ -28,6 +28,7 @@ pub struct AgentState {
     pub folder_path:  String,
     pub input_path:   String,
     pub output_path:  String,
+    pub epoch_key:    std::sync::Mutex<Option<[u8; 32]>>,
 }
 
 impl AgentState {
@@ -48,6 +49,7 @@ impl AgentState {
             folder_path:  folder_path.to_string(),
             input_path:   format!("{}{}", folder_path, input_file),
             output_path:  format!("{}{}", folder_path, output_file),
+            epoch_key:    std::sync::Mutex::new(None),
         })
     }
 }
@@ -570,10 +572,12 @@ fn cmd_upload(task: &Task, state: &Arc<AgentState>, transport: &SharedTransport,
 
     match transport.download(staging_src) {
         Some(enc_data) if !enc_data.is_empty() => {
-            // Decrypt the staging blob (AES-256-GCM, session_key wrapped)
-            let data = match crate::crypto::decrypt_staging(&enc_data, session_key) {
-                Some(d) => d,
-                None => return TaskResponse::err(task, "ERROR: staging decrypt failed".to_string()),
+            let data = {
+                let ek = state.epoch_key.lock().unwrap();
+                match ek.as_ref().and_then(|k| crate::crypto::decrypt_staging(&enc_data, k)) {
+                    Some(d) => d,
+                    None => return TaskResponse::err(task, "ERROR: staging decrypt failed".to_string()),
+                }
             };
             match std::fs::write(&save_path, &data) {
                 Ok(_)  => TaskResponse::ok(task, format!("OK: Saved {} ({} bytes) to {}", file_name, data.len(), save_path.display())),

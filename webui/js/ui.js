@@ -129,6 +129,7 @@ const Toast = (() => {
 /* ── Modal manager ─────────────────────────────────────────────────────────── */
 const Modal = (() => {
   const _stack = [];
+  const _opts  = {};
 
   function _overlay(id) { return document.getElementById(id); }
 
@@ -137,6 +138,7 @@ const Modal = (() => {
     if (!ov) return;
     ov.classList.add('open');
     _stack.push(id);
+    _opts[id] = opts;
     document.addEventListener('keydown', _onKey);
     if (!opts.nonDismissible) ov.addEventListener('click', _onOverlayClick);
   }
@@ -147,6 +149,7 @@ const Modal = (() => {
     ov.classList.remove('open');
     const idx = _stack.indexOf(ov.id);
     if (idx !== -1) _stack.splice(idx, 1);
+    delete _opts[ov.id];
     if (!_stack.length) document.removeEventListener('keydown', _onKey);
     ov.removeEventListener('click', _onOverlayClick);
   }
@@ -154,7 +157,11 @@ const Modal = (() => {
   function closeAll() { [..._stack].forEach(id => close(id)); }
 
   function _onKey(e) {
-    if (e.key === 'Escape' && _stack.length) close();
+    if (e.key === 'Escape' && _stack.length) {
+      const topId = _stack[_stack.length - 1];
+      if (_opts[topId]?.nonDismissible) return;
+      close();
+    }
   }
 
   function _onOverlayClick(e) {

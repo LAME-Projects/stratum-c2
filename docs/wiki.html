@@ -578,6 +578,7 @@ a:hover{color:#f87171;text-decoration:none}
       <a href="#s2-3" data-section="s2">2.3 Command Wire Format</a>
       <a href="#s2-4" data-section="s2">2.4 Stageless-Enc Scheme (Stub Secret)</a>
       <a href="#s2-5" data-section="s2">2.5 Key Derivation &amp; Entropy Engineering</a>
+      <a href="#s2-6" data-section="s2">2.6 Forward Secrecy (Epoch ECDH)</a>
     </div>
 
     <div class="toc-divider"></div>
@@ -922,6 +923,11 @@ a:hover{color:#f87171;text-decoration:none}
     <td>Unique implementation</td>
   </tr>
   <tr>
+    <td><strong>Forward secrecy (Epoch ECDH)</strong></td>
+    <td>X25519 key exchange per check-in cycle with HKDF-SHA256 ratchet. Each epoch derives a fresh encryption key; previous keys are destroyed. KDF chain provides per-message anti-replay and fork detection.</td>
+    <td>Rare in dead-drop C2 frameworks</td>
+  </tr>
+  <tr>
     <td><strong>Shannon entropy engineering</strong></td>
     <td>Every generated artifact measured and corrected below 5.0 b/B at deploy time. Natural-language padding mimics legitimate system utilities.</td>
     <td>Not seen in other frameworks</td>
@@ -948,8 +954,9 @@ a:hover{color:#f87171;text-decoration:none}
 
   <span class="fb">Phase 1 · DEPLOY</span>  (minutes)
   ─────────────────────────────────────────────────────────────────────
-  Wizard generates RSA-4096 keypair + stub_secret (32-byte random)
+  Wizard generates RSA-4096 keypair + pre-key pool (8 × X25519) + stub_secret
   stub_secret baked into stub binary at compile time (never hits cloud)
+  Pre-key public keys baked into agent (STRATUM_PREKEY_POOL_B64)
   staged-enc: stage2.enc uploaded to cloud folder
   Operator delivers stub to target via preferred initial access vector
   Session row appears in WebGUI (pending state — no heartbeat yet)
@@ -959,7 +966,9 @@ a:hover{color:#f87171;text-decoration:none}
   Stub checks local hw-keyed blob (ddb) — cache miss on first run
   Stub downloads stage2.enc from cloud, decrypts with baked stub_secret
   Execution in memory — nothing written to disk
-  First heartbeat.txt uploaded → WebGUI status flips to ● LIVE
+  <span class="fb">Epoch 0 bootstrap</span>: X25519 DH with pre-key → epoch_key₀ via HKDF
+  First heartbeat.txt uploaded (v2 epoch-encrypted) → WebGUI ● LIVE
+  Server iterates pre-key privs → derives matching epoch state
   Server deletes stage2.enc from cloud (point of no return)
   SYSINFO collected: hostname, user, OS, IPs, PID, domain
 
@@ -969,7 +978,8 @@ a:hover{color:#f87171;text-decoration:none}
   /persist probe → feasibility check (non-destructive)
   /persist install → technique installed, artifact tracked
   /upload / /download for file transfer
-  All commands encrypted RSA+AES end-to-end
+  All traffic epoch-encrypted (X25519 ECDH + AES-256-GCM + RSA-PSS)
+  Epoch key rotates every check-in — <span class="fb">forward secrecy</span>
   Multiple operators coordinated via team chat + WebSocket sync
 
   <span class="fb">Phase 4 · MAINTENANCE</span>  (days to weeks)
@@ -997,101 +1007,120 @@ a:hover{color:#f87171;text-decoration:none}
 <h2 class="section-title"><span class="section-num">2</span>Cryptographic Protocol</h2>
 
 <h3 id="s2-1">2.1 Hybrid Encryption Design</h3>
-<p>Every byte of C2 traffic between operator and agent is end-to-end encrypted using a hybrid scheme: RSA-4096 handles key encapsulation and authentication; AES-256-GCM handles bulk payload encryption. An RSA-4096 key pair is generated <em>per deployment</em> and is never reused across sessions. The private key never leaves the operator machine; the public key is split into four fragments and baked into the agent at compile time.</p>
+<p>Every byte of C2 traffic between operator and agent is end-to-end encrypted using a <strong>three-layer</strong> hybrid scheme. The outer layer provides <strong>forward secrecy</strong> via Epoch ECDH (X25519) key agreement with a KDF chain ratchet; the middle layer provides <strong>command authenticity</strong> via RSA-4096 PSS signatures; the inner layer provides <strong>bulk encryption</strong> via AES-256-GCM with per-message fresh keys. An RSA-4096 key pair is generated <em>per deployment</em> and is never reused across sessions. The private key never leaves the operator machine; the public key is split into four fragments and baked into the agent at compile time.</p>
 <div class="callout callout-info">
-  <div class="callout-title">Two encryption layers</div>
-  The C2 command/response channel uses RSA-4096 + AES-256-GCM (authenticated encryption, per-message fresh key). The stage-2 payload / config blob (stub-secret channel) also uses AES-256-GCM, replacing the earlier AES-256-CBC. The local hw-keyed blob on disk (DPAPI on Windows, OpenSSL CBC on Linux) is a separate independent layer and is unchanged.
+  <div class="callout-title">Three encryption layers</div>
+  <strong>Layer 1 — Epoch ECDH (forward secrecy):</strong> X25519 key exchange per check-in cycle. Each epoch derives a fresh <code>epoch_key</code> via HKDF-SHA256. A KDF chain (HMAC-SHA256) ratchets forward per message for anti-replay and fork detection.<br>
+  <strong>Layer 2 — RSA-4096 (authentication):</strong> RSA-PSS-SHA256 signs server→agent commands. The agent verifies the signature before decrypting, guaranteeing command authenticity.<br>
+  <strong>Layer 3 — AES-256-GCM (bulk encryption):</strong> Per-message fresh AES key, wrapped with the current <code>epoch_key</code> instead of a static session key.<br>
+  The stage-2 payload / config blob (stub-secret channel) also uses AES-256-GCM. The local hw-keyed blob on disk (DPAPI on Windows, OpenSSL CBC on Linux) is a separate independent layer and is unchanged.
 </div>
 
-<div class="flow-box"><span class="fa">─── Command Path (Server → Agent) ───────────────────────────────</span>
+<div class="flow-box"><span class="fa">─── Command Path (Server → Agent) — v2 Wire Format ─────────────</span>
 
   1. Generate random 256-bit AES key + 12-byte nonce (per message)
   2. AES-256-GCM encrypt:  payload = JSON task envelope
                            {"id":"&lt;cmd_id&gt;","type":"&lt;task_type&gt;","args":{...}}
-                           produces ciphertext + 16-byte authentication tag
-  3. RSA-OAEP-SHA256 encrypt AES key with session RSA key
-  4. Sign envelope with <span class="fc">private key</span> (RSA-PSS)
-  5. Encode → write to cloud <span class="fe">input.txt</span>
+  3. GCM-wrap AES key with current <span class="fb">epoch_key</span>
+     (derived from X25519 DH, rotated every check-in cycle)
+  4. RSA-PSS-SHA256 sign (wrapped_aes || payload_blob)
+     using <span class="fc">private_key.pem</span> (server-only)
+  5. Prepend binary v2 header → write to cloud <span class="fe">input.txt</span>
 
-  Agent reads <span class="fe">input.txt</span>, deletes it, verifies signature + decrypts with <span class="fb">public key</span>.
+  Wire: [0x02][epoch:4][server_eph_pub:32][wrapped_len:4][wrapped_aes]
+        [payload_len:4][GCM_payload][RSA-PSS signature]
 
-<span class="fa">─── Response Path (Agent → Server) ──────────────────────────────</span>
+<span class="fa">─── Response/Heartbeat Path (Agent → Server) — v2 Wire Format ──</span>
 
-  1. Generate random AES key + nonce
-  2. AES-256-GCM encrypt:  payload = JSON response envelope
-                           {"id":"&lt;cmd_id&gt;","type":"&lt;task_type&gt;","status":"ok","output":"...","cwd":"..."}
-  3. RSA-OAEP encrypt:     wraps AES key with <span class="fb">public key</span>
-                           (only private key holder can unwrap)
-  4. Encode → write to cloud <span class="fe">output.txt</span>
+  1. KDF chain advance: derive msg_key + chain_tag from chain_key
+  2. AES-256-GCM encrypt payload with current <span class="fb">epoch_key</span>
+  3. Prepend binary v2 header with chain authentication
+  4. Write to cloud <span class="fe">output.txt</span> (response) or <span class="fe">heartbeat.txt</span>
 
-  Server polls <span class="fe">output.txt</span>, decrypts with <span class="fc">private key</span>, AES-GCM-decrypts output.</div>
+  Wire: [0x02][epoch:4][agent_eph_pub:32][counter:8][chain_tag:32][GCM payload]
+
+  Server verifies chain_tag, decrypts with epoch_key.</div>
 
 <!-- End-to-End Crypto Sequence Diagram -->
-<div class="flow-box"><span class="fc">─── End-to-End Encryption Sequence ───────────────────────────────────────</span>
+<div class="flow-box"><span class="fc">─── End-to-End Encryption Sequence (v2 — Epoch ECDH) ─────────────────────</span>
 
   OPERATOR             SERVER              CLOUD FOLDER          AGENT
   (browser)            (Python)            (Dropbox etc.)        (target)
      │                    │                     │                   │
-     │  type: whoami      │                     │                   │
-     │──────────────────►│                     │                   │
-     │                    │                     │                   │
-     │               ┌────▼────────────────────────────────────┐   │
-     │               │ 1. Generate AES-256-GCM key + 12-byte nonce │ │
-     │               │ 2. AES-256-GCM encrypt: JSON task envelope │ │
-     │               │    {"id","type","args":{...}}           │   │
-     │               │ 3. GCM-wrap AES key with session_key    │   │
-     │               │    (session_key baked in agent binary)  │   │
-     │               │ 4. RSA-PSS sign (wrapped_aes || blob)   │   │
-     │               │    using <span class="fc">private_key.pem</span> (server-only) │   │
-     │               │ 5. Encode composite block               │   │
-     │               └────────────────┬────────────────────────┘   │
-     │                                │ HTTPS upload               │
-     │                                │──────────────────────────►│
-     │                                │     input.txt written     │
-     │                                │                           │
-     │                                │              ┌────────────▼──────────┐
-     │                                │              │ 6. Read input.txt     │
-     │                                │              │ 7. DELETE input.txt   │
-     │                                │              │ 8. RSA-PSS verify sig │
-     │                                │              │    using <span class="fb">embedded pubkey</span>│
-     │                                │              │ 9. GCM-unwrap AES key │
-     │                                │              │    with session_key   │
-     │                                │              │10. AES-GCM decrypt    │
-     │                                │              │    → JSON task env    │
-     │                                │              │11. exec: whoami       │
-     │                                │              │12. capture output     │
-     │                                │              │                       │
-     │                                │              │13. Gen fresh AES key  │
-     │                                │              │14. AES-GCM encrypt    │
-     │                                │              │    JSON response env  │
-     │                                │              │15. RSA-OAEP WRAP      │
-     │                                │              │    AES key with       │
-     │                                │              │    <span class="fb">public key</span>         │
-     │                                │              │16. Encode → upload    │
-     │                                │              └───────────────────────┘
-     │                                │                HTTPS upload
+     │                    │                     │   <span class="fb">BOOTSTRAP</span>        │
+     │                    │                     │   Agent picks prekey[i]
+     │                    │                     │   X25519 DH(eph_priv,  │
+     │                    │                     │     prekey_pub[i])     │
+     │                    │                     │   epoch_key₀ = HKDF(  │
+     │                    │                     │     shared, session_key│
+     │                    │                     │     "stratum-epoch-0") │
+     │                    │                     │   chain_key₀ = HKDF(  │
+     │                    │                     │     epoch_key, agent_id│
+     │                    │                     │     "stratum-chain-v1")│
+     │                    │                     │          │            │
+     │                    │                     │◄─────────┘            │
+     │                    │                     │  heartbeat.txt        │
+     │                    │                     │  [0x02|epoch|eph_pub| │
+     │                    │                     │   counter|tag|GCM]    │
+     │               ┌────▼────────────────────────────────────┐       │
+     │               │ Server tries each prekey_priv[i] to     │       │
+     │               │ find matching DH → derives same         │       │
+     │               │ epoch_key₀ + chain_key₀                 │       │
+     │               │ Verifies chain_tag → decrypts heartbeat │       │
+     │               └────────────────┬────────────────────────┘       │
+     │                    │                     │                       │
+     │  type: whoami      │                     │                       │
+     │──────────────────►│                     │                       │
+     │               ┌────▼────────────────────────────────────┐       │
+     │               │ 1. Gen fresh AES key + nonce             │       │
+     │               │ 2. AES-256-GCM encrypt JSON task env     │       │
+     │               │ 3. GCM-wrap AES key with <span class="fb">epoch_key</span>       │       │
+     │               │ 4. RSA-PSS sign (wrapped_aes || blob)    │       │
+     │               │    using <span class="fc">private_key.pem</span>               │       │
+     │               │ 5. Build v2 binary wire + server_eph_pub │       │
+     │               └────────────────┬────────────────────────┘       │
+     │                                │──────────────────────────►│    │
+     │                                │     input.txt (v2 binary) │    │
+     │                                │              ┌────────────▼────────┐
+     │                                │              │ 6. Read + parse v2  │
+     │                                │              │ 7. <span class="fb">Epoch rotate</span>:    │
+     │                                │              │    X25519 DH(my_eph,│
+     │                                │              │     server_eph_pub) │
+     │                                │              │    epoch_key₁=HKDF  │
+     │                                │              │ 8. GCM-unwrap AES   │
+     │                                │              │    with epoch_key   │
+     │                                │              │ 9. RSA-PSS verify   │
+     │                                │              │10. AES-GCM decrypt  │
+     │                                │              │    → JSON task env  │
+     │                                │              │11. exec: whoami     │
+     │                                │              │12. KDF chain advance│
+     │                                │              │13. AES-GCM encrypt  │
+     │                                │              │    JSON response    │
+     │                                │              │    with epoch_key   │
+     │                                │              │14. Prepend v2 header│
+     │                                │              │    + chain_tag      │
+     │                                │              └─────────────────────┘
      │                                │◄──────────────────────────
-     │                                │     output.txt written
+     │                                │     output.txt (v2 binary)
      │               ┌────────────────▼────────────────────────┐
-     │               │ 17. Download output.txt                 │
-     │               │ 18. DELETE output.txt                   │
-     │               │ 19. RSA-OAEP DECRYPT: recover AES key   │
-     │               │     using <span class="fc">private_key.pem</span>              │
-     │               │ 20. AES-GCM decrypt → JSON response env │
+     │               │ 15. Verify chain_tag (anti-replay)       │
+     │               │ 16. Decrypt with <span class="fb">epoch_key</span>               │
+     │               │     → JSON response env                 │
      │               └────────────────┬────────────────────────┘
      │  "corp\jdoe"       │
      │◄──────────────────│
      │                    │
   ◄─────────────────────────────────────────────────────────────────
-  Each message uses a FRESH AES key+IV. No key reuse.
+  Epoch key rotates every check-in. Chain key ratchets every message.
   Private key never leaves the operator server.
-  Cloud compromise → attacker gets encrypted blobs only.</div>
+  Past epoch keys are destroyed — <span class="fb">true forward secrecy</span>.</div>
 
-<p>This design provides three security properties simultaneously:</p>
+<p>This design provides four security properties simultaneously:</p>
 <ul>
   <li><strong>Command authenticity</strong> — commands can only be issued by the holder of the RSA private key. A compromised cloud account cannot inject fake commands.</li>
-  <li><strong>Response confidentiality</strong> — responses are encrypted with the public key and can only be decrypted by the operator. A compromised cloud account cannot read agent output.</li>
-  <li><strong>Forward security per message</strong> — each message uses a fresh AES-256-GCM key and nonce. Compromise of one message does not affect any other; authenticated encryption detects any tampering.</li>
+  <li><strong>Response confidentiality</strong> — responses are encrypted with the current epoch key and can only be decrypted by the server. A compromised cloud account cannot read agent output.</li>
+  <li><strong>Forward secrecy</strong> — each check-in cycle performs a fresh X25519 key exchange, deriving a new epoch key via HKDF. Previous epoch keys are destroyed. Compromise of the current key does not expose past traffic.</li>
+  <li><strong>Anti-replay &amp; fork detection</strong> — the KDF chain ratchet produces a monotonic counter and per-message authentication tag. Replayed or out-of-order messages are detected and rejected.</li>
 </ul>
 
 <h3 id="s2-2">2.2 Key Generation Lifecycle</h3>
@@ -1102,16 +1131,23 @@ a:hover{color:#f87171;text-decoration:none}
   ├─ Private key → <span class="fc">deployments/{id}/keys/{id}/private_key.pem</span>  (operator machine only)
   └─ Public key  → split into 4 base64 chunks (PK1..PK4)
                    embedded as PLACEHOLDER_PK1..PK4 in agent source
-                   substituted at deploy time by wizard
+  ↓
+  <span class="fb">Pre-Key Pool generated</span>  (8 × X25519 keypairs)
+  │
+  ├─ Private keys → stored in session profile (server-only, <code>prekey_privs_hex</code>)
+  └─ Public keys  → base64-encoded, baked into agent (<code>STRATUM_PREKEY_POOL_B64</code>)
+                    Agent picks one at bootstrap for first epoch DH
 
 Agent lifetime:
   ↓
-  Agent reconstructs public key from PK1+PK2+PK3+PK4 at startup
-  RSA operations use this key for the lifetime of the session
+  Agent reconstructs RSA public key from PK1+PK2+PK3+PK4 at startup
+  Agent decodes pre-key pool → bootstraps Epoch 0 via X25519 DH
+  Epoch key rotates on every check-in cycle (forward secrecy)
+  RSA verifies command signatures; epoch_key wraps AES keys
   Private key is never on the target. Never.</div>
 
 <!-- RSA Key Lifecycle Timeline -->
-<div class="flow-box"><span class="fc">─── RSA Key Lifecycle ─────────────────────────────────────────────────────</span>
+<div class="flow-box"><span class="fc">─── Key Lifecycle ─────────────────────────────────────────────────────────</span>
 
   <span class="fb">T+0 · Wizard runs</span>
   │ RSA-4096 keypair generated (Python cryptography library)
@@ -1119,11 +1155,17 @@ Agent lifetime:
   │ public_key.pem → split into PK1 · PK2 · PK3 · PK4 (base64 chunks)
   │ Chunks substituted for PLACEHOLDER_PK1..4 in agent source
   │
+  │ <span class="fb">Pre-Key Pool:</span> 8 × X25519 keypairs generated
+  │ prekey_privs_hex → session profile JSON (server keeps all 8 private keys)
+  │ prekey_pubs_hex → base64-encoded, baked into agent binary
+  │   (STRATUM_PREKEY_POOL_B64 env var at build time)
+  │
   <span class="fb">T+1 · Agent compiled / assembled</span>
-  │ Public key baked into agent binary / script at build time
+  │ Public key baked into agent binary at build time
   │ PK fragments stored as separate constants — NO PEM header
   │ String search for "BEGIN PUBLIC KEY" → <span class="fd">finds nothing</span>
   │ Key only reconstructed in memory at runtime: PK1+PK2+PK3+PK4
+  │ Pre-key pool (8 × 32-byte X25519 public keys) also baked in
   │
   <span class="fb">T+2 · stub_secret generated (enc modes)</span>
   │ Wizard generates 256-bit random stub_secret
@@ -1137,40 +1179,67 @@ Agent lifetime:
   │ Checks hw-keyed local blob (ddb) — miss on first run
   │ staged-enc: downloads stage2.enc, decrypts with baked stub_secret
   │ stageless-enc: decrypts baked config blob with baked stub_secret
-  │ Begins C2 loop; first heartbeat triggers server to delete stage2.enc
-  │ <span class="fd">stage2.enc deleted from cloud by server on first heartbeat</span>  ← point of no return
+  │ <span class="fb">Bootstrap Epoch 0:</span>
+  │   Agent generates ephemeral X25519 keypair
+  │   DH(eph_priv, prekey_pub[0]) → shared secret
+  │   epoch_key₀ = HKDF(shared, session_key, "stratum-epoch-0")
+  │   chain_key₀ = HKDF(epoch_key₀, agent_id, "stratum-chain-v1")
+  │ First heartbeat uploaded (v2 binary format, encrypted with epoch_key₀)
+  │ Server iterates prekey_privs to find matching DH → same epoch_key₀
+  │ <span class="fd">stage2.enc deleted from cloud by server on first heartbeat</span>
   │
   <span class="fb">T+3+ · Active session</span>
-  │ Agent uses public key for: decrypt incoming commands (RSA sign recovery)
-  │                            encrypt outgoing responses (RSA-encrypt AES key)
+  │ <span class="fb">Every check-in:</span> server sends new server_eph_pub in command header
+  │   Agent: DH(eph_priv_new, server_eph_pub) → epoch_key_{n+1}
+  │   Previous epoch keys destroyed → <span class="fb">forward secrecy</span>
+  │ KDF chain ratchets per message: chain_tag + counter for anti-replay
+  │ RSA-PSS verifies command signatures; epoch_key wraps AES keys
   │ Private key: never on target, only on operator server
-  │ Fresh AES key+IV generated per message — no session key reuse
   │
   <span class="fb">T+end · Kill / post-op</span>
     Operator deletes Tradecraft package
     private_key.pem <span class="fd">permanently destroyed</span>
-    Past encrypted responses: <span class="fd">irrecoverable</span> (no private key to decrypt)</div>
+    Epoch keys: already destroyed by ratchet — <span class="fd">irrecoverable</span>
+    Past traffic: <span class="fd">no key exists to decrypt any historical message</span></div>
 
 <p>The 4-part public key split is a deliberate obfuscation technique. A simple string search for the RSA public key header (<code>-----BEGIN PUBLIC KEY-----</code>) in the agent binary will find nothing, because the key is stored as four separate base64 strings with no PEM headers, only reassembled in memory at runtime.</p>
 
-<h3 id="s2-3">2.3 Command Wire Format</h3>
-<p>Commands are written to <code>input.txt</code> in the cloud folder. The agent reads the file, deletes it atomically, then decrypts. If decryption fails (wrong key, corrupt data, wrong session), the agent silently discards the input.</p>
-<div class="pre-label">input.txt — base64-encoded RSA-signed + AES-GCM-encrypted envelope</div>
-<pre><code><span class="cmt"># Three colon-delimited base64 segments:
-#   base64(GCM(session_key, aes_key)) : base64(nonce||ciphertext||tag) : base64(RSA-PSS sig)
+<h3 id="s2-3">2.3 Command Wire Format (v2)</h3>
+<p>Commands are written to <code>input.txt</code> in the cloud folder as raw binary (v2 wire format). The agent reads the file, deletes it atomically, then decrypts. If decryption or signature verification fails, the agent writes a <code>KM:&lt;timestamp&gt;</code> marker to the heartbeat file and discards the input.</p>
+<div class="pre-label">input.txt — v2 binary wire format (server → agent)</div>
+<pre><code><span class="cmt"># Binary envelope with version byte 0x02:
 #
-# session_key  — per-deployment 256-bit pre-shared key baked into the agent at build time
-#                (PLACEHOLDER_SESSION_KEY substitution; injected as _SS_K in staged-enc mode)
-# PSS sig      — covers sha256(segment_1 || segment_2); signed with server private key
+#   [0x02]                    — version byte (1 byte)
+#   [epoch:4 LE]              — epoch counter (uint32)
+#   [server_eph_pub:32]       — server's X25519 ephemeral public key
+#   [wrapped_len:4 LE]        — length of wrapped AES key blob
+#   [wrapped_aes:N]           — GCM(epoch_key, random_aes_key) — nonce(12)+ct+tag(16)
+#   [payload_len:4 LE]        — length of GCM payload
+#   [GCM_payload:M]           — GCM(random_aes_key, JSON task) — nonce(12)+ct+tag(16)
+#   [RSA-PSS signature:512]   — RSA-PSS-SHA256 over (wrapped_aes || GCM_payload)
 #
-# Agent: verify PSS sig → GCM-unwrap aes_key with session_key → AES-256-GCM decrypt payload
-# The session_key layer prevents a cloud-compromised attacker from using the cloud as an
-# oracle against the RSA key — the plaintext AES key is never at rest on the cloud.</span>
+# epoch_key  — derived from X25519 DH between server and agent, rotated per cycle
+# server_eph_pub — agent uses this to rotate to the next epoch on its next check-in
+# PSS sig    — signed with server private key; agent verifies before decrypting
+#
+# Agent: parse header → epoch rotate if needed → RSA-PSS verify sig →
+#        GCM-unwrap aes_key with epoch_key → AES-256-GCM decrypt payload</span></code></pre>
 
-eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span></code></pre>
+<div class="pre-label">Agent → Server wire format (heartbeat.txt / output.txt)</div>
+<pre><code><span class="cmt"># Binary envelope with version byte 0x02:
+#
+#   [0x02]                    — version byte (1 byte)
+#   [epoch:4 LE]              — current epoch counter (uint32)
+#   [agent_eph_pub:32]        — agent's X25519 ephemeral public key
+#   [counter:8 LE]            — KDF chain counter (uint64, monotonic)
+#   [chain_tag:32]            — HMAC-SHA256 authentication tag from KDF chain
+#   [GCM_payload:N]           — GCM(epoch_key, plaintext) — nonce(12)+ct+tag(16)
+#
+# Server: verify chain_tag (anti-replay) → decrypt with epoch_key
+# If epoch > server's epoch: server rotates via DH(server_eph_priv, agent_eph_pub)</span></code></pre>
 
 <div class="pre-label">Decrypted AES-GCM plaintext — JSON task envelope</div>
-<pre><code><span class="cmt"># After session_key GCM-unwrap + AES-256-GCM decrypt, the plaintext is a compact JSON object:</span>
+<pre><code><span class="cmt"># After epoch_key GCM-unwrap + AES-256-GCM decrypt, the plaintext is a compact JSON object:</span>
 {<span class="str">"id"</span>:<span class="str">"&lt;cmd_id&gt;"</span>, <span class="str">"type"</span>:<span class="str">"&lt;task_type&gt;"</span>, <span class="str">"args"</span>:{...}}
 
 <span class="cmt"># task_type values (server → agent):
@@ -1204,7 +1273,7 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 {<span class="str">"id"</span>:<span class="str">"a1b2c7"</span>, <span class="str">"type"</span>:<span class="str">"exit"</span>,            <span class="str">"args"</span>:{}}</code></pre>
 
 <div class="pre-label">Decrypted AES-GCM plaintext — JSON response envelope (output.txt)</div>
-<pre><code><span class="cmt"># Agent AES-256-GCM encrypts a compact JSON response object (RSA-OAEP wraps AES key):</span>
+<pre><code><span class="cmt"># Agent AES-256-GCM encrypts a compact JSON response object (epoch_key wraps encryption):</span>
 {<span class="str">"id"</span>:<span class="str">"&lt;cmd_id&gt;"</span>, <span class="str">"type"</span>:<span class="str">"&lt;task_type&gt;"</span>, <span class="str">"status"</span>:<span class="str">"ok"</span>|<span class="str">"error"</span>,
  <span class="str">"output"</span>:<span class="str">"&lt;stdout/stderr&gt;"</span>, <span class="str">"cwd"</span>:<span class="str">"&lt;path&gt;"</span>, <span class="str">"staging_path"</span>:<span class="str">""</span>,
  <span class="str">"artifacts"</span>:[{<span class="str">"op"</span>:<span class="str">"add"</span>|<span class="str">"remove"</span>, <span class="str">"type"</span>:<span class="str">"&lt;kind&gt;"</span>, <span class="str">"path"</span>:<span class="str">"&lt;path&gt;"</span>}]}
@@ -1231,8 +1300,8 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   1. Wizard generates 256-bit random stub_secret
   2. stub_secret is used to AES-256-GCM + PBKDF2-SHA256 (210 000 iter) encrypt:
        staged-enc:    full stage-2 agent payload (bash / PS1 script, ~100 KB)
-       stageless-enc: full C2 config string:
-                      {folder}|{input}|{output}|{hb}|{sleep}|{jitter}|{pub_key_b64}|{stun_ip}
+       stageless-enc: full C2 config string (10 pipe-delimited fields):
+                      {folder}|{input}|{output}|{hb}|{sleep}|{jitter}|{pub_key_b64}|{stun_ip}|{session_key_hex}|{prekey_pool_b64}
      Wire format (both): "SGCM:" + base64(salt[8] + nonce[12] + ciphertext + tag[16])
   3. staged-enc:    stage2.enc uploaded to cloud at {folder_path}/stage2.enc
      stageless-enc: encrypted config blob baked into binary at compile time
@@ -1324,10 +1393,11 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   <span class="fb">Irrecoverable from cloud</span>   <span class="fb">Config only in binary</span>       <span class="fd">Credentials exposed</span></div>
 
 <div class="callout callout-info">
-  <div class="callout-title">Session Key and <code>_SS_K</code> — Static Signature Reduction</div>
-  <p>Every Stratum agent embeds a per-deployment 256-bit <strong>session key</strong> at build time. This key GCM-wraps the per-message AES key in the command wire format (see §2.3), preventing a cloud-compromised attacker from acting as a decrypt oracle against the RSA key pair.</p>
-  <p>In <strong>staged-enc</strong> mode the stub must also hand the session key to the decrypted stage-2 payload before executing it. It does this by setting the environment variable <code>_SS_K</code> immediately before the exec call. The stage-2 agent reads <code>_SS_K</code> into its <code>SESSION_KEY</code> variable at the very first line, then calls <code>unset _SS_K</code> / <code>[Environment]::SetEnvironmentVariable('_SS_K', $null)</code> so the key is not visible in <code>/proc/&lt;pid&gt;/environ</code> or PowerShell's environment block after those first instructions. The opaque name <code>_SS_K</code> (versus a branded name) is an intentional static-signature reduction choice.</p>
-  <p>In <strong>stageless-enc</strong> and <strong>stageless-plain</strong> modes, the session key is baked directly into the agent script via the <code>PLACEHOLDER_SESSION_KEY</code> substitution — no environment variable is needed.</p>
+  <div class="callout-title">Session Key, Pre-Key Pool, and <code>agent_id</code></div>
+  <p>Every Stratum agent embeds a per-deployment 256-bit <strong>session key</strong> at build time. In the v2 protocol, the session key serves as the HKDF salt for bootstrapping the first epoch key (Epoch 0). It is NOT used to directly wrap AES keys — that role belongs to the rotating <code>epoch_key</code> derived from X25519 DH.</p>
+  <p>The <strong>pre-key pool</strong> (8 × X25519 keypairs) enables the first epoch bootstrap without a direct server-agent handshake. The agent picks a pre-key public key and performs DH with its ephemeral private key. The server iterates its pre-key private keys to find the matching one.</p>
+  <p>The <strong>agent_id</strong> is <code>SHA256("stratum-agent-id:" || session_key)</code> — deterministic on both sides, used as the HKDF info parameter for chain key derivation. This binds the KDF chain to the specific session.</p>
+  <p>In <strong>staged-enc</strong> mode the stub hands the session key to the stage-2 payload via the <code>_SS_K</code> environment variable, which is unset immediately after reading. In <strong>stageless-enc</strong> and <strong>stageless-plain</strong> modes, the session key is baked directly into the binary.</p>
 </div>
 
 <h3 id="s2-5">2.5 Key Derivation &amp; Entropy Engineering</h3>
@@ -1351,6 +1421,88 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   <tr><td>Native Rust .rodata entropy</td><td>≤ 5.5 b/B</td><td>6.5 b/B</td><td>7.0 b/B</td></tr>
 </table>
 <p>The Rust native agent includes a 128 KB entropy pad compiled directly into <code>.rodata</code> via a <code>#[link_section]</code> attribute. This dilutes the entropy of the adjacent high-entropy script bytes from the embedded agent payload.</p>
+
+<h3 id="s2-6">2.6 Forward Secrecy (Epoch ECDH + KDF Chain)</h3>
+<p>Stratum v2 implements <strong>true forward secrecy</strong> using an Epoch ECDH ratchet (outer ratchet) combined with a KDF chain (inner ratchet). This design ensures that compromise of the current session state does not expose any past traffic, and that message replays and agent forks are detected.</p>
+
+<h4>Outer Ratchet — Epoch ECDH (X25519)</h4>
+<p>Each check-in cycle performs a fresh X25519 Diffie-Hellman key exchange. The resulting shared secret, combined with the previous epoch key as HKDF salt, derives the new <code>epoch_key</code>. Previous epoch keys are destroyed.</p>
+
+<div class="flow-box"><span class="fc">─── Epoch Ratchet ─────────────────────────────────────────────────────────</span>
+
+  <span class="fb">Epoch 0 (Bootstrap)</span>
+  │ Agent generates ephemeral X25519 keypair (eph_priv, eph_pub)
+  │ Agent picks prekey_pub[0] from baked pre-key pool
+  │ shared = X25519(eph_priv, prekey_pub[0])
+  │ epoch_key₀ = HKDF-SHA256(shared, salt=session_key, info="stratum-epoch-0")
+  │ chain_key₀ = HKDF-SHA256(epoch_key₀, salt=agent_id, info="stratum-chain-v1")
+  │
+  │ Server: iterates prekey_privs[0..7], tries X25519(priv[i], agent_eph_pub)
+  │         until HKDF output matches → bootstraps same epoch_key₀ + chain_key₀
+  │
+  <span class="fb">Epoch N → N+1 (Rotation)</span>
+  │ Server sends server_eph_pub in command v2 header
+  │ Agent: generates new eph keypair
+  │        shared = X25519(eph_priv_new, server_eph_pub)
+  │        epoch_key_{N+1} = HKDF(shared, salt=epoch_key_N, info="stratum-epoch-{N+1}")
+  │        chain_key_{N+1} = HKDF(epoch_key_{N+1}, salt=agent_id, info="stratum-chain-v1")
+  │
+  │ <span class="fd">epoch_key_N destroyed</span> (prev_epoch_key kept for one cycle only,
+  │  in case of in-flight messages encrypted with old key)
+  │
+  <span class="cmt">Key derivation chain:
+    X25519 shared secret
+        │
+        ▼
+    HKDF-SHA256(ikm=shared, salt=prev_epoch_key, info="stratum-epoch-N")
+        │
+        ├── epoch_key (wraps per-message AES keys)
+        │
+        └── HKDF-SHA256(ikm=epoch_key, salt=agent_id, info="stratum-chain-v1")
+                │
+                └── chain_key (feeds inner ratchet)</span></div>
+
+<h4>Inner Ratchet — KDF Chain (HMAC-SHA256)</h4>
+<p>Within each epoch, the chain key ratchets forward on every message. This provides per-message authentication, a monotonic counter for anti-replay, and fork detection (two agents with the same initial state will diverge after the first message).</p>
+
+<div class="flow-box"><span class="fc">─── KDF Chain Advance ─────────────────────────────────────────────────────</span>
+
+  <span class="fb">Per message (agent → server):</span>
+  │ msg_key    = HMAC-SHA256(chain_key, 0x01)
+  │ chain_key' = HMAC-SHA256(chain_key, 0x02)    ← ratchet forward
+  │ tag_input  = counter (uint64 LE) || gcm_payload
+  │ chain_tag  = HMAC-SHA256(msg_key, tag_input)  ← per-message auth
+  │ counter += 1
+  │
+  <span class="fb">Verification (server side):</span>
+  │ Server advances its chain_key to match claimed counter
+  │ Recomputes chain_tag — must match
+  │ Allows skip of up to 10 messages (MAX_SKIP) for lost heartbeats
+  │ Rejects:  counter &lt; server_counter  (replay)
+  │           counter &gt; server_counter + MAX_SKIP  (desync / fork)
+  │           tag mismatch  (tampering / wrong key)
+
+  <span class="cmt">Properties:
+    ✓ Forward secrecy    — old chain keys cannot be recovered from current state
+    ✓ Anti-replay        — monotonic counter rejects duplicate messages
+    ✓ Fork detection     — divergent chain states produce mismatched tags
+    ✓ Ordering           — out-of-order messages beyond MAX_SKIP are rejected</span></div>
+
+<h4>Implementation</h4>
+<table>
+  <tr><th>Component</th><th>Agent (Rust)</th><th>Server (Python)</th></tr>
+  <tr><td>Module</td><td><code>epoch.rs</code></td><td><code>providers/_epoch.py</code></td></tr>
+  <tr><td>X25519</td><td><code>x25519-dalek</code> crate</td><td><code>cryptography.hazmat.primitives.asymmetric.x25519</code></td></tr>
+  <tr><td>HKDF</td><td><code>hkdf</code> crate (SHA-256)</td><td><code>cryptography.hazmat.primitives.kdf.hkdf</code></td></tr>
+  <tr><td>HMAC</td><td><code>hmac</code> crate (SHA-256)</td><td><code>hmac</code> stdlib</td></tr>
+  <tr><td>AES-256-GCM</td><td><code>aes-gcm</code> crate</td><td><code>cryptography.hazmat.primitives.ciphers.aead.AESGCM</code></td></tr>
+  <tr><td>State persistence</td><td>HW-keyed blob (<code>{blob}.epoch</code>)</td><td>Session profile JSON (<code>epoch_state_json</code>)</td></tr>
+</table>
+
+<div class="callout callout-warn">
+  <div class="callout-title">v2 protocol is mandatory</div>
+  All agents now use the v2 wire format exclusively. The v1 protocol (base64 colon-delimited, RSA-OAEP key wrapping, static session_key) has been removed. Script agents (bash, PowerShell) have not been updated to v2 and are no longer compatible — deploy the Rust native agent for all new sessions. Existing v1 sessions will not connect to a v2 server.
+</div>
 
 </section>
 
@@ -1401,7 +1553,11 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   <span class="fd">Flagged</span> = anything using /tmp or /dev/shm that AV scans proactively</div>
 
 <h3 id="s3-2">3.2 Script Agents (bash / PowerShell)</h3>
-<p>The script agents are the baseline delivery format. They are generated for every deployment regardless of build tooling. The bash agent (<code>agents/templates/core.sh</code>) is concatenated with the provider-specific transport layer (<code>providers/{name}/transport/agent.sh</code>) at deploy time, producing a single self-contained file with all credentials and configuration embedded.</p>
+<div class="callout callout-warn">
+  <div class="callout-title">Script agents are v1-only — deprecated</div>
+  Script agents (bash, PowerShell) use the v1 wire protocol (base64 colon-delimited, RSA-OAEP key wrapping, static session_key). The server now requires the v2 protocol (Epoch ECDH + KDF chain). Script agents <strong>cannot connect to a v2 server</strong> and are no longer generated for new deployments. Deploy the <strong>Rust native agent</strong> for all new sessions. Existing v1 script agent sessions will not reconnect after a server upgrade.
+</div>
+<p>The script agents were the baseline delivery format. The bash agent (<code>agents/templates/core.sh</code>) is concatenated with the provider-specific transport layer (<code>providers/{name}/transport/agent.sh</code>) at deploy time, producing a single self-contained file with all credentials and configuration embedded.</p>
 <p><strong>Composition at deploy time:</strong></p>
 <pre><code><span class="cmt"># agent.sh build process (wizard)</span>
 <span class="var">transport</span> = providers/dropbox/transport/agent.sh   <span class="cmt"># token refresh, upload, download</span>
@@ -1447,10 +1603,12 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 <p><strong>Source modules:</strong></p>
 <ul>
   <li><code>transport.rs</code> — provider HTTP transport, selected at compile time via <code>cfg(stratum_provider_*)</code></li>
-  <li><code>crypto.rs</code> — RSA-4096 key load, command decrypt (<code>rsa_pkcs1_type1_recover</code>), output encrypt</li>
+  <li><code>epoch.rs</code> — Epoch ECDH + KDF chain forward secrecy (X25519, HKDF-SHA256, HMAC-SHA256); v2 wire format encrypt/decrypt for heartbeats, commands, and responses</li>
+  <li><code>crypto.rs</code> — RSA-4096 key load, RSA-PSS verify, AES-256-GCM primitives, staging file decrypt</li>
   <li><code>crypto_compat.rs</code> — stage2/config payload decrypt with dual-format dispatch: AES-256-GCM ("SGCM:" prefix, current) and AES-256-CBC legacy ("Salted__" prefix, backward compat); PBKDF2-SHA256 210 000 iter; key is stub_secret baked at compile time</li>
   <li><code>persist.rs</code> — full multi-technique persistence engine, mirroring the script agent</li>
   <li><code>sysinfo.rs</code> — hostname, user, OS, IP enumeration for heartbeat</li>
+  <li><code>inlinexec.rs</code> — in-memory execution: BOF, .NET assembly, memexec, fileless scripts</li>
   <li><code>staged.rs</code> / <code>stageless_enc.rs</code> — mode-specific bootstrap logic (ddb-first, cloud fallback)</li>
 </ul>
 <p><strong>Compilation targets produced per deployment:</strong></p>
@@ -1466,13 +1624,17 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   <span class="fb">STARTUP</span>
   │
   ├─ Reconstruct RSA public key: PK1 + PK2 + PK3 + PK4 (in memory)
+  ├─ Decode pre-key pool (8 × X25519 pub keys from STRATUM_PREKEY_POOL_B64)
+  ├─ Derive agent_id = SHA256("stratum-agent-id:" || session_key)
   ├─ [staged-enc]    try hw-keyed ddb blob → if miss: download stage2.enc,
   │                  decrypt with baked stub_secret, exec in memory
   ├─ [stageless-enc] try hw-keyed ddb blob → if miss: decrypt baked config
   │                  blob with baked stub_secret in memory
+  ├─ <span class="fb">Bootstrap Epoch 0</span> or restore from persisted epoch state ({blob}.epoch)
+  │  X25519 DH(eph_priv, prekey_pub[0]) → epoch_key₀ via HKDF
   ├─ Collect SYSINFO: hostname, user, OS, IP (internal), IP (STUN)
   │  PID, process name, CWD, privilege level, domain
-  └─ Upload heartbeat.txt (state=active + all sysinfo fields)
+  └─ Upload heartbeat.txt (v2 binary: epoch-encrypted with chain auth)
 
   <span class="fb">MAIN LOOP</span>  (runs until task type "exit" or "kill" received)
   │
@@ -1481,20 +1643,28 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   │                                                                      │
   │  1. <span class="fe">WAKE</span>                                                          │
   │     compute next_sleep = sleep_secs ± (sleep_secs × jitter / 100)   │
-  │     check maintenance_window — if inside window: sleep, skip beacon  │
+  │     check kill_date — if expired: cleanup + exit                     │
+  │     check maintenance_window — if outside window: sleep, skip beacon │
   │                                                                      │
-  │  2. <span class="fe">CHECK CLOUD — heartbeat</span>                                         │
-  │     upload heartbeat.txt (state, hostname, user, OS, IPs, PID, CWD) │
+  │  2. <span class="fe">HEARTBEAT (v2 epoch-encrypted)</span>                                  │
+  │     build heartbeat string (state, host, user, OS, IPs, PID, CWD)   │
+  │     KDF chain advance → chain_tag + counter                          │
+  │     AES-256-GCM encrypt with epoch_key                               │
+  │     prepend v2 header [0x02|epoch|eph_pub|counter|tag|GCM]           │
+  │     upload heartbeat.txt                                              │
+  │     persist epoch state to {blob}.epoch                               │
   │                                                                      │
-  │  3. <span class="fe">CHECK CLOUD — command</span>                                           │
+  │  3. <span class="fe">CHECK CLOUD — command (v2 binary)</span>                               │
   │     try download input.txt                                           │
-  │     if exists:                                                       │
-  │       DELETE input.txt (atomic read+delete)                          │
-  │       verify RSA-PSS signature over (seg1 || seg2)                   │
-  │       GCM-unwrap AES key from seg1 using baked session_key           │
-  │       AES-256-GCM decrypt seg2 + tag verify → JSON task envelope     │
+  │     if exists and not MZ/empty:                                      │
+  │       parse v2 header → extract server_eph_pub                       │
+  │       <span class="fb">epoch rotate</span>: DH(eph_priv, server_eph_pub) → new epoch_key   │
+  │       GCM-unwrap AES key with epoch_key                               │
+  │       RSA-PSS verify signature over (wrapped_aes || payload)         │
+  │       AES-256-GCM decrypt → JSON task envelope                       │
   │       parse: id, type, args                                          │
-  │       on auth failure → write KM:<ts> to heartbeat, skip dispatch    │
+  │       on auth failure → write KM:&lt;ts&gt; to heartbeat, skip dispatch    │
+  │       sync epoch_key into AgentState for staging decrypt              │
   │                                                                      │
   │  4. <span class="fe">DISPATCH</span>                                                        │
   │     match type: persist_*  → persist engine (persist.rs)            │
@@ -1521,12 +1691,13 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
   │                script_exec → fileless script via stdin pipe           │
   │                script_exec_ab → fileless script + AMSI bypass        │
   │                                                                      │
-  │  5. <span class="fe">ENCRYPT RESPONSE</span>                                               │
-  │     gen fresh AES-256-GCM key + 12-byte nonce                        │
-  │     AES-256-GCM encrypt: JSON response envelope                      │
+  │  5. <span class="fe">ENCRYPT RESPONSE (v2 epoch-encrypted)</span>                           │
+  │     KDF chain advance → chain_tag + counter                          │
+  │     AES-256-GCM encrypt: JSON response envelope with epoch_key       │
   │     {"id","type","status","output","cwd","artifacts":[...]}          │
-  │     RSA-OAEP encrypt AES key with embedded public key                │
-  │     encode → upload output.txt                                       │
+  │     prepend v2 header [0x02|epoch|eph_pub|counter|tag|GCM]           │
+  │     upload output.txt                                                 │
+  │     persist epoch state                                               │
   │                                                                      │
   │  6. <span class="fe">SLEEP + JITTER</span>                                                  │
   │     thread::sleep(Duration::from_secs(next_sleep))                  │
@@ -1535,7 +1706,8 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
                                       │ repeat
                                       └──────────────►  back to step 1
 
-  <span class="cmt">Source files:  main.rs (loop) · transport.rs (cloud I/O) · crypto.rs (RSA+AES)
+  <span class="cmt">Source files:  lib.rs (loop) · epoch.rs (forward secrecy, v2 wire format)
+               transport.rs (cloud I/O) · crypto.rs (RSA-PSS, AES-GCM, staging)
                persist.rs (techniques) · sysinfo.rs (SYSINFO collection)
                creds.rs (credential harvesting) · inlinexec.rs (BOF/assembly/memexec)
                staged.rs / stageless_enc.rs (startup mode logic)</span></div>
@@ -1584,13 +1756,14 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 
 <h3 id="s3-5">3.5 Agent Feature Parity</h3>
 
-<p>The three beacon types share the same C2 protocol and cloud channel but differ significantly in tradecraft capabilities. <strong>The Rust native agent is the operational reference implementation</strong> — it has full feature coverage on both Linux and Windows. The script agents (bash, PowerShell) provide reliable core C2 functionality but do not implement the complete tradecraft module.</p>
+<p><strong>The Rust native agent is the operational reference implementation</strong> — it has full feature coverage on both Linux and Windows, and is the only agent supporting the v2 protocol (Epoch ECDH + KDF chain forward secrecy). Script agents (bash, PowerShell) are v1-only and no longer compatible with the server.</p>
 
 <h4>Complete Feature Matrix</h4>
 <table>
   <tr><th>Feature</th><th>Rust Native</th><th>PowerShell</th><th>Bash</th><th>Notes</th></tr>
   <tr><th colspan="5" style="text-align:left; background:var(--bg-code); padding:6px 10px;">Core C2</th></tr>
-  <tr><td>Heartbeat / beacon</td><td>✓</td><td>✓</td><td>✓</td><td>All agents share the same cloud wire format</td></tr>
+  <tr><td>v2 protocol (Epoch ECDH + KDF)</td><td>✓</td><td>—</td><td>—</td><td><strong>Required.</strong> Script agents use v1 and cannot connect</td></tr>
+  <tr><td>Heartbeat / beacon</td><td>✓</td><td>✓</td><td>✓</td><td>Rust: v2 binary format. Scripts: v1 (incompatible)</td></tr>
   <tr><td>RSA-4096 + AES-256-GCM crypto</td><td>✓</td><td>✓</td><td>✓</td><td>PS1 uses .NET crypto; bash shells out to python3</td></tr>
   <tr><td>Shell pass-through</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
   <tr><td>/sysinfo</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
@@ -1646,16 +1819,16 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 
 <div class="callout callout-info">
   <div class="callout-title">Operational recommendation</div>
-  For any engagement requiring credential harvesting, in-memory execution, or maximum OPSEC on tradecraft operations: <strong>deploy the Rust native agent</strong>. It is the only beacon with complete feature coverage on both platforms. Use script agents for initial access, compatibility fallback (no Rust toolchain available), or when the target environment restricts binary execution but allows script interpreters.
+  <strong>Deploy the Rust native agent for all new sessions.</strong> It is the only agent supporting the v2 protocol (forward secrecy), and the only beacon with complete feature coverage on both platforms. Script agents (bash, PowerShell) use the v1 protocol and cannot connect to a v2 server.
 </div>
 
 <h3 id="s3-6">3.6 Choosing the Right Agent</h3>
 <table>
   <tr><th>Situation</th><th>Recommended Agent</th><th>Rationale</th></tr>
   <tr><td>Default Linux deployment</td><td><code>.elf</code> (Rust native)</td><td>Full feature parity including /creds, /bof, /memexec. Musl-static, zero dependencies</td></tr>
-  <tr><td>Minimal Linux (no Rust toolchain)</td><td><code>.sh</code> or ELF loader</td><td>Script works everywhere; no /creds but core C2 + persistence is complete</td></tr>
+  <tr><td>Minimal Linux (no Rust toolchain)</td><td><code>.sh</code> (legacy v1 only)</td><td>Script works only with v1 servers. For v2: cross-compile Rust agent on operator machine</td></tr>
   <tr><td>Default Windows deployment</td><td><code>.exe</code> (Rust native)</td><td>Full feature parity including in-memory SAM, /creds, /bof. No interpreter in process tree</td></tr>
-  <tr><td>Windows (no Rust toolchain)</td><td><code>.ps1</code></td><td>Core C2 + persistence + /creds (harvest, sam, coerce, listen). Requires PS7+ (.NET 6+)</td></tr>
+  <tr><td>Windows (no Rust toolchain)</td><td><code>.ps1</code> (legacy v1 only)</td><td>v1 protocol only — requires v1 server. For v2: cross-compile Rust agent on operator machine</td></tr>
   <tr><td>EDR-heavy Windows environment</td><td><code>.exe</code> (MSVC-ABI)</td><td>No PowerShell in process tree; MSVC import table; binary-level entropy balanced</td></tr>
   <tr><td>Credential harvesting / listeners</td><td>Rust native (any format)</td><td>Multi-threaded listeners, in-memory SAM, cross-platform harvest. PS1 is poll-based with higher OPSEC cost on SAM</td></tr>
   <tr><td>In-memory execution (BOF/assembly)</td><td>Rust native only</td><td>COFF loading, CLR hosting, reflective PE/ELF — not available in script agents</td></tr>
@@ -2198,44 +2371,44 @@ eyJhbGciOiJSU0EtT0FFUC...  <span class="cmt"># (encoded envelope, ~1.5 KB)</span
 <p>The transport layer in agent scripts follows the same contract: <code>_upload()</code>, <code>_download()</code>, and internally <code>_token_refresh()</code> for OAuth2-based providers. Token expiry handling (retry on 401/expired token) is the responsibility of the transport layer, not the C2 core.</p>
 
 <h3 id="s6-3">6.3 Heartbeat Wire Format</h3>
-<div class="pre-label">heartbeat.txt — plain key=value, encrypted before upload</div>
-<pre><code>state=active
-hostname=DESKTOP-K8PX2
-user=corp\jdoe
-os=Windows 10 Pro 22H2 x64
-ip=192.168.14.105
-ip_ext=185.23.104.88
-pid=6412
-process=powershell.exe
-cwd=C:\Users\jdoe
-priv=user
-domain=corp.acme.com
-ts=2026-06-21T09:14:22Z</code></pre>
-<p>The heartbeat is <em>not encrypted</em> in the same way as commands — it uses a simpler encoding since the agent cannot encrypt with the RSA key (that would require the private key). Instead, the heartbeat format is designed to be opaque to casual observers of the cloud folder while remaining parseable by the server. The server polls the heartbeat file and updates the session state machine accordingly.</p>
+<div class="pre-label">heartbeat.txt — v2 binary envelope (epoch-encrypted)</div>
+<pre><code><span class="cmt"># The heartbeat is encrypted using the same v2 wire format as responses:
+#   [0x02][epoch:4][agent_eph_pub:32][counter:8][chain_tag:32][GCM payload]
+#
+# The GCM payload, after decryption with epoch_key, contains a pipe-delimited string:</span>
+
+1724595262|DESKTOP-K8PX2|corp\jdoe|192.168.14.105|Windows 10 Pro 22H2 x64|user|C:\Users\jdoe|/tmp|185.23.104.88|6412|powershell.exe|corp.acme.com|C:\ProgramData\.cache|1|42|1724595322</code></pre>
+<p>The heartbeat uses the <strong>same v2 epoch-encrypted wire format</strong> as command responses (see §2.3). The heartbeat plaintext is a pipe-delimited string, encrypted with the current <code>epoch_key</code> and authenticated by the KDF chain (chain_tag + counter). The server decrypts the heartbeat using the shared epoch state and verifies the chain tag for anti-replay. On the first heartbeat (Epoch 0 bootstrap), the server iterates its pre-key private keys to find the matching DH and derive the initial epoch state.</p>
 <p>External IP detection via STUN is <strong>mandatory</strong> — the STUN probe always runs at startup and the result populates <code>ip_ext</code> in every heartbeat. This happens once at startup and is cached for the session lifetime. If STUN fails, the agent does not fall back silently — the field is set to <code>"unknown"</code> and the startup error is logged, ensuring operators are never given a false sense of external IP knowledge.</p>
 
 <!-- Heartbeat wire format visual -->
 <div class="flow-box"><span class="fc">─── Heartbeat Wire Format · Field Reference ───────────────────────────────</span>
 
-  Field           Type     Example                       Description
-  ────────────────────────────────────────────────────────────────────────────
-  <span class="fb">state</span>           enum     active                        active | idle | exiting
-  <span class="fb">hostname</span>        string   DESKTOP-K8PX2                 os.hostname() / hostname cmd
-  <span class="fb">user</span>            string   corp\jdoe                     whoami / $env:USERNAME
-  <span class="fb">os</span>              string   Windows 10 Pro 22H2 x64       platform + release + arch
-  <span class="fb">ip</span>              string   192.168.14.105                first non-loopback internal IP
-  <span class="fb">ip_ext</span>          string   185.23.104.88                 NAT-translated IP via STUN
-  <span class="fb">pid</span>             int      6412                          os.getpid() / $PID
-  <span class="fb">process</span>         string   powershell.exe                /proc/self/comm or $PSVersionTable
-  <span class="fb">cwd</span>             string   C:\Users\jdoe                 os.getcwd() / $PWD
-  <span class="fb">priv</span>            enum     user / root / admin           id -u==0 / IsUserAnAdmin()
-  <span class="fb">domain</span>          string   corp.acme.com                 net config workstation | dnsdomainname
-  <span class="fb">ts</span>              ISO-8601 2026-06-21T09:14:22Z          UTC timestamp of heartbeat write
+  <span class="cmt">Pipe-delimited string (plaintext inside v2 GCM envelope):</span>
+  <span class="fb">{ts}|{host}|{user}|{ip}|{os}|{privs}|{start_cwd}|{op_cwd}|{ip_ext}|{pid}|{process}|{domain}|{blob}|{blob_tried}|{seq}|{next_hb_at}</span>
 
-  <span class="cmt">Format: plain key=value pairs, one per line (no JSON, no quoting).
-  Written to {folder}/heartbeat.txt every beacon cycle.
-  Server polls heartbeat.txt on the same interval.
-  Not encrypted via RSA+AES — but the cloud folder is private (requires OAuth2 token to read).
+  Field           Pos  Type     Example                       Description
+  ────────────────────────────────────────────────────────────────────────────
+  <span class="fb">ts</span>              0    unix     1724595262                    UTC Unix timestamp
+  <span class="fb">hostname</span>        1    string   DESKTOP-K8PX2                 os.hostname()
+  <span class="fb">user</span>            2    string   corp\jdoe                     whoami
+  <span class="fb">ip</span>              3    string   192.168.14.105                first non-loopback internal IP
+  <span class="fb">os</span>              4    string   Windows 10 Pro 22H2 x64       platform + release + arch
+  <span class="fb">privs</span>           5    enum     user / root / admin           id -u==0 / IsUserAnAdmin()
+  <span class="fb">start_cwd</span>       6    string   C:\Users\jdoe                 agent startup CWD
+  <span class="fb">op_cwd</span>          7    string   /tmp                          operator-set working dir
+  <span class="fb">ip_ext</span>          8    string   185.23.104.88                 NAT-translated IP via STUN
+  <span class="fb">pid</span>             9    int      6412                          os.getpid()
+  <span class="fb">process</span>         10   string   powershell.exe                /proc/self/comm
+  <span class="fb">domain</span>          11   string   corp.acme.com                 DNS domain
+  <span class="fb">blob_path</span>       12   string   C:\ProgramData\.cache         hw-keyed ddb path
+  <span class="fb">blob_tried</span>      13   bool     1                             1 if ddb was attempted
+  <span class="fb">seq</span>             14   int      42                            monotonic heartbeat counter
+  <span class="fb">next_hb_at</span>      15   unix     1724595322                    predicted next heartbeat time
+
+  <span class="cmt">Written to {folder}/heartbeat.txt every beacon cycle.
+  Fully encrypted via v2 Epoch ECDH — epoch_key wraps AES, chain_tag authenticates.
+  Server polls heartbeat.txt and decrypts with shared epoch state.
   Server updates session state from each heartbeat: status, last_seen, all fields above.
 
   STUN resolution (mandatory):
@@ -3692,9 +3865,21 @@ stub.exe        <span class="cmt"># run directly or inject via preferred loader<
   <iframe class="mock-iframe" src="mockups.html?s=scene-persist-tab" style="min-width:100%"></iframe>
 </div>
 
+<!-- Credentials tab mockup -->
+<div class="mock-wrap">
+  <div class="mock-label">WebGUI · Credentials tab — harvested + manual credentials (SAM, NTLMv2, passwords)</div>
+  <iframe class="mock-iframe" src="mockups.html?s=scene-creds-tab" style="min-width:100%"></iframe>
+</div>
+
+<!-- Control tab mockup -->
+<div class="mock-wrap">
+  <div class="mock-label">WebGUI · Control tab — sleep/jitter timing, stop agent, session teardown</div>
+  <iframe class="mock-iframe" src="mockups.html?s=scene-control-tab" style="min-width:100%"></iframe>
+</div>
+
 <!-- Info tab mockup -->
 <div class="mock-wrap">
-  <div class="mock-label">WebGUI · Info tab — full session profile (system + deployment config)</div>
+  <div class="mock-label">WebGUI · Info tab — full session profile (identity, agent, channel, guardrails, sysinfo)</div>
   <iframe class="mock-iframe" src="mockups.html?s=scene-info-tab" style="min-width:100%"></iframe>
 </div>
 
@@ -4320,7 +4505,7 @@ POST /api/v1/update/check      <span class="cmt"># force re-check</span></code><
   <li>An <strong>amber badge</strong> ("⚠ Agent outdated") in the session header</li>
   <li>A <strong>warning cell</strong> ("Deployed With: ⚠ vX.Y.Z") in the Info tab under Guardrails</li>
 </ul>
-<p>Old sessions without the field (pre-v1.2) default to an empty string — no warning is shown. The warning is informational only; it does not block any operations.</p>
+<p>Old sessions without the field (pre-v2.0) default to an empty string — no warning is shown. The warning is informational only; it does not block any operations.</p>
 
 <h3 id="s14-9">7.9 Context Menus</h3>
 

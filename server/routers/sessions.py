@@ -560,8 +560,11 @@ async def upload_file(session_id: str, request: Request,
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     # Encrypt file content + use opaque random filename on cloud
-    from providers._crypto import encrypt_staging
-    enc_data     = encrypt_staging(data, s.session_key_hex)
+    from providers._epoch import encrypt_staging_v2
+    _es = s.get_epoch_state()
+    if _es is None:
+        raise HTTPException(status_code=400, detail="Session epoch not bootstrapped")
+    enc_data = encrypt_staging_v2(data, _es.epoch_key)
     staging_name = os.urandom(8).hex()  # opaque 16-char hex filename
     staging      = s.profile.staging_path + "/" + staging_name
 
@@ -608,8 +611,11 @@ async def exec_inline(session_id: str, request: Request,
     from pathlib import PurePosixPath
     safe_name = PurePosixPath(file.filename).name if file.filename else "payload"
 
-    from providers._crypto import encrypt_staging
-    enc_data     = encrypt_staging(data, s.session_key_hex)
+    from providers._epoch import encrypt_staging_v2
+    _es = s.get_epoch_state()
+    if _es is None:
+        raise HTTPException(status_code=400, detail="Session epoch not bootstrapped")
+    enc_data = encrypt_staging_v2(data, _es.epoch_key)
     staging_name = os.urandom(8).hex()
     staging      = s.profile.staging_path + "/" + staging_name
 

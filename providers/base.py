@@ -42,8 +42,6 @@ from providers._crypto import (
     decrypt_stage2,
     deploy_id_from_key,
     build_task,
-    encrypt_command,
-    decrypt_output,
 )
 
 from providers._session import (

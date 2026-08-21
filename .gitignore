@@ -66,6 +66,7 @@ docs/ASSESSMENT_REPORT.md
 docs/ROADMAP_JSON_ENVELOPE.md
 docs/*_REVIEW.md
 docs/*_REPORT.md
+docs/forward-secrecy.html
 
 # ── Python cache & packaging ──────────────────────────────────────────────────
 __pycache__/

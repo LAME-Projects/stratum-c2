@@ -22,9 +22,6 @@ from providers.base import (
     # monitors
     HeartbeatMonitor,
     AsyncPoller,
-    # crypto
-    encrypt_command,
-    decrypt_output,
     # send
     send_async,
     # helpers
@@ -37,6 +34,5 @@ __all__ = [
     "BaseTransport", "TRANSPORT_REGISTRY",
     "SessionProfile", "AgentState", "SessionHistory", "Session", "SessionManager",
     "HeartbeatMonitor", "AsyncPoller",
-    "encrypt_command", "decrypt_output",
     "send_async", "deploy_id_from_key", "decrypt_stage2",
 ]

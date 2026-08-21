@@ -162,6 +162,7 @@ fn main() {
             // STRATUM_SESSION_KEY_XOR = hex(session_key ^ mask), STRATUM_XOR_MASK = hex(mask).
             // Prevents the raw hex key from appearing verbatim in .rodata.
             bake_session_key_xor();
+            bake_required("STRATUM_PREKEY_POOL_B64");
         }
     }
 }

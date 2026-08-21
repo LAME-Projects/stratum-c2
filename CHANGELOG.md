@@ -5,7 +5,12 @@ Format: features, fixes, and breaking changes grouped by release.
 
 ---
 
-## v1.2
+## v2.0
+
+### Breaking Changes
+
+- **v2-only protocol** — removed all v1 backward compatibility. All agents must be re-deployed
+- **Forward secrecy (Epoch ECDH)** — per-check-in X25519 key exchange with KDF chain. Compromising any single key reveals zero past or future traffic. See wiki §2.6 for protocol details
 
 ### Features
 
@@ -30,7 +35,7 @@ Format: features, fixes, and breaking changes grouped by release.
 - **OPSEC: hidden command execution** — all Windows subprocess calls (`reg`, `wmic`, `whoami`, `netsh`, `schtasks`) now use `CREATE_NO_WINDOW` flag; zero visible console windows during credential harvesting, persistence, and shell operations
 - **OPSEC: in-memory SAM extraction** — `/creds sam` no longer spawns `reg.exe` or creates hive files on disk; hashes are extracted via registry API with `REG_OPTION_BACKUP_RESTORE` — zero child processes, zero files, zero flagged command lines. `RtlAdjustPrivilege` auto-enables `SeBackupPrivilege`, so SAM works from elevated Admin (not just SYSTEM)
 - **Smart credential harvesting** — `/creds harvest` now decrypts Firefox passwords inline (no DPAPI, zero monitored APIs), parses cloud credentials (AWS/Azure/GCloud/Docker/Kube), classifies SSH keys (encrypted/plaintext), extracts `/etc/shadow` hashes (Linux root), and parses Kerberos ccache metadata. Optional `decrypt` flag enables Chrome/Edge/DPAPI decryption via `CryptUnprotectData` (higher OPSEC risk, opt-in only). Windows-expanded: FileZilla credentials (XML), mRemoteNG connections (confCons.xml staged, default key `mR3m`), PowerShell history secrets grep, Git credentials, unattend/sysprep XML (staged if containing passwords). All new sources use pure file reads — zero registry API, zero flagged imports. After the Summary, contextual Hints print actionable offline cracking workflows based on what was found
-- **Credential harvesting v1.2 — 27 new sources** — `/creds harvest` expanded from 24 to 51 credential sources across Windows and Linux:
+- **Credential harvesting v2.0 — 27 new sources** — `/creds harvest` expanded from 24 to 51 credential sources across Windows and Linux:
   - **Windows (16 new):** PuTTY saved sessions (registry), WinSCP sessions (registry + WinSCP.ini), VNC passwords (RealVNC/TightVNC/UltraVNC registry with DES decrypt hint), WinLogon auto-logon (DefaultPassword), `cmdkey /list` saved credential targets, RDP MRU recent hosts + UsernameHint, IIS `web.config` connectionStrings, Sticky Notes `plum.sqlite`, GPP `cpassword` from SYSVOL (Groups/Services/Scheduledtasks XML), MsCacheV2/DCC2 cached domain logons (SECURITY hive, SYSTEM-only), `.env` file recursive search, Terraform `.tfstate` files, Chrome/Edge cookies (session hijack), Recycle Bin scan for secrets, Opera/Brave browser passwords
   - **Linux (15 new):** all-users SSH keys when root (`/home/*/.ssh/id_*` + authorized_keys + `/root/.ssh`), all-users Kerberos ccache (`/tmp/krb5cc_*`), keytab files (`/etc/krb5.keytab` + `/etc/security/keytabs/`), `/etc/security/opasswd` PAM old hashes, Chromium/Chrome/Edge on Linux (Login Data + Local State), config file credential search (`.pgpass`, `.my.cnf`, `debian.cnf`, `.netrc`, `.s3cfg`, `wp-config.php`), `.env` file recursive search, npm/pip/gem/composer tokens (`.npmrc`, `.pypirc`, `.gem/credentials`), Terraform `.tfstate`, core dumps (`/var/crash`, `/var/lib/systemd/coredump`), systemd service secrets grep, KWallet (`kwalletd/`), Ansible vault files (`$ANSIBLE_VAULT` marker), HashiCorp Vault token (`~/.vault-token`)
   - All new sources are passive file reads or registry queries — zero process creation beyond existing `cmd /C reg query` pattern

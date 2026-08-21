@@ -1722,7 +1722,7 @@ const Deploy = (() => {
 
     _updateStepIndicators();
     _renderStep0();
-    Modal.open('deploy-modal');
+    Modal.open('deploy-modal', { nonDismissible: true });
   }
 
   async function close(cancelTask = false) {

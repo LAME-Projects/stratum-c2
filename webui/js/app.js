@@ -701,12 +701,16 @@
     const ver = version ? `v${version}` : '';
     if (update && update.available) {
       el.innerHTML = `${ver} <span class="vb-update" title="Click to view update details">· update available</span>`;
-      el.querySelector('.vb-update')?.addEventListener('click', () => {
+      el.querySelector('.vb-update')?.addEventListener('click', (e) => {
+        e.stopPropagation();
         if (_pendingUpdate) _openUpdateModal(_pendingUpdate);
       });
     } else {
       el.textContent = ver;
     }
+    el.style.cursor = 'pointer';
+    el.title = 'View changelog';
+    el.onclick = () => _openChangelog();
   }
 
   /* ── changelog modal ─────────────────────────────────────────────────── */
