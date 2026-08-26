@@ -706,6 +706,9 @@ a:hover{color:#f87171;text-decoration:none}
       <a href="#s13-4" data-section="s13">6.4 File Operations</a>
       <a href="#s13-5" data-section="s13">6.5 Tradecraft Commands</a>
       <a href="#s13-6" data-section="s13">6.6 Credential Harvesting</a>
+      <a href="#s13-7" data-section="s13">6.7 In-Memory &amp; Fileless Execution</a>
+      <a href="#s13-8" data-section="s13">6.8 P2P Mesh Networking</a>
+      <a href="#s13-9" data-section="s13">6.9 Jump Modules</a>
     </div>
 
     <div class="toc-divider"></div>
@@ -4264,7 +4267,7 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
 <div class="cmd-row"><span class="cmd-name">/creds sam</span><span class="cmd-desc">In-memory SAM hash extraction (Windows only, requires SYSTEM). Reads bootkey from SYSTEM registry class names and decrypts SAM user hashes entirely in memory via <code>RegOpenKeyExW</code> + <code>RegQueryMultipleValuesW</code> with <code>REG_OPTION_BACKUP_RESTORE</code>. Zero child processes, zero files on disk, zero flagged command lines. Output in <code>user:RID:lm_hash:nt_hash:::</code> format.</span></div>
 <div class="cmd-row"><span class="cmd-name">/creds listen start [proto:port]</span><span class="cmd-desc">Start a credential listener. Supports <code>smb:445</code> (NTLMv2 via SMB), <code>http:80</code> (plaintext credentials via HTTP Basic auth), <code>http-ntlm:80</code> (NTLMv2 via HTTP NTLM negotiation). Multiple listeners can run simultaneously on different proto:port combinations. LLMNR/NBNS poisoners auto-start with the first listener and stop with the last. Default: <code>smb:445</code>.</span></div>
 <div class="cmd-row"><span class="cmd-name">/creds listen stop [proto:port]</span><span class="cmd-desc">Stop listeners. Without arguments: stops all listeners + poisoners. With a spec (e.g. <code>http:80</code>): stops only that specific listener. Poisoners stop automatically when the last listener is removed.</span></div>
-<div class="cmd-row"><span class="cmd-name">/creds listen dump</span><span class="cmd-desc">Retrieve all captured credentials from all active listeners. Shows per-listener breakdown (NTLMv2 count + Basic auth count), uptime, and raw credential lines. NTLMv2 output is in hashcat <code>-m 5600</code> format. Also reports LLMNR/NBNS poisoner response counts.</span></div>
+<div class="cmd-row"><span class="cmd-name">/creds listen dump</span><span class="cmd-desc">Retrieve all captured credentials from all active listeners. Shows per-listener breakdown (NTLMv2 count + Basic auth count), uptime, and raw credential lines. NTLMv2 output is in hashcat <code>-m 5600</code> format. Also reports LLMNR/NBNS poisoner response counts. Includes <strong>per-IP visit tracking</strong>: total visits across all listener types, per-IP breakdown sorted by frequency (most active first), and IP-to-credential association showing which IPs submitted credentials and which only visited without authenticating.</span></div>
 
 <h4>Listener Protocol Details</h4>
 <table>
@@ -4273,7 +4276,7 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
   <tr><td>HTTP Basic</td><td><code>/creds listen start http:80</code></td><td>Plaintext user:pass</td><td>Credential phishing, API key capture, curl/wget/script auth</td></tr>
   <tr><td>HTTP NTLM</td><td><code>/creds listen start http-ntlm:80</code></td><td>NTLMv2 hashes</td><td>Browser auto-auth (Intranet zone), phishing links, WPAD</td></tr>
 </table>
-<p>The <code>http</code> listener sends a <code>401 Unauthorized</code> with only <code>WWW-Authenticate: Basic</code>, forcing the browser to show a login prompt and send credentials as Base64-encoded <code>user:pass</code> — plaintext capture. The <code>http-ntlm</code> listener advertises both <code>WWW-Authenticate: NTLM</code> and <code>Basic</code>; browsers that support NTLM (Chrome, Edge, Firefox on Windows in Intranet zone) will negotiate NTLMv2 — the captured credential is always an NTLMv2 hash, never plaintext.</p>
+<p>The <code>http</code> listener sends a <code>401 Unauthorized</code> with only <code>WWW-Authenticate: Basic</code>, forcing the browser to show a login prompt and send credentials as Base64-encoded <code>user:pass</code> — plaintext capture. The <code>http-ntlm</code> listener advertises <code>WWW-Authenticate: Negotiate</code>, <code>NTLM</code>, and <code>Basic</code>. The <code>Negotiate</code> header triggers <strong>automatic Intranet Zone authentication</strong> — Windows browsers (Chrome, Edge) send NTLMv2 credentials silently when the server hostname is in the Intranet Zone (e.g., <code>*.domain.local</code> or single-label hostnames like <code>http://fileserver/</code>). Zero-click, no popup. For cross-subnet capture, the <code>http-ntlm</code> listener serves a <strong>WebDAV trap page</strong> with embedded UNC paths (<code>\\IP@80\docs\logo.png</code>) that trigger the Windows WebClient service to authenticate via NTLM on the same HTTP port — no SMB:445 needed. <code>Authorization: Negotiate</code> tokens are parsed for both raw NTLMSSP and SPNEGO-wrapped payloads (SPNEGO/NTLMSSP unwrapping). All listener types perform <strong>per-IP visit tracking</strong>: each connection is logged by source IP, and <code>/creds listen dump</code> shows total visits, per-IP breakdown sorted by frequency, and IP-to-credential association.</p>
 
 <h4>Credential Harvesting — Platform Matrix</h4>
 <table>
@@ -4335,6 +4338,35 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
   <tr><td><code>/script</code></td><td>Win+Linux</td><td>None</td><td>Interpreter process</td><td>Medium</td><td>Stdin pipe — clean cmd line. Win: AMSI + Script Block Logging inspect content</td></tr>
   <tr><td><code>/script-amsibypass</code></td><td>Win (PS)</td><td>None</td><td>powershell.exe</td><td>Low-Medium</td><td>HW breakpoint (DR0) + VEH — patchless, no VirtualProtect on amsi.dll. SBL 4104 still captures script content if Script Block Logging enabled</td></tr>
 </table>
+
+<h3 id="s13-8">6.8 Lateral Movement — P2P Mesh</h3>
+<p>Agents can form a peer-to-peer mesh network where traffic is relayed through parent nodes back to the C2 server. This enables communication with agents that cannot reach the cloud directly (air-gapped segments, internal VLANs). Two transport types are supported: TCP and SMB named pipes.</p>
+
+<div class="cmd-row"><span class="cmd-name">/p2p listen tcp &lt;port&gt;</span><span class="cmd-desc">Start a TCP P2P listener on the specified port. Other agents can link to this listener to form a parent-child mesh relationship. All C2 traffic from linked children is relayed through this agent back to the server.</span></div>
+<div class="cmd-row"><span class="cmd-name">/p2p listen smb [pipe-name]</span><span class="cmd-desc">Start an SMB named-pipe P2P listener (Windows only). Default pipe name is a random UUID. Other agents link by connecting to the pipe. Traffic is relayed over the named pipe to the C2 server.</span></div>
+<div class="cmd-row"><span class="cmd-name">/p2p listen stop</span><span class="cmd-desc">Stop all P2P listeners on this agent. Existing linked children are not disconnected but will be unable to re-establish the link if the connection drops.</span></div>
+<div class="cmd-row"><span class="cmd-name">/p2p link tcp &lt;host:port&gt;</span><span class="cmd-desc">Link to a TCP P2P listener. This agent becomes a child of the target agent. All C2 traffic is routed through the parent — the child no longer communicates directly with the cloud provider.</span></div>
+<div class="cmd-row"><span class="cmd-name">/p2p link smb &lt;target-ip&gt; [pipe-name]</span><span class="cmd-desc">Link to an SMB named-pipe listener on the target IP. Cross-platform: Windows uses native Win32 API, Linux uses a pure Rust SMB2 userspace client (NTLMSSP anonymous auth, IPC$ tree connect, named pipe I/O). Default pipe name: <code>stratum</code>.</span></div>
+<div class="cmd-row"><span class="cmd-name">/p2p unlink &lt;guid&gt;</span><span class="cmd-desc">Unlink a P2P child by its session GUID. The child agent becomes orphaned and loses its route to the C2 server until re-linked to another parent.</span></div>
+
+<h4>P2P Transport Matrix</h4>
+<table>
+  <tr><th>Transport</th><th>Listener Platform</th><th>Client Platform</th><th>Default Port/Pipe</th><th>Use Case</th></tr>
+  <tr><td>TCP</td><td>Linux + Windows</td><td>Linux + Windows</td><td>Any port</td><td>General mesh, cross-platform</td></tr>
+  <tr><td>SMB</td><td>Windows only</td><td>Linux + Windows</td><td><code>\\.\pipe\stratum</code></td><td>Blend with SMB traffic, named-pipe covert channel</td></tr>
+</table>
+
+<h3 id="s13-9">6.9 Lateral Movement — Jump Modules</h3>
+<p>Jump modules combine deployment and P2P linking into a single command. Deploy a new agent on a remote target and automatically establish a P2P link back to the current agent.</p>
+
+<div class="cmd-row"><span class="cmd-name">/jump psexec &lt;target&gt; [user=... password=... hash=... service=... pipe=... link=... platform=...]</span><span class="cmd-desc">Deploy via PsExec (SMB service creation). Copies agent binary to ADMIN$, creates and starts a remote service. Supports plaintext password or NTLM hash (pass-the-hash). Default link transport: SMB.</span></div>
+<div class="cmd-row"><span class="cmd-name">/jump ssh &lt;target&gt; [user=... key=... password=... port=... link=... platform=...]</span><span class="cmd-desc">Deploy via SSH. Uploads agent binary to the remote target and executes it. Supports key-based or password authentication.</span></div>
+<div class="cmd-row"><span class="cmd-name">/jump wmi &lt;target&gt; [user=... password=... hash=... link=... platform=...]</span><span class="cmd-desc">Deploy via WMI process creation. No file copy — uses fileless execution on the target. Supports plaintext password or NTLM hash (pass-the-hash).</span></div>
+
+<div class="callout callout-info">
+  <div class="callout-title">Jump module defaults</div>
+  Jump modules automatically configure the child agent with a P2P link back to the deploying agent. The <code>link=</code> option controls the transport: <code>tcp</code> (default) or <code>smb</code>. The <code>platform=</code> option selects the agent binary: <code>linux</code> or <code>windows</code> (auto-detected from the target OS if omitted).
+</div>
 
 </section>
 
