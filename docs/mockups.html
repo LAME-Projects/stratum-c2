@@ -73,6 +73,10 @@
   <a href="#scene-info-tab">Info tab</a>
   <a href="#scene-creds-tab">Creds tab</a>
   <a href="#scene-control-tab">Control tab</a>
+  <a href="#scene-graph-empty">Graph (empty)</a>
+  <a href="#scene-graph-active">Graph (active)</a>
+  <a href="#scene-p2p-listener">P2P Listener</a>
+  <a href="#scene-creds-listener">Creds Listener</a>
   <a href="#scene-readme">README Preview</a>
 </nav>
 
@@ -2251,6 +2255,463 @@ bin:*:19000:0:99999:7:::</div>
       </div>
     </div>
   </div>
+</div>
+  </div>
+</div>
+</div>
+
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SCENE 22 — P2P Graph View (empty state)
+══════════════════════════════════════════════════════════════════════════════ -->
+<div class="mp-scene" id="scene-graph-empty">
+<div class="mp-label">Scene 22 — P2P Graph View · empty state · no links established</div>
+<div class="frame" style="width:1020px;margin:0 auto;">
+  <div class="frame-chrome">
+    <div class="frame-dots"><div class="frame-dot r"></div><div class="frame-dot y"></div><div class="frame-dot g"></div></div>
+    <div class="frame-url">🔒 https://ops.stratum.local:7443</div>
+  </div>
+  <div class="frame-body">
+<div style="background:#090d14;--bg:#090d14;--panel:#0f1623;--panel-2:#141d2d;--border:#1e2d47;--border-hi:#2d4166;--accent:#3b82f6;--accent-bright:#60a5fa;--accent-dim:rgba(59,130,246,.13);--text:#d6e4f5;--text-dim:#6888aa;--text-muted:#3a5069;--green:#22c55e;--amber:#f59e0b;--purple:#a855f7;color:#d6e4f5;font-family:'Inter',-apple-system,sans-serif;display:flex;flex-direction:column;height:520px">
+<!-- topbar -->
+<div style="height:46px;min-height:46px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1rem;gap:.8rem;flex-shrink:0">
+  <div style="display:flex;align-items:center;gap:.55rem">
+    <img src="../webui/assets/icon.png" style="width:22px;height:22px;object-fit:contain">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:.88rem;font-weight:500;letter-spacing:.14em">STRATUM</span>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">+ Deploy</button>
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">📦 Tradecraft</button>
+    <button style="padding:.28rem .65rem;background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.5);border-radius:5px;color:var(--accent-bright);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default;font-weight:600">🔗 Graph</button>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;gap:1rem;flex:1;align-items:center">
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#22c55e"></div><span>4 sessions</span></div>
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#a855f7"></div><span>2 operators</span></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-left:auto">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;color:var(--text-muted);letter-spacing:.04em;padding:.14rem .5rem;border:1px solid var(--border);border-radius:4px">v3.0.0</div>
+    <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:5px;padding:.14rem .62rem;text-align:center;min-width:68px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--accent);font-weight:600;letter-spacing:.04em;line-height:1.2">09<span style="animation:none;color:var(--accent)">:</span>15<span style="animation:none;color:var(--accent)">:</span>44</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.5rem;color:var(--text-muted);letter-spacing:.12em;text-transform:uppercase">UTC</div>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">💬</button>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">⚙</button>
+    <div style="display:flex;align-items:center;gap:.4rem;padding:.26rem .65rem .26rem .45rem;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;font-size:.74rem">
+      <div style="width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#1a3a6a,#2563eb);display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#dbeafe">D</div>
+      <span>d33p</span>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:.82rem;cursor:default">⏻</button>
+  </div>
+</div>
+<!-- graph container: empty state -->
+<div style="position:relative;flex:1;overflow:hidden;background:var(--bg)">
+  <!-- empty state centered -->
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:var(--text-muted);font-size:.8rem;z-index:5">
+    <div style="font-size:2.5rem;margin-bottom:.5rem;opacity:.4">🔗</div>
+    <div>No P2P links established</div>
+  </div>
+  <!-- legend bottom-left -->
+  <div style="position:absolute;bottom:10px;left:10px;z-index:10;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:.5rem .7rem;font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--text-dim);display:flex;flex-direction:column;gap:.3rem;opacity:.8">
+    <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.15rem">Nodes</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0"></div>Alive</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div>Idle</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#3a5069;flex-shrink:0"></div>Dead</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#ef4444;flex-shrink:0"></div>Admin</div>
+    <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-top:.3rem;margin-bottom:.15rem">Edges</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:20px;height:0;border-top:2px solid #3b82f6;flex-shrink:0"></div>TCP</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:20px;height:0;border-top:2px dashed #22c55e;flex-shrink:0"></div>SMB</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:20px;height:0;border-top:2px dotted #a855f7;flex-shrink:0"></div>Cloud</div>
+  </div>
+</div>
+</div>
+  </div>
+</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SCENE 23 — P2P Graph View (active mesh)
+══════════════════════════════════════════════════════════════════════════════ -->
+<div class="mp-scene" id="scene-graph-active">
+<div class="mp-label">Scene 23 — P2P Graph View · active mesh · 5 nodes · mixed transports</div>
+<div class="frame" style="width:1020px;margin:0 auto;">
+  <div class="frame-chrome">
+    <div class="frame-dots"><div class="frame-dot r"></div><div class="frame-dot y"></div><div class="frame-dot g"></div></div>
+    <div class="frame-url">🔒 https://ops.stratum.local:7443</div>
+  </div>
+  <div class="frame-body">
+<div style="background:#090d14;--bg:#090d14;--panel:#0f1623;--panel-2:#141d2d;--border:#1e2d47;--border-hi:#2d4166;--accent:#3b82f6;--accent-bright:#60a5fa;--accent-dim:rgba(59,130,246,.13);--text:#d6e4f5;--text-dim:#6888aa;--text-muted:#3a5069;--green:#22c55e;--amber:#f59e0b;--purple:#a855f7;color:#d6e4f5;font-family:'Inter',-apple-system,sans-serif;display:flex;flex-direction:column;height:560px">
+<!-- topbar -->
+<div style="height:46px;min-height:46px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1rem;gap:.8rem;flex-shrink:0">
+  <div style="display:flex;align-items:center;gap:.55rem">
+    <img src="../webui/assets/icon.png" style="width:22px;height:22px;object-fit:contain">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:.88rem;font-weight:500;letter-spacing:.14em">STRATUM</span>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;align-items:center;gap:.4rem;flex-shrink:0">
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">+ Deploy</button>
+    <button style="padding:.28rem .65rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default">📦 Tradecraft</button>
+    <button style="padding:.28rem .65rem;background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.5);border-radius:5px;color:var(--accent-bright);font-family:'JetBrains Mono',monospace;font-size:.7rem;letter-spacing:.06em;cursor:default;font-weight:600">🔗 Graph</button>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;gap:1rem;flex:1;align-items:center">
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#22c55e"></div><span>5 sessions</span></div>
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#a855f7"></div><span>2 operators</span></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-left:auto">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;color:var(--text-muted);letter-spacing:.04em;padding:.14rem .5rem;border:1px solid var(--border);border-radius:4px">v3.0.0</div>
+    <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:5px;padding:.14rem .62rem;text-align:center;min-width:68px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.8rem;color:var(--accent);font-weight:600;letter-spacing:.04em;line-height:1.2">10<span style="animation:none;color:var(--accent)">:</span>22<span style="animation:none;color:var(--accent)">:</span>51</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.5rem;color:var(--text-muted);letter-spacing:.12em;text-transform:uppercase">UTC</div>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">💬</button>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.82rem;cursor:default">⚙</button>
+    <div style="display:flex;align-items:center;gap:.4rem;padding:.26rem .65rem .26rem .45rem;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;font-size:.74rem">
+      <div style="width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#1a3a6a,#2563eb);display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#dbeafe">D</div>
+      <span>d33p</span>
+    </div>
+    <button style="width:28px;height:28px;border-radius:5px;border:1px solid transparent;background:none;display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:.82rem;cursor:default">⏻</button>
+  </div>
+</div>
+<!-- graph container: active mesh -->
+<div style="position:relative;flex:1;overflow:hidden;background:var(--bg)">
+  <!-- SVG graph -->
+  <svg viewBox="0 0 1020 510" style="width:100%;height:100%;display:block" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arr-tcp" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#3b82f6"/></marker>
+      <marker id="arr-smb" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#22c55e"/></marker>
+      <marker id="arr-cloud" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6" fill="#a855f7"/></marker>
+    </defs>
+
+    <!-- ── EDGES ── -->
+    <!-- Cloud edge: SRV-DC01 (egress) -> Cloud -->
+    <line x1="340" y1="140" x2="160" y2="60" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="3 3" opacity=".6" marker-end="url(#arr-cloud)"/>
+    <text x="240" y="90" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">cloud:dropbox</text>
+
+    <!-- TCP edge: SRV-DC01 -> DESKTOP-K8PX2 -->
+    <line x1="370" y1="155" x2="560" y2="200" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr-tcp)"/>
+    <text x="470" y="170" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">tcp:4444</text>
+
+    <!-- TCP edge: DESKTOP-K8PX2 -> WS-DEV03 -->
+    <line x1="610" y1="215" x2="780" y2="310" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr-tcp)"/>
+    <text x="705" y="253" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">tcp:4444</text>
+
+    <!-- SMB edge: SRV-DC01 -> SRV-FILE02 -->
+    <line x1="355" y1="170" x2="400" y2="340" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6 3" marker-end="url(#arr-smb)"/>
+    <text x="365" y="260" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">smb:pipe</text>
+
+    <!-- TCP edge: WS-DEV03 -> WS-QA07 -->
+    <line x1="800" y1="340" x2="660" y2="430" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr-tcp)"/>
+    <text x="740" y="390" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">tcp:8080</text>
+
+    <!-- ── NODES ── -->
+    <!-- Cloud node (Dropbox) -->
+    <g>
+      <circle cx="140" cy="50" r="22" stroke="#a855f7" stroke-width="2" fill="rgba(168,85,247,.1)"/>
+      <text x="140" y="55" font-size="20" fill="#a855f7" text-anchor="middle" dominant-baseline="central" style="pointer-events:none;user-select:none">☁</text>
+      <text x="140" y="82" font-family="'JetBrains Mono',monospace" font-size="10" fill="#d6e4f5" text-anchor="middle">Dropbox</text>
+    </g>
+
+    <!-- SRV-DC01 (egress, admin/SYSTEM, alive) — red border for admin -->
+    <g>
+      <circle cx="350" cy="150" r="22" stroke="#ef4444" stroke-width="2" fill="rgba(239,68,68,.12)"/>
+      <!-- Windows icon approximation -->
+      <g transform="translate(340,140)">
+        <rect x="0" y="0" width="9" height="9" rx="1" fill="#ef4444" opacity=".85"/>
+        <rect x="11" y="0" width="9" height="9" rx="1" fill="#ef4444" opacity=".85"/>
+        <rect x="0" y="11" width="9" height="9" rx="1" fill="#ef4444" opacity=".85"/>
+        <rect x="11" y="11" width="9" height="9" rx="1" fill="#ef4444" opacity=".85"/>
+      </g>
+      <!-- egress badge -->
+      <text x="372" y="135" font-size="12" fill="#a855f7" style="pointer-events:none;user-select:none">☁</text>
+      <text x="350" y="183" font-family="'JetBrains Mono',monospace" font-size="10" fill="#d6e4f5" text-anchor="middle">SRV-DC01</text>
+      <text x="350" y="195" font-family="'JetBrains Mono',monospace" font-size="9" fill="#ef4444" text-anchor="middle">CORP\SYSTEM</text>
+    </g>
+
+    <!-- DESKTOP-K8PX2 (alive, normal user) -->
+    <g>
+      <circle cx="590" cy="210" r="22" stroke="#22c55e" stroke-width="2" fill="rgba(34,197,94,.1)"/>
+      <g transform="translate(580,200)">
+        <rect x="0" y="0" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+        <rect x="11" y="0" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+        <rect x="0" y="11" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+        <rect x="11" y="11" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+      </g>
+      <text x="590" y="243" font-family="'JetBrains Mono',monospace" font-size="10" fill="#d6e4f5" text-anchor="middle">DESKTOP-K8PX2</text>
+      <text x="590" y="255" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">CORP\jdoe</text>
+    </g>
+
+    <!-- WS-DEV03 (alive, normal user) -->
+    <g>
+      <circle cx="800" cy="325" r="22" stroke="#22c55e" stroke-width="2" fill="rgba(34,197,94,.1)"/>
+      <g transform="translate(790,315)">
+        <rect x="0" y="0" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+        <rect x="11" y="0" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+        <rect x="0" y="11" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+        <rect x="11" y="11" width="9" height="9" rx="1" fill="#93c5fd" opacity=".85"/>
+      </g>
+      <text x="800" y="358" font-family="'JetBrains Mono',monospace" font-size="10" fill="#d6e4f5" text-anchor="middle">WS-DEV03</text>
+      <text x="800" y="370" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">CORP\mchen</text>
+    </g>
+
+    <!-- SRV-FILE02 (idle, normal user) -->
+    <g>
+      <circle cx="400" cy="355" r="22" stroke="#f59e0b" stroke-width="2" fill="rgba(245,158,11,.1)"/>
+      <g transform="translate(390,345)">
+        <rect x="0" y="0" width="9" height="9" rx="1" fill="#fcd34d" opacity=".85"/>
+        <rect x="11" y="0" width="9" height="9" rx="1" fill="#fcd34d" opacity=".85"/>
+        <rect x="0" y="11" width="9" height="9" rx="1" fill="#fcd34d" opacity=".85"/>
+        <rect x="11" y="11" width="9" height="9" rx="1" fill="#fcd34d" opacity=".85"/>
+      </g>
+      <text x="400" y="388" font-family="'JetBrains Mono',monospace" font-size="10" fill="#d6e4f5" text-anchor="middle">SRV-FILE02</text>
+      <text x="400" y="400" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">CORP\svc-backup</text>
+    </g>
+
+    <!-- WS-QA07 (alive, normal user, Linux) -->
+    <g>
+      <circle cx="650" cy="440" r="22" stroke="#22c55e" stroke-width="2" fill="rgba(34,197,94,.1)"/>
+      <!-- Linux penguin approximation: simple tux icon -->
+      <g transform="translate(641,432)">
+        <ellipse cx="9" cy="8" rx="7" ry="9" fill="#93c5fd" opacity=".7"/>
+        <circle cx="6" cy="5" r="1.2" fill="#0f1623"/>
+        <circle cx="12" cy="5" r="1.2" fill="#0f1623"/>
+        <ellipse cx="9" cy="9" rx="3" ry="2" fill="#fcd34d" opacity=".6"/>
+      </g>
+      <text x="650" y="473" font-family="'JetBrains Mono',monospace" font-size="10" fill="#d6e4f5" text-anchor="middle">WS-QA07</text>
+      <text x="650" y="485" font-family="'JetBrains Mono',monospace" font-size="9" fill="#6888aa" text-anchor="middle">qa-runner</text>
+    </g>
+  </svg>
+
+  <!-- Tooltip visible on WS-DEV03 -->
+  <div style="position:absolute;z-index:50;pointer-events:none;background:#0f1623;border:1px solid #2d4166;border-radius:6px;padding:.45rem .65rem;font-family:'JetBrains Mono',monospace;font-size:.72rem;line-height:1.5;color:#d6e4f5;max-width:260px;box-shadow:0 4px 20px rgba(0,0,0,.5);top:265px;right:100px">
+    <b style="color:#60a5fa;font-weight:600">WS-DEV03</b><br>
+    <span style="color:#6888aa">IP:</span> 192.168.14.33<br>
+    <span style="color:#6888aa">User:</span> CORP\mchen<br>
+    <span style="color:#6888aa">OS:</span> Windows 11 Pro<br>
+    <span style="color:#6888aa">PID:</span> 4820 (svchost.exe)<br>
+    <span style="color:#6888aa">Status:</span> <span style="color:#22c55e">alive</span> &mdash; 12s ago<br>
+    <span style="color:#6888aa">Links:</span> 2 (tcp:4444 in, tcp:8080 out)<br>
+    <span style="color:#3a5069;font-size:.64rem;font-style:italic">click to select &middot; drag to move</span>
+  </div>
+
+  <!-- Graph toolbar top-left -->
+  <div style="position:absolute;top:10px;left:10px;z-index:10;display:flex;align-items:center;gap:.5rem">
+    <button style="padding:.22rem .55rem;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.66rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default">+ Listener</button>
+    <button style="padding:.22rem .55rem;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.66rem;border:1px solid var(--border-hi);color:var(--text-dim);background:transparent;cursor:default">Reset Layout</button>
+  </div>
+
+  <!-- Legend bottom-left -->
+  <div style="position:absolute;bottom:10px;left:10px;z-index:10;background:#0f1623;border:1px solid #1e2d47;border-radius:6px;padding:.5rem .7rem;font-family:'JetBrains Mono',monospace;font-size:.65rem;color:#6888aa;display:flex;flex-direction:column;gap:.3rem;opacity:.85">
+    <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#3a5069;margin-bottom:.15rem">Nodes</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0"></div>Alive</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div>Idle</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#3a5069;flex-shrink:0"></div>Dead</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:8px;height:8px;border-radius:50%;background:#ef4444;flex-shrink:0"></div>Admin</div>
+    <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#3a5069;margin-top:.3rem;margin-bottom:.15rem">Edges</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:20px;height:0;border-top:2px solid #3b82f6;flex-shrink:0"></div>TCP</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:20px;height:0;border-top:2px dashed #22c55e;flex-shrink:0"></div>SMB</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><div style="width:20px;height:0;border-top:2px dotted #a855f7;flex-shrink:0"></div>Cloud</div>
+  </div>
+</div>
+</div>
+  </div>
+</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SCENE 24 — P2P Generate Listener Modal
+══════════════════════════════════════════════════════════════════════════════ -->
+<div class="mp-scene" id="scene-p2p-listener">
+<div class="mp-label">Scene 24 — P2P Generate Listener · modal · TCP/SMB transport</div>
+<div style="background:#090d14;--bg:#090d14;--panel:#0f1623;--panel-2:#141d2d;--border:#1e2d47;--border-hi:#2d4166;--accent:#3b82f6;--accent-bright:#60a5fa;--accent-dim:rgba(59,130,246,.13);--text:#d6e4f5;--text-dim:#6888aa;--text-muted:#3a5069;--green:#22c55e;--amber:#f59e0b;--purple:#a855f7;color:#d6e4f5;font-family:'Inter',-apple-system,sans-serif;min-height:520px;display:flex;align-items:center;justify-content:center;padding:1.5rem;background:rgba(0,0,0,.84);width:1020px;margin:0 auto">
+  <div style="background:var(--panel);border:1px solid var(--border-hi);border-radius:10px;box-shadow:0 32px 80px rgba(0,0,0,.8);display:flex;flex-direction:column;width:100%;max-width:520px;position:relative;overflow:hidden">
+    <div style="position:absolute;top:0;left:10%;right:10%;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.5) 30%,rgba(96,165,250,.8) 50%,rgba(59,130,246,.5) 70%,transparent)"></div>
+    <!-- header -->
+    <div style="padding:1rem 1.2rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:.92rem;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em">Generate P2P Listener</span>
+      <span style="color:var(--text-muted);font-size:1.05rem;cursor:default">&#xd7;</span>
+    </div>
+    <!-- body -->
+    <div style="flex:1;padding:1.2rem;overflow:hidden">
+      <!-- Platform -->
+      <div style="margin-bottom:1.1rem">
+        <div style="margin-bottom:.38rem;font-size:.67rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)">Platform</div>
+        <div style="display:flex;gap:.5rem">
+          <div style="flex:1;border:1px solid rgba(59,130,246,.45);background:rgba(59,130,246,.07);border-radius:6px;padding:.55rem .7rem;cursor:default;display:flex;align-items:center;gap:.5rem">
+            <div style="width:13px;height:13px;border-radius:50%;border:4px solid #3b82f6;flex-shrink:0"></div>
+            <span style="font-weight:600;color:var(--text);font-size:.78rem;font-family:'JetBrains Mono',monospace">Windows</span>
+          </div>
+          <div style="flex:1;border:1px solid var(--border);background:transparent;border-radius:6px;padding:.55rem .7rem;cursor:default;display:flex;align-items:center;gap:.5rem">
+            <div style="width:13px;height:13px;border-radius:50%;border:1px solid var(--border-hi);flex-shrink:0"></div>
+            <span style="font-weight:600;color:var(--text-dim);font-size:.78rem;font-family:'JetBrains Mono',monospace">Linux</span>
+          </div>
+        </div>
+      </div>
+      <!-- Transport -->
+      <div style="margin-bottom:1.1rem">
+        <div style="margin-bottom:.38rem;font-size:.67rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)">Transport</div>
+        <div style="display:flex;gap:.5rem">
+          <div style="flex:1;border:1px solid rgba(59,130,246,.45);background:rgba(59,130,246,.07);border-radius:6px;padding:.55rem .7rem;cursor:default;display:flex;align-items:center;gap:.5rem">
+            <div style="width:13px;height:13px;border-radius:50%;border:4px solid #3b82f6;flex-shrink:0"></div>
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;color:var(--text);font-size:.78rem;font-family:'JetBrains Mono',monospace">TCP</div>
+              <div style="font-size:.64rem;color:var(--text-dim);margin-top:.1rem">Raw TCP socket, bind to interface:port</div>
+            </div>
+          </div>
+          <div style="flex:1;border:1px solid var(--border);background:transparent;border-radius:6px;padding:.55rem .7rem;cursor:default;display:flex;align-items:center;gap:.5rem">
+            <div style="width:13px;height:13px;border-radius:50%;border:1px solid var(--border-hi);flex-shrink:0"></div>
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;color:var(--text-dim);font-size:.78rem;font-family:'JetBrains Mono',monospace">SMB</div>
+              <div style="font-size:.64rem;color:var(--text-muted);margin-top:.1rem">Named pipe, blends with SMB traffic</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Interface -->
+      <div style="margin-bottom:1.1rem">
+        <div style="margin-bottom:.38rem;font-size:.67rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)">Interface</div>
+        <input type="text" value="0.0.0.0" readonly style="width:100%;padding:.45rem .7rem;background:var(--panel-2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.78rem;box-sizing:border-box">
+      </div>
+      <!-- Port -->
+      <div style="margin-bottom:1.1rem">
+        <div style="margin-bottom:.38rem;font-size:.67rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)">Port</div>
+        <input type="text" value="4444" readonly style="width:100%;padding:.45rem .7rem;background:var(--panel-2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.78rem;box-sizing:border-box">
+      </div>
+      <!-- Label -->
+      <div style="margin-bottom:.5rem">
+        <div style="margin-bottom:.38rem;font-size:.67rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)">Label <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:.62rem">(optional)</span></div>
+        <input type="text" placeholder="e.g. DC-pivot" readonly style="width:100%;padding:.45rem .7rem;background:var(--panel-2);border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;font-size:.78rem;box-sizing:border-box">
+      </div>
+    </div>
+    <!-- footer -->
+    <div style="padding:.9rem 1.2rem;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:flex-end;gap:.6rem">
+      <button style="padding:.45rem 1rem;background:transparent;border:1px solid var(--border-hi);border-radius:5px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;cursor:default">Cancel</button>
+      <button style="padding:.45rem 1.2rem;background:var(--accent);border:none;border-radius:5px;color:#f0e8ff;font-family:'JetBrains Mono',monospace;font-size:.74rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;cursor:default">Deploy Listener</button>
+    </div>
+  </div>
+</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SCENE 25 — Credential Listener Active (shell output)
+══════════════════════════════════════════════════════════════════════════════ -->
+<div class="mp-scene" id="scene-creds-listener">
+<div class="mp-label">Scene 25 — Credential Listener · shell output · HTTP-NTLM + dump</div>
+<div class="frame" style="width:1020px;margin:0 auto;">
+  <div class="frame-chrome">
+    <div class="frame-dots"><div class="frame-dot r"></div><div class="frame-dot y"></div><div class="frame-dot g"></div></div>
+    <div class="frame-url">🔒 https://ops.stratum.local:7443</div>
+  </div>
+  <div class="frame-body">
+<div style="background:#090d14;--bg:#090d14;--panel:#0f1623;--panel-2:#141d2d;--border:#1e2d47;--border-hi:#2d4166;--accent:#3b82f6;--accent-bright:#60a5fa;--accent-dim:rgba(59,130,246,.13);--text:#d6e4f5;--text-dim:#6888aa;--text-muted:#3a5069;--green:#22c55e;--amber:#f59e0b;--purple:#a855f7;color:#d6e4f5;font-family:'Inter',-apple-system,sans-serif;display:flex;flex-direction:column;height:580px">
+<!-- topbar (condensed) -->
+<div style="height:46px;min-height:46px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1rem;gap:.8rem;flex-shrink:0">
+  <div style="display:flex;align-items:center;gap:.55rem">
+    <img src="../webui/assets/icon.png" style="width:22px;height:22px;object-fit:contain">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:.88rem;font-weight:500;letter-spacing:.14em">STRATUM</span>
+  </div>
+  <div style="width:1px;height:18px;background:var(--border);flex-shrink:0"></div>
+  <div style="display:flex;gap:1rem;flex:1;align-items:center">
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#22c55e"></div><span>3 sessions</span></div>
+    <div style="display:flex;align-items:center;gap:.38rem;font-size:.74rem;color:var(--text-dim)"><div style="width:6px;height:6px;border-radius:50%;background:#a855f7"></div><span>1 operator</span></div>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-left:auto">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:.6rem;color:var(--text-muted);letter-spacing:.04em;padding:.14rem .5rem;border:1px solid var(--border);border-radius:4px">v3.0.0</div>
+    <div style="display:flex;align-items:center;gap:.4rem;padding:.26rem .65rem .26rem .45rem;background:var(--panel-2);border:1px solid var(--border);border-radius:20px;font-size:.74rem">
+      <div style="width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#1a3a6a,#2563eb);display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#dbeafe">D</div>
+      <span>d33p</span>
+    </div>
+  </div>
+</div>
+<!-- session row (condensed) -->
+<div style="background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse;font-size:.7rem;font-family:'JetBrains Mono',monospace">
+    <thead><tr style="background:var(--panel-2)">
+      <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap"></th>
+      <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">ID</th>
+      <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">User</th>
+      <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Host</th>
+      <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">OS</th>
+      <th style="padding:.26rem .62rem;text-align:left;font-size:.58rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap">Last HB</th>
+    </tr></thead>
+    <tbody><tr style="background:rgba(59,130,246,.07);">
+      <td style="padding:.34rem .62rem;border-left:2px solid #3b82f6;"><span style="display:inline-block;font-size:.54rem;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.08em;padding:.09rem .32rem;border-radius:3px;white-space:nowrap;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.28);color:#22c55e">&#x25CF; LIVE</span></td>
+      <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.7rem;font-weight:600;color:var(--accent)">7b3f8a</td>
+      <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text)">corp\jdoe</td>
+      <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.7rem;font-weight:600;color:var(--text)">DESKTOP-K8PX2</td>
+      <td style="padding:.34rem .62rem"><span style="font-size:.57rem;padding:.04rem .24rem;border-radius:3px;font-weight:500;letter-spacing:.04em;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.25);color:#93c5fd">WIN</span></td>
+      <td style="padding:.34rem .62rem;font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text-dim)">6s</td>
+    </tr></tbody>
+  </table>
+</div>
+<!-- resize handle -->
+<div style="height:5px;background:var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0"><div style="width:28px;height:3px;border-radius:2px;background:var(--border-hi)"></div></div>
+<!-- session header + tabs -->
+<div style="display:flex;flex:1;min-height:0;overflow:hidden">
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+    <div style="background:var(--panel);padding:.58rem 1.05rem;flex-shrink:0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:.58rem;margin-bottom:.28rem">
+        <span style="font-size:.88rem;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.04em;color:var(--text)">DESKTOP-K8PX2</span>
+        <span style="display:flex;align-items:center;gap:.26rem;padding:.12rem .45rem;border-radius:20px;font-size:.59rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);color:#22c55e"><span style="width:5px;height:5px;border-radius:50%;background:currentColor"></span>LIVE</span>
+      </div>
+      <div style="display:flex;gap:.95rem;flex-wrap:wrap;align-items:center"><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">ID</span><span style="color:var(--accent)">7b3f8a</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Provider</span><span style="color:var(--text)">dropbox</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">Sleep</span><span style="color:var(--text)">60s</span></div><div style="display:flex;align-items:center;gap:.26rem;font-size:.66rem;font-family:'JetBrains Mono',monospace"><span style="color:var(--text-muted);font-size:.57rem;text-transform:uppercase;letter-spacing:.07em">OS</span><span style="color:var(--text)">Windows 10 Pro</span></div></div>
+    </div>
+    <div style="display:flex;background:var(--panel);padding:0 .9rem;flex-shrink:0;border-bottom:1px solid var(--border)"><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--accent);border-bottom:2px solid var(--accent);cursor:default;user-select:none">Shell</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">History</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Artifacts</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Persistence</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Credentials</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Control</div><div style="padding:.48rem .82rem;font-size:.68rem;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;cursor:default;user-select:none">Info</div></div>
+    <!-- shell output -->
+    <div style="flex:1;overflow-y:auto;background:var(--bg);font-family:'JetBrains Mono',monospace;font-size:.74rem;line-height:1.65;padding:.6rem .9rem">
+      <!-- command 1: creds listen start -->
+      <div style="margin-bottom:.6rem">
+        <div>
+          <span style="color:var(--text-muted)">[09:15:02]</span>
+          <span style="color:var(--purple)">[d33p]</span>
+          <span style="color:var(--accent)">[7b3f8a]</span>
+          <span style="color:var(--green)">/creds listen start http-ntlm:80</span>
+        </div>
+        <div style="padding:.3rem 0 0 .2rem;color:var(--text);border-left:2px solid rgba(34,197,94,.25);margin-left:.2rem;padding-left:.6rem;margin-top:.15rem">
+          <span style="color:var(--accent)">[7b3f8a]</span> Listener started: HTTP-NTLM on 0.0.0.0:80
+        </div>
+      </div>
+
+      <!-- command 2: creds listen dump -->
+      <div>
+        <div>
+          <span style="color:var(--text-muted)">[09:42:18]</span>
+          <span style="color:var(--purple)">[d33p]</span>
+          <span style="color:var(--accent)">[7b3f8a]</span>
+          <span style="color:var(--green)">/creds listen dump</span>
+        </div>
+        <div style="padding:.3rem 0 0 .2rem;color:var(--text);border-left:2px solid rgba(34,197,94,.25);margin-left:.2rem;padding-left:.6rem;margin-top:.15rem">
+          <span style="color:var(--accent)">[7b3f8a]</span> <span style="color:var(--text-dim)">Output:</span><br>
+          <span style="color:var(--amber)">[HTTP-NTLM:80]</span> 3 credentials (active 27m 16s) &mdash; 2 NTLMv2 + 1 Basic<br>
+          <span style="color:var(--text-dim)">&nbsp; Total visits: 14 from 5 unique IPs</span><br>
+          <span style="color:var(--text-dim)">&nbsp; Visits per IP:</span><br>
+          <span style="color:var(--text)">&nbsp;&nbsp;&nbsp; 10.0.1.50</span><span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp; &mdash; 6 visits</span> <span style="color:var(--green)">(NTLMv2 captured &#x2713;)</span><br>
+          <span style="color:var(--text)">&nbsp;&nbsp;&nbsp; 10.0.1.105</span><span style="color:var(--text-dim)">&nbsp;&nbsp; &mdash; 4 visits</span> <span style="color:var(--green)">(NTLMv2 captured &#x2713;)</span><br>
+          <span style="color:var(--text)">&nbsp;&nbsp;&nbsp; 10.0.1.22</span><span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp; &mdash; 2 visits</span> <span style="color:var(--green)">(Basic captured &#x2713;)</span><br>
+          <span style="color:var(--text)">&nbsp;&nbsp;&nbsp; 10.0.1.88</span><span style="color:var(--text-dim)">&nbsp;&nbsp;&nbsp; &mdash; 1 visit</span>&nbsp; <span style="color:var(--text-muted)">(no credentials)</span><br>
+          <span style="color:var(--text)">&nbsp;&nbsp;&nbsp; 10.0.1.200</span><span style="color:var(--text-dim)">&nbsp;&nbsp; &mdash; 1 visit</span>&nbsp; <span style="color:var(--text-muted)">(no credentials)</span><br>
+          <br>
+          <span style="color:var(--amber)">&nbsp; [NTLMv2]</span> <span style="color:var(--text)">CORP\jdoe::CORP:1122334455667788:aabbccdd...</span><br>
+          <span style="color:var(--amber)">&nbsp; [NTLMv2]</span> <span style="color:var(--text)">CORP\admin::CORP:aabbccddeeff0011:99887766...</span><br>
+          <span style="color:var(--green)">&nbsp; [HTTP-Basic]</span> <span style="color:var(--text)">svc-backup:Winter2025!</span> <span style="color:var(--text-dim)">(from 10.0.1.22)</span><br>
+          <br>
+          <span style="color:var(--text-dim)">NTLMv2 format: hashcat -m 5600</span>
+        </div>
+      </div>
+    </div>
+    <!-- shell input bar -->
+    <div style="display:flex;align-items:center;gap:.5rem;padding:.45rem .7rem;background:var(--panel);border-top:1px solid var(--border);flex-shrink:0">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--accent);font-weight:600;white-space:nowrap">PS&gt;</span>
+      <input type="text" placeholder="enter command..." readonly style="flex:1;background:var(--panel-2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.74rem;padding:.32rem .55rem;outline:none">
+      <button style="padding:.32rem .75rem;background:var(--accent);border:none;border-radius:5px;color:#f0e8ff;font-family:'JetBrains Mono',monospace;font-size:.72rem;font-weight:500;cursor:default">Send</button>
+    </div>
+  </div>
+</div>
 </div>
   </div>
 </div>
