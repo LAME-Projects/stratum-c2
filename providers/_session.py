@@ -126,6 +126,13 @@ class SessionProfile:
     window_end:       str = ""   # "HH:MM" or ""
     stratum_version:  str = ""   # server version at deploy time
     locked:           bool = False  # operator lock — prevents kill/stop/delete/wipe
+    # ── P2P topology ──
+    p2p_parent_guid:    str = ""    # session_id of the parent beacon ("" = egress/cloud)
+    p2p_children_guids: str = ""    # comma-separated session_ids of child beacons
+    p2p_link_type:      str = ""    # "tcp" | "smb" | "" (cloud/egress)
+    p2p_link_address:   str = ""    # "10.0.1.5:4444" or "\\host\pipe\name"
+    p2p_is_internal:    bool = False  # True for P2P child beacons (no cloud comms)
+    p2p_guid:           str = ""    # 32-hex agent-side GUID used in P2P link handshake
 
     @property
     def input_path(self)     -> str: return self.folder_path + self.input_file

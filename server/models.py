@@ -43,6 +43,12 @@ class SessionSummary(BaseModel):
     pending_cmd: Optional[dict] = None
     s2_uploaded_at: str = ""
     s2_deleted: bool = False
+    # P2P topology
+    p2p_parent_guid: str = ""
+    p2p_children_guids: str = ""
+    p2p_link_type: str = ""
+    p2p_link_address: str = ""
+    p2p_is_internal: bool = False
 
 class SessionDetail(SessionSummary):
     folder_path: str
@@ -218,6 +224,13 @@ def _session_summary(session, pending) -> dict:
         "listeners":          snap.get("listeners", {}),
         "stratum_version":    getattr(session.profile, 'stratum_version', ''),
         "locked":             getattr(session.profile, 'locked', False),
+        # P2P topology
+        "p2p_parent_guid":    getattr(session.profile, 'p2p_parent_guid', ''),
+        "p2p_children_guids": getattr(session.profile, 'p2p_children_guids', ''),
+        "p2p_link_type":      getattr(session.profile, 'p2p_link_type', ''),
+        "p2p_link_address":   getattr(session.profile, 'p2p_link_address', ''),
+        "p2p_is_internal":    getattr(session.profile, 'p2p_is_internal', False),
+        "p2p_guid":           getattr(session.profile, 'p2p_guid', ''),
         "pending_cmd":   {
             "cmd_id":     pending.cmd_id,
             "command":    pending.display or pending.command,
@@ -225,6 +238,97 @@ def _session_summary(session, pending) -> dict:
             "expires_at": pending.expires_at,
         } if pending else None,
     }
+
+
+# ── P2P topology ─────────────────────────────────────────────────────────────
+
+class TopologyNode(BaseModel):
+    guid: str
+    label: str = ""
+    hostname: str = ""
+    ip: str = ""
+    os: str = ""
+    username: str = ""
+    is_admin: bool = False
+    is_egress: bool = False
+    link_type: str = ""
+    status: str = "unknown"
+    last_seen: Optional[str] = None
+    provider: str = ""
+    folder_path: str = ""
+    input_file: str = ""
+    output_file: str = ""
+    heartbeat_file: str = ""
+
+class TopologyEdge(BaseModel):
+    source: str
+    target: str
+    link_type: str = ""
+    link_port: Optional[int] = None
+    link_address: str = ""
+    status: str = "up"
+
+class TopologyResponse(BaseModel):
+    nodes: list[TopologyNode]
+    edges: list[TopologyEdge]
+
+class LinkRequest(BaseModel):
+    child_session_id: str
+    link_type: str = "tcp"
+    link_address: str = ""
+
+class UnlinkRequest(BaseModel):
+    child_session_id: str
+
+
+# ── jump (lateral movement) ──────────────────────────────────────────────────
+
+class JumpRequest(BaseModel):
+    module: str                        # psexec | psexec_psh | winrm | wmi | scshell | ssh
+    target: str                        # IP or hostname
+    user: str = ""                     # username (default: current creds)
+    password: str = ""                 # password
+    hash: str = ""                     # NTLM hash (pass-the-hash)
+    key_path: str = ""                 # SSH private key path on agent
+    link_type: str = ""                # tcp | smb (default: smb on Win, tcp on Linux)
+    port: int = 0                      # P2P listener port (0 = auto)
+    pipe: str = ""                     # SMB pipe name (empty = random)
+    service: str = ""                  # service name for scshell (default: XblAuthManager)
+    platform: str = ""                 # target platform hint: windows | linux (auto-detect)
+
+class JumpStatus(BaseModel):
+    ok: bool
+    error: str = ""
+    cmd_id: str = ""
+    child_session_id: str = ""
+    module: str = ""
+    target: str = ""
+
+
+class CascadeKillResponse(BaseModel):
+    ok: bool
+    killed: list[str] = []
+    errors: list[str] = []
+
+
+class P2PListenerGenRequest(BaseModel):
+    donor_session_id: str              # existing session to clone transport creds from
+    bind_type: str = "tcp"             # tcp | smb
+    bind_address: str = ""             # e.g. "0.0.0.0:4444" or "\\.\pipe\svc_name"
+    port: int = 0                      # TCP port (0 = random 4444-5443)
+    pipe: str = ""                     # SMB pipe name (empty = random)
+    platform: str = "linux"            # linux | windows
+    label: str = ""                    # operator label for the new session
+
+
+class P2PListenerGenResponse(BaseModel):
+    ok: bool
+    error: str = ""
+    session_id: str = ""
+    bind_type: str = ""
+    bind_address: str = ""
+    platform: str = ""
+    download_url: str = ""
 
 
 # ── WS envelope ───────────────────────────────────────────────────────────────

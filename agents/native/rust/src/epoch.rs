@@ -248,11 +248,68 @@ pub fn decrypt_command_v2(
     aes_key.zeroize();
 
     let text = String::from_utf8(plain?).ok()?;
-    serde_json::from_str(&text).ok()
+    let task: crate::protocol::Task = serde_json::from_str(&text).ok()?;
+    Some(task)
 }
 
-pub fn epoch_state_to_bytes(state: &EpochState) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(145);
+pub fn decrypt_command_v2_raw(
+    raw: &[u8],
+    state: &mut EpochState,
+    pub_key: &PubKey,
+    session_key: &[u8; 32],
+    agent_id: &[u8],
+    prekey_pub: &[u8; 32],
+) -> Option<(crate::protocol::Task, Vec<u8>)> {
+    if raw.len() < 1 + 4 + 32 + 4 + 32 + 28 { return None; }
+    if raw[0] != VERSION_BYTE { return None; }
+    let server_epoch = u32::from_le_bytes([raw[1], raw[2], raw[3], raw[4]]);
+    let mut server_eph_pub = [0u8; 32];
+    server_eph_pub.copy_from_slice(&raw[5..37]);
+    let rest = &raw[37..];
+    if rest.len() < 4 { return None; }
+    let wrapped_len = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+    if rest.len() < 4 + wrapped_len + 4 { return None; }
+    let wrapped_aes = &rest[4..4 + wrapped_len];
+    let rest2 = &rest[4 + wrapped_len..];
+    if rest2.len() < 4 { return None; }
+    let payload_len = u32::from_le_bytes([rest2[0], rest2[1], rest2[2], rest2[3]]) as usize;
+    if rest2.len() < 4 + payload_len { return None; }
+    let payload_blob = &rest2[4..4 + payload_len];
+    let sig = &rest2[4 + payload_len..];
+    let mut sig_msg = Vec::with_capacity(wrapped_aes.len() + payload_blob.len());
+    sig_msg.extend_from_slice(wrapped_aes);
+    sig_msg.extend_from_slice(payload_blob);
+    if !rsa_pss_verify(pub_key, &sig_msg, sig) { return None; }
+    if server_epoch > state.epoch {
+        rotate_epoch(state, &server_eph_pub, agent_id);
+    } else if server_epoch + 1 < state.epoch {
+        *state = bootstrap_epoch(prekey_pub, session_key, agent_id);
+    }
+    let aes_key_bytes = gcm_open(&state.epoch_key, wrapped_aes)
+        .or_else(|| state.prev_epoch_key.as_ref().and_then(|pk| gcm_open(pk, wrapped_aes)))?;
+    let mut aes_key = slice_to_key32(&aes_key_bytes)?;
+    let plain = gcm_open(&aes_key, payload_blob);
+    aes_key.zeroize();
+    let plain_bytes = plain?;
+    let text = String::from_utf8(plain_bytes.clone()).ok()?;
+    let task: crate::protocol::Task = serde_json::from_str(&text).ok()?;
+    Some((task, plain_bytes))
+}
+
+pub fn prekey_fingerprint(pool: &[[u8; 32]]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"stratum-prekey-fp:");
+    for k in pool {
+        h.update(k);
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+pub fn epoch_state_to_bytes_v2(state: &EpochState, pool: &[[u8; 32]]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(205);
     buf.extend_from_slice(&state.epoch.to_le_bytes());       // 4
     buf.extend_from_slice(&state.epoch_key);                  // 32
     buf.extend_from_slice(&state.chain_key);                  // 32
@@ -263,11 +320,25 @@ pub fn epoch_state_to_bytes(state: &EpochState) -> Vec<u8> {
         Some(k) => { buf.push(1); buf.extend_from_slice(k); } // 1+32
         None    => { buf.push(0); buf.extend_from_slice(&[0u8; 32]); }
     }
-    buf // total: 4+32+32+8+32+32+1+32 = 173
+    buf.extend_from_slice(&prekey_fingerprint(pool));          // 32
+    buf // total: 173 + 32 = 205
 }
 
-pub fn epoch_state_from_bytes(data: &[u8]) -> Option<EpochState> {
+pub fn epoch_state_to_bytes(state: &EpochState) -> Vec<u8> {
+    epoch_state_to_bytes_v2(state, &[])
+}
+
+pub fn epoch_state_from_bytes_with_fp(data: &[u8], pool: &[[u8; 32]]) -> Option<EpochState> {
     if data.len() < 173 {
+        return None;
+    }
+    if data.len() >= 205 {
+        let mut cached_fp = [0u8; 32];
+        cached_fp.copy_from_slice(&data[173..205]);
+        if cached_fp != prekey_fingerprint(pool) {
+            return None;
+        }
+    } else if !pool.is_empty() {
         return None;
     }
     let epoch = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -301,6 +372,10 @@ pub fn epoch_state_from_bytes(data: &[u8]) -> Option<EpochState> {
         my_eph_pub,
         prev_epoch_key,
     })
+}
+
+pub fn epoch_state_from_bytes(data: &[u8]) -> Option<EpochState> {
+    epoch_state_from_bytes_with_fp(data, &[])
 }
 
 pub fn is_v2(raw: &[u8]) -> bool {
@@ -399,16 +474,46 @@ mod tests {
         let agent_id = b"serial-agent";
         let (_, prekey_pub) = gen_ephemeral();
         let state = bootstrap_epoch(&prekey_pub, &session_key, agent_id);
+        let pool = vec![prekey_pub];
 
-        let bytes = epoch_state_to_bytes(&state);
-        assert_eq!(bytes.len(), 173);
+        let bytes = epoch_state_to_bytes_v2(&state, &pool);
+        assert_eq!(bytes.len(), 205);
 
-        let restored = epoch_state_from_bytes(&bytes).unwrap();
+        let restored = epoch_state_from_bytes_with_fp(&bytes, &pool).unwrap();
         assert_eq!(restored.epoch, state.epoch);
         assert_eq!(restored.epoch_key, state.epoch_key);
         assert_eq!(restored.chain_key, state.chain_key);
         assert_eq!(restored.counter, state.counter);
         assert_eq!(restored.my_eph_pub, state.my_eph_pub);
+    }
+
+    #[test]
+    fn stale_cache_rejected() {
+        let session_key = [0xDD; 32];
+        let agent_id = b"stale-agent";
+        let (_, prekey_pub) = gen_ephemeral();
+        let state = bootstrap_epoch(&prekey_pub, &session_key, agent_id);
+        let pool = vec![prekey_pub];
+
+        let bytes = epoch_state_to_bytes_v2(&state, &pool);
+
+        let (_, new_prekey_pub) = gen_ephemeral();
+        let new_pool = vec![new_prekey_pub];
+        assert!(epoch_state_from_bytes_with_fp(&bytes, &new_pool).is_none());
+    }
+
+    #[test]
+    fn legacy_cache_rejected_when_pool_present() {
+        let session_key = [0xDD; 32];
+        let agent_id = b"legacy-agent";
+        let (_, prekey_pub) = gen_ephemeral();
+        let state = bootstrap_epoch(&prekey_pub, &session_key, agent_id);
+
+        let bytes = epoch_state_to_bytes_v2(&state, &[]);
+        let legacy_173 = bytes[..173].to_vec();
+
+        let pool = vec![prekey_pub];
+        assert!(epoch_state_from_bytes_with_fp(&legacy_173, &pool).is_none());
     }
 
     #[test]

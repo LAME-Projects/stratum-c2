@@ -201,7 +201,8 @@ def encrypt_command_v2(
     return bytes(out)
 
 
-def decrypt_message_v2(raw: bytes, state: EpochState, agent_id: bytes) -> Optional[str]:
+def decrypt_message_v2(raw: bytes, state: EpochState, agent_id: bytes,
+                       _bootstrap: bool = False) -> Optional[str]:
     if len(raw) < 1 + 4 + 32 + 8 + 32 + 28:
         return None
     if raw[0] != VERSION_BYTE:
@@ -216,11 +217,28 @@ def decrypt_message_v2(raw: bytes, state: EpochState, agent_id: bytes) -> Option
     if msg_epoch > state.epoch:
         rotate_epoch_server(state, agent_eph_pub, agent_id)
     elif msg_epoch + 1 < state.epoch:
-        # Agent far behind — attempt with current state, will likely fail
         pass
 
-    if not chain_verify(state, counter, gcm_payload, chain_tag):
-        return None
+    if _bootstrap:
+        plaintext = _gcm_open(state.epoch_key, gcm_payload)
+        if plaintext is None:
+            return None
+        _fast_forward_chain(state, counter, gcm_payload, chain_tag)
+        try:
+            return plaintext.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    cv = chain_verify(state, counter, gcm_payload, chain_tag)
+    if not cv:
+        plaintext = _gcm_open(state.epoch_key, gcm_payload)
+        if plaintext is None:
+            return None
+        _fast_forward_chain(state, counter, gcm_payload, chain_tag)
+        try:
+            return plaintext.decode("utf-8", errors="replace")
+        except Exception:
+            return None
 
     plaintext = _gcm_open(state.epoch_key, gcm_payload)
     if plaintext is None and state.prev_epoch_key:
@@ -232,6 +250,14 @@ def decrypt_message_v2(raw: bytes, state: EpochState, agent_id: bytes) -> Option
         return plaintext.decode("utf-8", errors="replace")
     except Exception:
         return None
+
+
+def _fast_forward_chain(state: EpochState, target_counter: int,
+                        payload: bytes, claimed_tag: bytes) -> None:
+    while state.counter <= target_counter:
+        _msg_key = _hmac_sha256(state.chain_key, b"\x01")
+        state.chain_key = _hmac_sha256(state.chain_key, b"\x02")
+        state.counter += 1
 
 
 def encrypt_staging_v2(data: bytes, epoch_key: bytes) -> bytes:

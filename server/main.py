@@ -85,7 +85,7 @@ from server.session import ServerSessionManager
 from server.tls import ensure_cert
 from server.ws import ConnectionManager
 
-from server.routers import auth, sessions, chat, ws, deploy, operators, credentials, tradecraft, prefs, server_settings, history_archives, update
+from server.routers import auth, sessions, chat, ws, deploy, operators, credentials, tradecraft, prefs, server_settings, history_archives, update, p2p
 from server.version import __version__
 
 
@@ -138,6 +138,7 @@ def create_app(cfg: ServerConfig) -> FastAPI:
     app.include_router(server_settings.router)
     app.include_router(history_archives.router)
     app.include_router(update.router)
+    app.include_router(p2p.router)
 
     # ── static WebGUI (served from webui/ if present) ────────────────────────
     webgui = Path("webui")

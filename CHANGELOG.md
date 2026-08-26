@@ -5,6 +5,32 @@ Format: features, fixes, and breaking changes grouped by release.
 
 ---
 
+## v3.0
+
+### Features
+
+- **P2P mesh networking** — TCP and SMB named-pipe transports with bidirectional routing. Agents can link to each other forming a mesh network; traffic is relayed through parent nodes to the C2 server. Supports multi-hop chains
+- **Cross-platform SMB P2P** — Linux agents can connect as SMB clients to Windows named-pipe listeners via pure Rust SMB2 userspace implementation (Negotiate → NTLMSSP anonymous → Tree Connect IPC$ → named pipe I/O). Windows agents use native Win32 API
+- **Jump modules** — lateral movement via PsExec, SSH, and WMI. Deploy and link agents in a single command
+- **P2P graph visualization** — interactive network graph in WebUI showing mesh topology, link status, and routing paths
+- **Server-side P2P routing** — task routing and session relay for P2P-linked agents
+
+### Credential Harvesting
+
+- **WebDAV trap page for silent NTLMv2 capture** — `http-ntlm` listener serves a trap page with embedded UNC paths (`\\IP@80\docs\logo.png`) that trigger Windows WebClient to authenticate via NTLM on the same HTTP port. Cross-subnet, no SMB:445 required
+- **Negotiate header for Intranet Zone auto-logon** — `WWW-Authenticate: Negotiate` triggers automatic NTLM credential submission from Windows browsers when the server hostname is in the Intranet Zone. Zero-click NTLMv2 capture — no popup, no user interaction
+- **SPNEGO/NTLMSSP unwrapping** — `Authorization: Negotiate` tokens are parsed for both raw NTLMSSP and SPNEGO-wrapped payloads
+- **Per-IP visit tracking** — all credential listener types (HTTP, HTTP-NTLM, SMB) track per-IP visit counts. `/creds listen dump` shows total visits, per-IP breakdown sorted by frequency, and IP-to-credential association
+
+### WebUI
+
+- **P2P command autocomplete** — shell hints updated with `/p2p link tcp <addr:port>`, `/p2p link smb <target> [pipe]`, `/p2p unlink <guid>`
+- **P2P help modal** — three new entries in the Lateral Movement section of the help modal
+- **OS platform icons** — session list shows OS-specific icons (Windows, Linux, macOS)
+- **Context menu improvements** — enhanced right-click menus across the interface
+
+---
+
 ## v2.0
 
 ### Breaking Changes

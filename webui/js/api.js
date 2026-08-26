@@ -221,6 +221,15 @@ const API = (() => {
   function updateCredential(id, cid, data) { return _req('PUT', `/api/v1/sessions/${id}/credentials/${cid}`, data); }
   function deleteCredential(id, cid)       { return del(`/api/v1/sessions/${id}/credentials/${cid}`); }
 
+  /* ── P2P topology ─────────────────────────────────────────────────────── */
+  function topology() { return get('/api/v1/p2p/topology'); }
+  function jump(sessionId, params) { return post(`/api/v1/sessions/${sessionId}/jump`, params); }
+  function killCascade(sessionId) { return post(`/api/v1/sessions/${sessionId}/kill-cascade`, {}); }
+  function generateListener(params) { return post('/api/v1/p2p/generate-listener', params); }
+  function p2pLinkTcp(sessionId, address) { return post(`/api/v1/sessions/${sessionId}/p2p/link-tcp`, { address }); }
+  function p2pLinkSmb(sessionId, target, pipeName) { return post(`/api/v1/sessions/${sessionId}/p2p/link-smb`, { target, pipe_name: pipeName || '' }); }
+  function p2pUnlink(sessionId, guid) { return post(`/api/v1/sessions/${sessionId}/p2p/unlink`, { guid }); }
+
   function updateStatus()    { return get('/api/v1/update/status'); }
   function updatePreflight() { return get('/api/v1/update/preflight'); }
   function applyUpdate()     { return post('/api/v1/update/apply', {}); }
@@ -248,6 +257,7 @@ const API = (() => {
     getPrefs, savePrefs,
     getServerSettings, patchServerSettings, getServerTime,
     listArchives, readArchive, archiveArtifacts, deleteArchive,
+    topology, jump, killCascade, generateListener, p2pLinkTcp, p2pLinkSmb, p2pUnlink,
     updateStatus, updatePreflight, applyUpdate, checkUpdate, getChangelog,
   };
 })();

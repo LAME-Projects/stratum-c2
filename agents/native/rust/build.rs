@@ -9,10 +9,23 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_s3)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_sharepoint)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_googledrive)");
+    println!("cargo::rustc-check-cfg=cfg(stratum_p2p)");
 
     println!("cargo:rerun-if-env-changed=STRATUM_DEBUG");
     if std::env::var("STRATUM_DEBUG").as_deref() == Ok("true") {
         println!("cargo:rustc-cfg=stratum_debug");
+    }
+
+    // ── P2P child mode ───────────────────────────────────────────────────────
+    println!("cargo:rerun-if-env-changed=STRATUM_P2P_MODE");
+    if std::env::var("STRATUM_P2P_MODE").as_deref() == Ok("true") {
+        println!("cargo:rustc-cfg=stratum_p2p");
+        for var in &[
+            "STRATUM_P2P_BIND_ADDR",
+            "STRATUM_P2P_BIND_TYPE",
+            "STRATUM_P2P_GUID",
+            "STRATUM_STUN_IP",
+        ] { bake_required(var); }
     }
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

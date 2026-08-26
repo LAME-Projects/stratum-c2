@@ -279,6 +279,35 @@
     Tradecraft.init();
 
     ContextMenu.init();
+    Graph.init();
+
+    // Graph toggle button
+    let _graphVisible = false;
+    const _sessPane   = document.getElementById('sessions-pane');
+    const _resHandle  = document.getElementById('resize-handle');
+    const _lowerPane  = document.getElementById('lower');
+    const _graphCont  = document.getElementById('graph-container');
+    const _graphBtn   = document.getElementById('btn-graph-toggle');
+    const _graphEmpty = document.getElementById('graph-empty');
+
+    if (_graphBtn) {
+      _graphBtn.addEventListener('click', () => {
+        _graphVisible = !_graphVisible;
+        if (_graphVisible) {
+          if (_sessPane)  _sessPane.style.display  = 'none';
+          if (_resHandle) _resHandle.style.display = 'none';
+          if (_lowerPane) _lowerPane.style.display = 'none';
+          _graphBtn.classList.add('active');
+          Graph.show();
+        } else {
+          if (_sessPane)  _sessPane.style.display  = '';
+          if (_resHandle) _resHandle.style.display = '';
+          if (_lowerPane) _lowerPane.style.display = '';
+          _graphBtn.classList.remove('active');
+          Graph.hide();
+        }
+      });
+    }
 
     /* ws — operator list comes from server.hello, no need to pre-seed with [] */
     _initWS();
@@ -602,6 +631,53 @@
       if (Settings && Settings.refreshCredentialsIfOpen) {
         Settings.refreshCredentialsIfOpen();
       }
+    });
+
+    /* ── Jump (lateral movement) events ──────────────────────────────────── */
+    WS.on('jump_started', (ev) => {
+      const p = ev.payload || {};
+      Toast.info('Jump Started',
+        `${p.module} → ${p.target} (by ${p.operator})`);
+    });
+
+    WS.on('jump_failed', (ev) => {
+      const p = ev.payload || {};
+      Toast.error('Jump Failed',
+        `${p.module} → ${p.target}: ${p.error || 'unknown'}`);
+    });
+
+    WS.on('jump_success', (ev) => {
+      const p = ev.payload || {};
+      Toast.info('Jump Success',
+        `${p.module} → ${p.target} linked (${p.child_session_id?.slice(0, 8)})`);
+    });
+
+    WS.on('cascade_kill', (ev) => {
+      const p = ev.payload || {};
+      const n = (p.killed || []).length;
+      Toast.info('Cascade Kill', `${n} session(s) terminated by ${p.operator || '?'}`);
+    });
+
+    WS.on('p2p_listener_build_done', (ev) => {
+      const p = ev.payload || {};
+      Toast.info('P2P Listener Ready',
+        `${p.platform} ${p.bind_type} listener (${p.session_id?.slice(0,8)}) — ready for download`);
+    });
+
+    WS.on('p2p_listener_build_failed', (ev) => {
+      const p = ev.payload || {};
+      Toast.error('P2P Listener Failed', p.error || 'build failed');
+    });
+
+    WS.on('p2p.link_established', (ev) => {
+      const p = ev.payload || {};
+      Toast.info('P2P Link', `${p.link_type?.toUpperCase()} link established to ${p.child_id?.slice(0,8) || '?'} via ${p.link_address || '?'}`);
+      Sessions.refreshList();
+    });
+
+    WS.on('p2p.link_failed', (ev) => {
+      const p = ev.payload || {};
+      Toast.error('P2P Link Failed', p.message || 'link failed');
     });
 
 

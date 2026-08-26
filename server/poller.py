@@ -146,17 +146,203 @@ class HBScheduler:
 
     async def _tick(self) -> None:
         loop = asyncio.get_event_loop()
-        sessions = [s for s in self._sm.all()
+        all_sessions = self._sm.all()
+        sessions = [s for s in all_sessions
                     if not s.polling_stopped and s._hb and self._should_poll(s)]
         if not sessions:
             return
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(loop.run_in_executor(None, s._hb._tick) for s in sessions),
             return_exceptions=True,
         )
 
 
 import re as _re
+
+
+def _update_p2p_state(sess_obj, sm, ws, loop, content: str) -> None:
+    """Parse agent P2P command responses to update topology in session profile."""
+    if not content:
+        return
+
+    # p2p_link_tcp / p2p_link_smb: "OK: Linked to <addr> via TCP (child GUID: <hex>)"
+    # May include embedded child sysinfo after "---CHILD_SYSINFO---"
+    if content.upper().startswith("OK: LINKED TO "):
+        m = _re.search(r'[Ll]inked to (.+?) via (TCP|SMB|tcp|smb) \(child GUID: ([0-9a-fA-F]+)\)', content)
+        _log_sess.info("p2p: link regex match=%s content=%r", m is not None, content[:120])
+        if m:
+            link_addr = m.group(1).strip()
+            link_type = m.group(2).lower()
+            child_guid_hex = m.group(3).lower()
+            _log_sess.info("p2p: looking up child guid=%s", child_guid_hex)
+            child_sid = _find_session_by_p2p_guid(sm, child_guid_hex)
+            _log_sess.info("p2p: child_sid=%s", child_sid)
+            if child_sid:
+                child = sm.get(child_sid)
+                if child:
+                    child.profile.p2p_parent_guid = sess_obj.id
+                    child.profile.p2p_link_type = link_type
+                    child.profile.p2p_link_address = link_addr
+                    child.profile.p2p_is_internal = True
+
+                    # Parse embedded child checkin if present
+                    checkin_marker = "---CHILD_CHECKIN---"
+                    if checkin_marker in content:
+                        checkin_raw = content.split(checkin_marker, 1)[1].strip()
+                        _log_sess.info("p2p: parsing embedded child checkin (%d bytes)", len(checkin_raw))
+                        _apply_p2p_checkin(child, checkin_raw)
+
+                    sm.save_session(child_sid)
+                children = set(
+                    c.strip()
+                    for c in getattr(sess_obj.profile, 'p2p_children_guids', '').split(",")
+                    if c.strip()
+                )
+                children.add(child_sid)
+                sess_obj.profile.p2p_children_guids = ",".join(sorted(children))
+                sm.save_session(sess_obj.id)
+                _push_p2p_event(ws, loop, "p2p.link_established", {
+                    "parent_id": sess_obj.id,
+                    "child_id": child_sid,
+                    "link_type": link_type,
+                    "link_address": link_addr,
+                })
+                # Broadcast session.update for the child so frontend renders info
+                import asyncio as _aio
+                async def _broadcast_child_update():
+                    await ws.broadcast({
+                        "type": "session.update",
+                        "ts": _ts(),
+                        "payload": _session_summary(child, sm.pending(child_sid)),
+                    })
+                _aio.run_coroutine_threadsafe(_broadcast_child_update(), loop)
+
+    # p2p_link failed: "ERROR: Link to ... failed after N attempts"
+    elif "Link to" in content and "failed after" in content:
+        _log_sess.warning("p2p: link failed for %s: %s", sess_obj.id, content)
+        _push_p2p_event(ws, loop, "p2p.link_failed", {
+            "parent_id": sess_obj.id,
+            "message": content,
+        })
+
+    # p2p_unlink: "OK: Unlinked child <guid>"
+    elif content.upper().startswith("OK: UNLINKED"):
+        m = _re.search(r'[Uu]nlinked (?:child )?([0-9a-fA-F]+)', content)
+        if m:
+            child_guid_hex = m.group(1)
+            child_sid = _find_session_by_p2p_guid(sm, child_guid_hex)
+            if child_sid:
+                child = sm.get(child_sid)
+                if child:
+                    child.profile.p2p_parent_guid = ""
+                    child.profile.p2p_link_type = ""
+                    child.profile.p2p_link_address = ""
+                    sm.save_session(child_sid)
+                children = set(
+                    c.strip()
+                    for c in getattr(sess_obj.profile, 'p2p_children_guids', '').split(",")
+                    if c.strip()
+                )
+                children.discard(child_sid)
+                sess_obj.profile.p2p_children_guids = ",".join(sorted(children))
+                sm.save_session(sess_obj.id)
+                _push_p2p_event(ws, loop, "p2p.link_lost", {
+                    "parent_id": sess_obj.id,
+                    "child_id": child_sid,
+                })
+
+
+def _find_session_by_p2p_guid(sm, guid_hex: str):
+    """Find a session whose P2P GUID matches."""
+    for s in sm.all():
+        stored = getattr(s.profile, 'p2p_guid', '')
+        if stored and stored == guid_hex:
+            return s.id
+        if s.id.startswith(guid_hex) or guid_hex.startswith(s.id[:16]):
+            return s.id
+    return None
+
+
+def _push_p2p_event(ws, loop, event_type: str, payload: dict):
+    import asyncio as _aio
+
+    async def _broadcast():
+        await ws.broadcast({
+            "type": event_type,
+            "ts": _ts(),
+            "payload": payload,
+        })
+        await ws.broadcast({
+            "type": "topology_changed",
+            "ts": _ts(),
+            "payload": payload,
+        })
+
+    if not loop.is_closed():
+        _aio.run_coroutine_threadsafe(_broadcast(), loop)
+
+
+def _parse_p2p_sysinfo(sess_obj, content: str) -> None:
+    """Extract host/user/os/pid/process from sysinfo text and update P2P child state."""
+    import time as _time
+    upd: dict = {"state": "linked", "last_seen_at": _time.time()}
+    for line in content.splitlines():
+        if line.startswith("Hostname:"):
+            upd["target_host"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Username:"):
+            upd["target_user"] = line.split(":", 1)[1].strip()
+        elif line.startswith("OS:"):
+            upd["target_os"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Privs:"):
+            upd["target_privs"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Domain:"):
+            upd["target_domain"] = line.split(":", 1)[1].strip()
+        elif line.startswith("PID:"):
+            upd["agent_pid"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Process:"):
+            upd["agent_process"] = line.split(":", 1)[1].strip()
+    for line in content.splitlines():
+        m = _re.match(r'\s*(?:Int\s+IP|Local\s+IP|IP):?\s+(.+)', line)
+        if m and not upd.get("target_ip"):
+            upd["target_ip"] = m.group(1).strip()
+    if not upd.get("target_ip"):
+        for line in content.splitlines():
+            ips = _re.findall(r'(\d+\.\d+\.\d+\.\d+)', line)
+            for ip in ips:
+                if not ip.startswith("127."):
+                    upd["target_ip"] = ip
+                    break
+            if upd.get("target_ip"):
+                break
+    sess_obj.state.update(**upd)
+
+
+def _apply_p2p_checkin(sess_obj, checkin_raw: str) -> None:
+    """Apply structured JSON checkin from P2P child (same fields as heartbeat)."""
+    import time as _time
+    import json as _json
+    try:
+        data = _json.loads(checkin_raw)
+    except (ValueError, TypeError):
+        _log_sess.warning("p2p: checkin JSON parse failed: %r", checkin_raw[:200])
+        return
+    upd: dict = {"state": "linked", "last_seen_at": _time.time()}
+    _map = {
+        "hostname": "target_host",
+        "username": "target_user",
+        "os":       "target_os",
+        "privs":    "target_privs",
+        "domain":   "target_domain",
+        "ip_int":   "target_ip",
+        "ip_ext":   "target_ip_ext",
+        "pid":      "agent_pid",
+        "process":  "agent_process",
+    }
+    for src, dst in _map.items():
+        val = data.get(src, "")
+        if val or val == 0:
+            upd[dst] = str(val)
+    sess_obj.state.update(**upd)
 
 
 def _update_listener_state(sess_obj, content: str) -> None:
@@ -268,6 +454,9 @@ def install_notification_hooks(
         def output(self, cmd_id: str, content: str) -> None:
             _log_cmd.info("output: cmd_id=%s length=%d", cmd_id, len(content or ""))
             sid = sm.session_for_cmd(cmd_id)
+            # Async P2P link results arrive with cmd_id="p2p-link-{session_id}"
+            if not sid and cmd_id.startswith("p2p-link-"):
+                sid = cmd_id[len("p2p-link-"):]
             # Always clean reverse-index after response (handles late replies
             # where expire_locks already cleared _pending but poller still ran).
             sm._cmd_session.pop(cmd_id, None)
@@ -297,6 +486,15 @@ def install_notification_hooks(
 
                 # ── Listener state tracking (persisted in AgentState) ─────
                 _update_listener_state(sess_obj, content or "")
+                # ── P2P link state tracking ─────
+                _update_p2p_state(sess_obj, sm, ws, loop, content or "")
+                # ── P2P child sysinfo parsing ─────
+                _is_p2p_child = (getattr(sess_obj.profile, 'p2p_is_internal', False)
+                                 or getattr(sess_obj.profile, 'p2p_parent_guid', ''))
+                if _is_p2p_child and content and "=== SYSTEM INFO ===" in content:
+                    _parse_p2p_sysinfo(sess_obj, content)
+                    sm.save_session(sid)
+                    _push({"type": "session.update", "ts": _ts(), "payload": _session_summary(sess_obj, sm.pending(sid))})
 
             async def _handle():
                 if sid:
@@ -320,12 +518,25 @@ def install_notification_hooks(
 
         def heartbeat(self, session_id: str, state: dict) -> None:
             _push({"type": "session.heartbeat", "ts": _ts(), "payload": {"session_id": session_id, "state": state}})
+            if state.get("alive"):
+                sess = sm.get(session_id)
+                if sess:
+                    for cid in (c.strip() for c in getattr(sess.profile, 'p2p_children_guids', '').split(",") if c.strip()):
+                        child = sm.get(cid)
+                        if child and child.state.state != "linked":
+                            child.state.update(state="linked")
+                            _push({"type": "session.update", "ts": _ts(), "payload": _session_summary(child, sm.pending(cid))})
 
         def agent_dead(self, session_id: str) -> None:
             sess = sm.get(session_id)
             if sess:
                 snap = sess.state.snapshot()
                 _push({"type": "session.dead", "ts": _ts(), "payload": snap})
+                for cid in (c.strip() for c in getattr(sess.profile, 'p2p_children_guids', '').split(",") if c.strip()):
+                    child = sm.get(cid)
+                    if child and child.state.state == "linked":
+                        child.state.update(state="offline")
+                        _push({"type": "session.update", "ts": _ts(), "payload": _session_summary(child, sm.pending(cid))})
 
         def save_session(self, sess) -> None:
             from server.session import _dataclass_to_dict
