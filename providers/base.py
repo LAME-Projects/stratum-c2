@@ -14,8 +14,7 @@ To add a new provider:
   2. Define XxxTransport(BaseTransport) and register: TRANSPORT_REGISTRY["name"] = XxxTransport
   3. Define XxxConfig(BaseConfig) and XxxWizard(ProviderWizard)
   4. Implement 4 abstract hooks: make_config, step_auth, step_init_channel, _make_transport()
-  5. Override _provider_subs() to inject credential placeholders into generated scripts
-  6. Create providers/<name>/transport/ with agent.sh, agent.ps1, stub.sh, stub.ps1
+  5. Override _provider_subs() to inject credential placeholders into agent templates
   6. Add XxxWizard to PROVIDERS in providers/all.py
 """
 
@@ -48,7 +47,6 @@ from providers._session import (
     MZ_MARKER,
     HB_REFRESH_INTERVAL,
     DOWNLOADS_DIR,
-    _TEMPLATES_DIR,
     RateLimitedError,
     BaseTransport,
     TRANSPORT_REGISTRY,
@@ -81,13 +79,8 @@ from providers._monitor import (
 
 from providers._wizard import (
     _entropy,
-    _PAD_SVCNAMES_WIN,
-    _PAD_SVCNAMES_NIX,
-    _make_pad_block,
-    _pad_script_entropy,
     WIN_BLOB_FALLBACK_PATHS,
     BaseConfig,
-    _ps1_concat,
     _resolve_stun_ip,
     ProviderWizard,
 )

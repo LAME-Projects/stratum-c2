@@ -285,8 +285,51 @@ impl Smb2Session {
     }
 }
 
+fn smb1_negotiate(stream: &mut TcpStream) -> io::Result<()> {
+    // SMB1 COM_NEGOTIATE with "SMB 2.002" and "SMB 2.???" dialects.
+    // Windows SMB server expects this as the first packet on port 445 before
+    // accepting direct SMB2 framing.  It replies with an SMB2 Negotiate
+    // Response (magic \xFESMB), which we discard — the real SMB2 Negotiate
+    // follows immediately after.
+    let dialects: &[&[u8]] = &[b"SMB 2.002", b"SMB 2.???"];
+    let mut dialect_buf = Vec::new();
+    for d in dialects {
+        dialect_buf.push(0x02); // dialect buffer format
+        dialect_buf.extend_from_slice(d);
+        dialect_buf.push(0x00); // null terminator
+    }
+    // SMB1 header (32 bytes) + COM_NEGOTIATE body
+    let mut pkt = Vec::with_capacity(32 + 3 + dialect_buf.len());
+    // SMB1 magic
+    pkt.extend_from_slice(b"\xffSMB");
+    // Command = COM_NEGOTIATE (0x72)
+    pkt.push(0x72);
+    // Status (4 bytes) = 0
+    pkt.extend_from_slice(&[0u8; 4]);
+    // Flags = 0x18 (case-insensitive, canonical paths)
+    pkt.push(0x18);
+    // Flags2 = 0xC853 (unicode, NT status, extended security, long names)
+    pkt.extend_from_slice(&0xC853u16.to_le_bytes());
+    // PIDHigh, SecurityFeatures, Reserved, TID, PIDLow, UID, MID (18 bytes) = 0
+    pkt.extend_from_slice(&[0u8; 18]);
+    // WordCount = 0
+    pkt.push(0);
+    // ByteCount
+    pkt.extend_from_slice(&(dialect_buf.len() as u16).to_le_bytes());
+    // Dialect strings
+    pkt.extend_from_slice(&dialect_buf);
+
+    nb_send(stream, &pkt)?;
+    // Read and discard the SMB1/SMB2 negotiate response
+    let _resp = nb_recv(stream)?;
+    Ok(())
+}
+
 fn negotiate(sess: &mut Smb2Session) -> io::Result<()> {
-    // SMB2 NEGOTIATE request
+    // Phase 0: SMB1 COM_NEGOTIATE so Windows enters SMB2 mode
+    smb1_negotiate(&mut sess.stream)?;
+
+    // Phase 1: SMB2 NEGOTIATE request
     let mut body = Vec::with_capacity(36 + 4);
     // StructureSize = 36
     body.extend_from_slice(&36u16.to_le_bytes());
@@ -657,6 +700,7 @@ pub fn smb_client_connect(target: &str, pipe_name: &str) -> io::Result<SmbClient
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     stream.set_nodelay(true)?;
+    super::configure_keepalive(&stream);
 
     let peer = format!("\\\\{}\\pipe\\{}", target, pipe_name);
 

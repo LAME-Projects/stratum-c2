@@ -263,6 +263,55 @@ impl LinkRegistry {
 
 // ── Framing: length-prefix I/O ───────────────────────────────────────────────
 
+// ── TCP keepalive — kernel-level link health detection ──────────────────────
+
+pub fn configure_keepalive(stream: &std::net::TcpStream) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = stream.as_raw_fd();
+        unsafe {
+            let enable: libc::c_int = 1;
+            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_KEEPALIVE,
+                &enable as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            let idle: libc::c_int = 30;
+            libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPIDLE,
+                &idle as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            let interval: libc::c_int = 10;
+            libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPINTVL,
+                &interval as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            let count: libc::c_int = 3;
+            libc::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_KEEPCNT,
+                &count as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        let sock = stream.as_raw_socket();
+        #[repr(C)]
+        struct TcpKeepalive { on_off: u32, keepalive_time: u32, keepalive_interval: u32 }
+        let vals = TcpKeepalive { on_off: 1, keepalive_time: 30_000, keepalive_interval: 10_000 };
+        let mut out: u32 = 0;
+        const SIO_KEEPALIVE_VALS: u32 = 0x98000004;
+        unsafe {
+            windows_sys::Win32::Networking::WinSock::WSAIoctl(
+                sock as usize, SIO_KEEPALIVE_VALS,
+                &vals as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<TcpKeepalive>() as u32,
+                std::ptr::null_mut(), 0, &mut out,
+                std::ptr::null_mut(), None,
+            );
+        }
+    }
+}
+
+// ── Framing: length-prefix I/O ───────────────────────────────────────────────
+
 pub fn frame_send(transport: &dyn P2PTransport, data: &[u8]) -> io::Result<()> {
     let len = (data.len() as u32).to_le_bytes();
     let mut frame = Vec::with_capacity(4 + data.len());

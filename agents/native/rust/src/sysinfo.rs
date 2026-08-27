@@ -276,24 +276,117 @@ mod platform {
     }
 }
 
-// ── external IP (STUN) ────────────────────────────────────────────────────────
+// ── external IP (multi-method, cascading fallback) ───────────────────────────
+
+const STUN_FALLBACK_POOL: &[(&str, u16)] = &[
+    ("162.159.207.0", 3478),   // stun.cloudflare.com
+    ("46.225.95.169", 3478),   // stun.nextcloud.com
+    ("212.53.40.43",  3478),   // stun.sipnet.net
+];
 
 fn external_ip(stun_ip: &str) -> String {
+    // 1. Check for a public IP already bound to a local interface (no NAT)
+    if let Some(ip) = direct_public_ip() { return ip; }
+
+    // 2. STUN pool — baked primary first, then hardcoded fallbacks
+    if let Some(ip) = stun_query(stun_ip, 19302) { return ip; }
+    if let Some(ip) = stun_query(stun_ip, 3478)  { return ip; }
+    for &(addr, port) in STUN_FALLBACK_POOL {
+        if let Some(ip) = stun_query(addr, port) { return ip; }
+    }
+
+    // 3. DNS TXT — no HTTP, minimal footprint
+    #[cfg(unix)]
+    {
+        if let Some(ip) = dns_txt_lookup(
+            "o-o.myaddr.l.google.com", "TXT", "216.239.32.10",
+        ) { return ip; }
+        if let Some(ip) = dns_txt_lookup(
+            "whoami.cloudflare", "TXT", "1.1.1.1",
+        ) { return ip; }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(ip) = dns_txt_windows("o-o.myaddr.l.google.com", "8.8.8.8") {
+            return ip;
+        }
+        if let Some(ip) = dns_txt_windows("whoami.cloudflare", "1.1.1.1") {
+            return ip;
+        }
+    }
+
+    String::new()
+}
+
+fn direct_public_ip() -> Option<String> {
+    #[cfg(unix)]
+    {
+        if let Some(out) = cmd_output_timeout("ip", &["-4", "addr", "show", "scope", "global"], 5) {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("inet ") { continue; }
+                if let Some(cidr) = trimmed.split_whitespace().nth(1) {
+                    let ip = cidr.split('/').next().unwrap_or("");
+                    if !ip.is_empty() && !is_non_public_ip(ip) {
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::net::UdpSocket;
+        if let Ok(sock) = UdpSocket::bind("0.0.0.0:0") {
+            if sock.connect("1.1.1.1:80").is_ok() {
+                if let Ok(addr) = sock.local_addr() {
+                    let ip = addr.ip().to_string();
+                    if !is_non_public_ip(&ip) {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_non_public_ip(ip: &str) -> bool {
+    let octets: Vec<u8> = ip.split('.').filter_map(|s| s.parse().ok()).collect();
+    if octets.len() != 4 { return true; }
+    let (a, b) = (octets[0], octets[1]);
+    matches!(a, 10)                                      // 10.0.0.0/8
+        || (a == 172 && (16..=31).contains(&b))          // 172.16.0.0/12
+        || (a == 192 && b == 168)                        // 192.168.0.0/16
+        || (a == 127)                                    // 127.0.0.0/8
+        || (a == 169 && b == 254)                        // 169.254.0.0/16 link-local
+        || (a == 100 && (64..=127).contains(&b))         // 100.64.0.0/10 CGNAT
+        || (a == 198 && (18..=19).contains(&b))          // 198.18.0.0/15 benchmark
+        || (a == 0)                                      // 0.0.0.0/8
+        || (a == 255)                                    // broadcast
+        || (a == 224)                                    // multicast 224.0.0.0/4
+}
+
+fn stun_query(addr: &str, port: u16) -> Option<String> {
     use std::net::UdpSocket;
-    // Minimal STUN binding request
-    let sock = match UdpSocket::bind("0.0.0.0:0") { Ok(s) => s, Err(_) => return String::new() };
-    let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(3)));
-    let _ = sock.connect(format!("{}:3478", stun_ip));
-    // STUN Binding Request: type=0x0001, length=0, magic=0x2112A442, tx_id=12 random bytes
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok()?;
+    sock.connect(format!("{}:{}", addr, port)).ok()?;
     let mut req = [0u8; 20];
-    req[0] = 0x00; req[1] = 0x01;   // type
-    req[4] = 0x21; req[5] = 0x12; req[6] = 0xA4; req[7] = 0x42; // magic
+    req[0] = 0x00; req[1] = 0x01;
+    req[4] = 0x21; req[5] = 0x12; req[6] = 0xA4; req[7] = 0x42;
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut req[8..]);
-    if sock.send(&req).is_err() { return String::new(); }
-    let mut buf = [0u8; 512];
-    let n = match sock.recv(&mut buf) { Ok(n) => n, Err(_) => return String::new() };
-    // Parse MAPPED-ADDRESS or XOR-MAPPED-ADDRESS from response
-    parse_stun_ip(&buf[..n])
+    // Two attempts per server
+    for _ in 0..2 {
+        if sock.send(&req).is_err() { continue; }
+        let mut buf = [0u8; 512];
+        if let Ok(n) = sock.recv(&mut buf) {
+            let ip = parse_stun_ip(&buf[..n]);
+            if is_valid_ipv4(&ip) { return Some(ip); }
+        }
+    }
+    None
 }
 
 fn parse_stun_ip(data: &[u8]) -> String {
@@ -305,25 +398,51 @@ fn parse_stun_ip(data: &[u8]) -> String {
         i += 4;
         if i + attr_len > data.len() { break; }
         match attr_type {
-            0x0001 if attr_len >= 8 => {
-                // MAPPED-ADDRESS: family=data[i+1], port=[i+2..i+4], addr=[i+4..i+8]
-                if data[i+1] == 0x01 {
-                    let a = &data[i+4..i+8];
-                    return format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]);
-                }
+            0x0020 if attr_len >= 8 && data[i+1] == 0x01 => {
+                let a = [data[i+4]^0x21, data[i+5]^0x12, data[i+6]^0xA4, data[i+7]^0x42];
+                return format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]);
             }
-            0x0020 if attr_len >= 8 => {
-                // XOR-MAPPED-ADDRESS: XOR address with magic cookie
-                if data[i+1] == 0x01 {
-                    let a = [data[i+4]^0x21, data[i+5]^0x12, data[i+6]^0xA4, data[i+7]^0x42];
-                    return format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]);
-                }
+            0x0001 if attr_len >= 8 && data[i+1] == 0x01 => {
+                let a = &data[i+4..i+8];
+                return format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]);
             }
             _ => {}
         }
         i += attr_len;
     }
     String::new()
+}
+
+fn is_valid_ipv4(s: &str) -> bool {
+    if s.is_empty() { return false; }
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
+}
+
+#[cfg(unix)]
+fn dns_txt_lookup(qname: &str, qtype: &str, server: &str) -> Option<String> {
+    let at_server = format!("@{}", server);
+    let args: Vec<&str> = if qname.contains("cloudflare") {
+        vec!["-4", "+norecurse", "CH", qtype, qname, &at_server, "+short", "+time=3", "+tries=1"]
+    } else {
+        vec!["-4", "+short", qtype, qname, &at_server, "+time=3", "+tries=1"]
+    };
+    let out = cmd_output_timeout("dig", &args, 8)?;
+    let txt = String::from_utf8_lossy(&out.stdout)
+        .trim().trim_matches('"').trim().to_string();
+    if is_valid_ipv4(&txt) { Some(txt) } else { None }
+}
+
+#[cfg(windows)]
+fn dns_txt_windows(qname: &str, server: &str) -> Option<String> {
+    let cmd = format!(
+        "(Resolve-DnsName -Name '{}' -Server '{}' -Type TXT -ErrorAction Stop | \
+         ForEach-Object {{ $_.Strings }}).Trim('\"') | Select-Object -First 1",
+        qname, server,
+    );
+    let out = cmd_output_timeout("powershell", &["-NoProfile", "-Command", &cmd], 8)?;
+    let txt = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if is_valid_ipv4(&txt) { Some(txt) } else { None }
 }
 
 // ── public re-exports ─────────────────────────────────────────────────────────

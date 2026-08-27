@@ -26,6 +26,7 @@ impl TcpP2PTransport {
         stream.set_read_timeout(Some(READ_TIMEOUT))?;
         stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
         stream.set_nodelay(true)?;
+        super::configure_keepalive(&stream);
         Ok(Self {
             stream: Mutex::new(stream),
             alive: AtomicBool::new(true),

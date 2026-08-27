@@ -37,7 +37,7 @@
       </div>
       <div class="login-error" id="login-error"></div>
       <div class="login-footer">
-        <span id="login-version">Stratum C2 v3.0</span>
+        <span id="login-version">Stratum C2 v3.0.1</span>
       </div>
     </div>
   </div>
@@ -330,18 +330,27 @@
 
   <!-- P2P topology graph (toggled with Graph button) -->
   <div id="graph-container" style="display:none">
+    <div class="graph-toolbar" id="graph-toolbar">
+      <button class="btn-sm" id="btn-graph-reset">Reset Layout</button>
+    </div>
     <div class="graph-legend">
+      <div class="gl-section">Nodes</div>
       <div class="gl-row"><span class="gl-dot gl-alive"></span> Alive</div>
       <div class="gl-row"><span class="gl-dot gl-idle"></span> Idle</div>
       <div class="gl-row"><span class="gl-dot gl-dead"></span> Dead</div>
-      <div class="gl-row"><span class="gl-dot gl-admin"></span> Admin / SYSTEM</div>
+      <div class="gl-row"><span class="gl-dot gl-admin"></span> Admin</div>
+      <div class="gl-section">Edges</div>
       <div class="gl-row"><span class="gl-line gl-tcp"></span> TCP</div>
       <div class="gl-row"><span class="gl-line gl-smb"></span> SMB</div>
       <div class="gl-row"><span class="gl-line gl-cloud"></span> Cloud</div>
+      <div class="gl-section">Link Status</div>
+      <div class="gl-row"><span class="gl-line gl-tcp"></span> Up</div>
+      <div class="gl-row"><span class="gl-line gl-tcp" style="opacity:.5;stroke-dasharray:4 4"></span> Degraded</div>
+      <div class="gl-row"><span class="gl-line gl-tcp" style="opacity:.25;stroke-dasharray:2 4"></span> Down</div>
     </div>
     <div class="graph-empty" id="graph-empty">
       <div class="em-icon">🔗</div>
-      <p>No P2P links established</p>
+      <p>No active sessions</p>
     </div>
   </div>
 
@@ -969,7 +978,7 @@
       <div class="about-hero">
         <div class="about-logo-wrap"><img src="/assets/icon.webp" alt="Stratum C2"></div>
         <div class="about-name">Stratum C2</div>
-        <div class="about-ver" id="about-version">v3.0 — Cloud Persistence Framework</div>
+        <div class="about-ver" id="about-version">v3.0.1 — Cloud Persistence Framework</div>
       </div>
       <div class="about-desc">
         Dead-drop C2 channel via cloud storage providers.<br>

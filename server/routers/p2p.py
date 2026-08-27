@@ -102,6 +102,43 @@ def _parse_port(address: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def _link_status(child, child_snap: dict) -> str:
+    """Derive link status from child heartbeat timing.
+
+    up       — child checked in within 3× its sleep interval
+    degraded — child silent for 3×–6× sleep (possible transient issue)
+    down     — child silent for >6× sleep or state is dead/offline
+    """
+    state = child_snap.get("state", "unknown")
+    if state in ("dead", "offline"):
+        return "down"
+    if state == "unknown" or not child:
+        return "down"
+    last_hb = child_snap.get("last_hb_ts") or child_snap.get("last_seen_at")
+    if not last_hb:
+        return "down"
+    from datetime import datetime, timezone
+    try:
+        if isinstance(last_hb, str):
+            last_hb = last_hb.replace("Z", "+00:00")
+            ts = datetime.fromisoformat(last_hb)
+        else:
+            ts = last_hb
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_s = (datetime.now(timezone.utc) - ts).total_seconds()
+    except Exception:
+        return "down"
+    sleep_s = getattr(child, 'agent_sleep', None)
+    if sleep_s is None or sleep_s <= 0:
+        sleep_s = getattr(child.profile, 'base_sleep', 30) or 30
+    if age_s <= sleep_s * 3:
+        return "up"
+    if age_s <= sleep_s * 6:
+        return "degraded"
+    return "down"
+
+
 # ── topology ─────────────────────────────────────────────────────────────────
 
 @router.get("/api/v1/p2p/topology", response_model=TopologyResponse)
@@ -120,8 +157,12 @@ def get_topology(request: Request, username: str = Depends(get_current_user)):
             label=profile.label or "",
             hostname=snap.get("target_host", ""),
             ip=snap.get("target_ip", ""),
+            ext_ip=snap.get("target_ip_ext", ""),
             os=snap.get("target_os", ""),
             username=snap.get("target_user", ""),
+            domain=snap.get("target_domain", ""),
+            pid=snap.get("agent_pid", ""),
+            process=snap.get("agent_process", ""),
             is_admin=_is_admin(snap.get("target_privs", "")),
             is_egress=not is_internal,
             link_type=getattr(profile, 'p2p_link_type', '') or ("cloud" if not is_internal else ""),
@@ -153,7 +194,7 @@ def get_topology(request: Request, username: str = Depends(get_current_user)):
                     link_type=child_link_type,
                     link_port=_parse_port(child_link_addr),
                     link_address=child_link_addr,
-                    status="up" if child_snap.get("state") == "online" else "down",
+                    status=_link_status(child, child_snap),
                 ))
 
     return TopologyResponse(nodes=nodes, edges=edges)

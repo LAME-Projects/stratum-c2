@@ -2595,6 +2595,12 @@ const Sessions = (() => {
     return `<div class="info-cell"><div class="info-k">${label}</div><div class="info-v">${escHtml(value||'—')}</div></div>`;
   }
 
+  function _extractPipeName(addr) {
+    if (!addr) return '—';
+    const m = addr.match(/\\\\[^\\]+\\pipe\\(.+)/i);
+    return m ? `\\\\.\\pipe\\${m[1]}` : addr;
+  }
+
   function _renderInfo() {
     const inner = $('#info-inner');
     if (!inner || !_activeId) return;
@@ -2630,8 +2636,9 @@ const Sessions = (() => {
         <div class="info-grid">
           ${_cell('PID', s.agent_pid)}
           ${_cell('Process', s.agent_process)}
-          ${_isP2P ? _cell('Connection', 'Persistent TCP (∞)') : _cell('Last Heartbeat', '')}
+          ${_isP2P ? _cell('Connection', `Persistent ${(s.p2p_link_type || 'tcp').toUpperCase()} (∞)`) : _cell('Last Heartbeat', '')}
           ${_isP2P ? _cell('Parent', s.p2p_parent_guid ? s.p2p_parent_guid.slice(0, 8) + '…' : '—') : _cell('Sleep / Jitter', s.agent_sleep != null ? `${_fmtDuration(s.agent_sleep)} ± ${s.agent_jitter ?? '?'}%` : null)}
+          ${_isP2P && s.p2p_link_type === 'smb' ? _cell('Pipe', _extractPipeName(s.p2p_link_address)) : ''}
         </div>
       </div>
 

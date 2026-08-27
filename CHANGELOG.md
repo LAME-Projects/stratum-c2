@@ -5,6 +5,47 @@ Format: features, fixes, and breaking changes grouped by release.
 
 ---
 
+## v3.0.1
+
+### Agent — External IP Detection
+
+- **Robust STUN with multi-server fallback** — external IP detection rewritten with cascading fallback: direct interface check → pool of 5 STUN servers across 4 providers (Google, Cloudflare, Nextcloud, Sipnet) with 2 attempts per server → DNS TXT queries (Google, Cloudflare). Zero HTTP requests — only UDP (STUN) and DNS. Timeout reduced from 3s to 2s per attempt
+- **CGNAT/non-public IP filtering** — `is_non_public_ip()` now filters RFC 1918, loopback, link-local, CGNAT (100.64.0.0/10), benchmark (198.18.0.0/15), multicast, and broadcast ranges. Prevents NAT IPs from leaking into ext_ip field
+- **Dual-port STUN** — primary server tried on both port 19302 and 3478 before falling to pool, covering environments that block one but not the other
+- **DNS TXT fallback** — Cloudflare `whoami.cloudflare CH TXT @1.1.1.1` added as fallback alongside Google `o-o.myaddr.l.google.com`. Windows uses `Resolve-DnsName`, Linux uses `dig`
+
+### Breaking — Rust-Only Agents
+
+- **Bash/PowerShell tradecrafts removed** — all script-based agents (core.sh, core.ps1) and stub templates (stub.sh, stub.ps1, stub_stageless.sh, stub_stageless.ps1) eliminated. Every deploy mode now produces native Rust binaries only (EXE/DLL/BIN/ELF). 26 script files deleted across core templates and provider transports
+- **Linux staged-enc now ELF-based** — stage2 Linux payload changed from encrypted bash script to encrypted Rust ELF binary. Executed via `memfd_create` (fileless) with `/dev/shm` fallback. No bash/sh interpreter dependency at runtime
+- **Script entropy padding removed** — `_step_pad_scripts()` and associated entropy balancing code removed; native Rust binaries have controlled entropy by design
+- **Deploy guide updated** — tradecraft docs now reference only native binaries (EXE, DLL, BIN, ELF); script-based execution paths removed
+
+### P2P Link Health
+
+- **TCP keepalive on all P2P sockets** — kernel-level `SO_KEEPALIVE` configured on TCP and SMB (underlying TCP) connections. Idle=30s, interval=10s, retries=3. Detection of dead peers in ~60s with zero application traffic. Windows uses `SIO_KEEPALIVE_VALS` via `WSAIoctl`
+- **Server-side heartbeat decay** — link status derived from child heartbeat timing: `up` (within 3× sleep), `degraded` (3×–6× sleep), `down` (>6× sleep or dead state). Updates dynamically in the topology API
+- **Visual link status in graph** — edge lines reflect link health: full opacity (up), 50% with dashed pattern (degraded), 25% with sparse dash (down). Legend updated with Link Status section
+
+### WebUI
+
+- **Graph view overhaul** — inline SVG OS icons (Windows quad-pane, Linux penguin), enhanced tooltip (IP, Ext IP, DOMAIN\user, PID, status with time-ago, link count), legend with section headers, toolbar with `+ Listener` and `Reset Layout` buttons
+- **Status-colored username labels** — graph node labels colored by session status (green=alive, amber=idle, red=dead) on the username text, not the node ring
+- **Heartbeat ripple animation** — water-drop pulse effect on graph nodes when heartbeat arrives via WebSocket, colored by status
+- **Left-to-right graph layout** — nodes positioned by topology depth (cloud → egress → children) instead of circular
+- **SMB pipe name in session Info** — P2P SMB sessions show the named pipe path in the Agent section. Connection cell shows dynamic link type (`Persistent TCP (∞)` / `Persistent SMB (∞)`)
+- **Graph button in mockups** — `🔗 Graph` button added to all applicable mockup scene topbars
+
+### Server
+
+- **Topology data enrichment** — `TopologyNode` model extended with `ext_ip`, `domain`, `pid`, `process` fields; topology endpoint populates them from session snapshot
+
+### Docs
+
+- **Wiki graph section** — added "WebUI — Graph View" subsection (§6.8) documenting node types, edge types, tooltip, legend, and empty state
+
+---
+
 ## v3.0
 
 ### Features

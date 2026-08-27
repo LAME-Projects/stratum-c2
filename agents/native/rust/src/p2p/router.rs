@@ -259,7 +259,16 @@ fn reconnect_to_child(
                     })
             }
             #[cfg(not(windows))]
-            super::LinkType::Smb => { break; }
+            super::LinkType::Smb => {
+                let parts: Vec<&str> = address.rsplitn(2, '\\').collect();
+                let pipe = parts.first().unwrap_or(&"stratum");
+                let target = parts.last().unwrap_or(&"");
+                crate::p2p::smb_client::smb_client_connect(target, pipe)
+                    .and_then(|t| {
+                        let arc_t: std::sync::Arc<dyn super::P2PTransport> = std::sync::Arc::new(t);
+                        crate::p2p::link::link_as_parent(arc_t, registry.my_guid, link_type)
+                    })
+            }
         };
 
         match result {

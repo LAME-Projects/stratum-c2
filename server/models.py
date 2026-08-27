@@ -247,8 +247,12 @@ class TopologyNode(BaseModel):
     label: str = ""
     hostname: str = ""
     ip: str = ""
+    ext_ip: str = ""
     os: str = ""
     username: str = ""
+    domain: str = ""
+    pid: str = ""
+    process: str = ""
     is_admin: bool = False
     is_egress: bool = False
     link_type: str = ""

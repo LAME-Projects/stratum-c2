@@ -4,6 +4,9 @@
 # are ever committed. The repo must be clean and deployable from scratch.
 # =============================================================================
 
+# ── Ops procedures (local-only, never pushed) ────────────────────────────────
+.ops/
+
 # ── Live server config ────────────────────────────────────────────────────────
 # Contains passwords, JWT secret, OIDC client secret — NEVER commit.
 server.yml

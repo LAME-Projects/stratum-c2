@@ -65,6 +65,7 @@ const Graph = (() => {
 
     _initZoomPan();
     _initResize();
+    _initToolbar();
 
     // WS events
     WS.on('p2p.link_established',  () => _reload());
@@ -79,7 +80,10 @@ const Graph = (() => {
       _softTimer = setTimeout(() => { _softTimer = null; _softUpdate(); }, 500);
     };
     WS.on('session.update',        _debouncedSoft);
-    WS.on('session.heartbeat',     _debouncedSoft);
+    WS.on('session.heartbeat',     ev => {
+      _debouncedSoft();
+      if (_active && ev && ev.session_id) _ripple(ev.session_id);
+    });
     WS.on('session.dead',          _debouncedSoft);
   }
 
@@ -124,8 +128,12 @@ const Graph = (() => {
         label: n.label || '',
         hostname: n.hostname,
         ip: n.ip,
+        ext_ip: n.ext_ip || '',
         os: n.os,
         username: n.username,
+        domain: n.domain || '',
+        pid: n.pid || '',
+        process: n.process || '',
         is_admin: n.is_admin,
         is_egress: n.is_egress,
         link_type: n.link_type,
@@ -198,18 +206,55 @@ const Graph = (() => {
       });
     });
 
-    // assign initial positions for nodes without coords
+    // assign initial positions: left-to-right by depth (cloud → egress → children)
     const w = _svg.clientWidth  || 800;
     const h = _svg.clientHeight || 600;
-    const cx = w / 2, cy = h / 2;
-    _nodes.forEach((n, i) => {
-      if (n.x == null) {
-        const angle = (2 * Math.PI * i) / _nodes.length;
-        const r = Math.min(w, h) * 0.3;
-        n.x = cx + r * Math.cos(angle);
-        n.y = cy + r * Math.sin(angle);
+    const needsLayout = _nodes.filter(n => n.x == null);
+    if (needsLayout.length) {
+      const depthMap = {};
+      const childOf = {};
+      _edges.forEach(e => { childOf[e.target] = e.source; });
+
+      function _depth(id, visited) {
+        if (depthMap[id] != null) return depthMap[id];
+        if (visited && visited.has(id)) return 0;
+        const vis = visited || new Set();
+        vis.add(id);
+        const parent = childOf[id];
+        const d = parent ? _depth(parent, vis) + 1 : 0;
+        depthMap[id] = d;
+        return d;
       }
-    });
+      _nodes.forEach(n => _depth(n.id));
+
+      const byDepth = {};
+      _nodes.forEach(n => {
+        const d = depthMap[n.id] || 0;
+        if (!byDepth[d]) byDepth[d] = [];
+        byDepth[d].push(n);
+      });
+
+      const depths = Object.keys(byDepth).map(Number).sort((a, b) => a - b);
+      const maxDepth = depths[depths.length - 1] || 0;
+      const padX = 80;
+      const usableW = w - padX * 2;
+      const colSpacing = maxDepth > 0 ? usableW / maxDepth : 0;
+
+      depths.forEach(d => {
+        const col = byDepth[d];
+        const x = padX + d * colSpacing;
+        const padY = 60;
+        const usableH = h - padY * 2;
+        const rowSpacing = col.length > 1 ? usableH / (col.length - 1) : 0;
+        const startY = col.length > 1 ? padY : h / 2;
+        col.forEach((n, i) => {
+          if (n.x == null) {
+            n.x = x;
+            n.y = startY + i * rowSpacing;
+          }
+        });
+      });
+    }
   }
 
   async function _softUpdate() {
@@ -221,17 +266,27 @@ const Graph = (() => {
       _nodes.forEach(n => {
         const fresh = nMap[n.id];
         if (fresh) {
-          n.status   = fresh.status;
-          n.label    = fresh.label || n.label;
-          n.hostname = fresh.hostname;
-          n.ip       = fresh.ip;
-          n.username = fresh.username;
-          n.is_admin = fresh.is_admin;
-          n.os       = fresh.os;
+          n.status    = fresh.status;
+          n.label     = fresh.label || n.label;
+          n.hostname  = fresh.hostname;
+          n.ip        = fresh.ip;
+          n.ext_ip    = fresh.ext_ip || '';
+          n.username  = fresh.username;
+          n.domain    = fresh.domain || '';
+          n.pid       = fresh.pid || '';
+          n.process   = fresh.process || '';
+          n.is_admin  = fresh.is_admin;
+          n.os        = fresh.os;
+          n.last_seen = fresh.last_seen;
         }
       });
+      const eMap = {};
+      (data.edges || []).forEach(fe => { eMap[fe.source + ':' + fe.target] = fe; });
       _edges.forEach(e => {
-        if (e.link_type.startsWith('cloud')) {
+        const fresh = eMap[e.source + ':' + e.target];
+        if (fresh) {
+          e.status = fresh.status;
+        } else if (e.link_type.startsWith('cloud')) {
           const tgt = _nodes.find(n => n.id === e.target);
           e.status = tgt && (tgt.status === 'online' || tgt.status === 'alive') ? 'up' : 'down';
         }
@@ -258,8 +313,9 @@ const Graph = (() => {
 
       const et = e.link_type || 'default';
       const arrowId = _ARROW_TYPES.includes(et) ? et : (et.startsWith('cloud') ? 'cloud' : 'default');
+      const statusCls = e.status === 'degraded' ? ' edge-degraded' : e.status === 'down' ? ' edge-down' : '';
       const line = _svgEl('line', {
-        class: `edge-line edge-${et}`,
+        class: `edge-line edge-${et}${statusCls}`,
         'marker-end': `url(#arrow-${arrowId})`,
       });
       g.appendChild(line);
@@ -327,16 +383,35 @@ const Graph = (() => {
         const circle = _svgEl('circle', { r: NODE_R, class: `node-bg ${statusCls}${adminCls}` });
         g.appendChild(circle);
 
-        // OS icon from /assets/icons/os-{type}.svg
-        const iconSize = 26;
-        const iconFile = osKind === 'mac' ? 'os-apple' : `os-${osKind}`;
-        const icon = _svgEl('image', {
-          href: `/assets/icons/${iconFile}.svg`,
-          x: -(iconSize / 2), y: -(iconSize / 2),
-          width: iconSize, height: iconSize,
+        // OS icon drawn inline (mockup style)
+        const iconG = _svgEl('g', {
+          transform: 'translate(-10,-10)',
           class: `node-os-icon${adminCls}`,
         });
-        g.appendChild(icon);
+        if (osKind === 'windows') {
+          const wc = n.is_admin ? '#ef4444' : '#93c5fd';
+          [[0,0],[11,0],[0,11],[11,11]].forEach(([rx,ry]) => {
+            iconG.appendChild(_svgEl('rect', { x: rx, y: ry, width: '9', height: '9', rx: '1', fill: wc, opacity: '.85' }));
+          });
+        } else if (osKind === 'linux') {
+          const bc = n.is_admin ? '#ef4444' : '#93c5fd';
+          iconG.appendChild(_svgEl('ellipse', { cx: '10', cy: '9', rx: '7', ry: '9', fill: bc, opacity: '.7' }));
+          iconG.appendChild(_svgEl('circle', { cx: '7', cy: '6', r: '1.2', fill: '#0f1623' }));
+          iconG.appendChild(_svgEl('circle', { cx: '13', cy: '6', r: '1.2', fill: '#0f1623' }));
+          iconG.appendChild(_svgEl('ellipse', { cx: '10', cy: '10', rx: '3', ry: '2', fill: '#fcd34d', opacity: '.6' }));
+        } else if (osKind === 'mac') {
+          const mc = n.is_admin ? '#ef4444' : '#93c5fd';
+          iconG.appendChild(_svgEl('circle', { cx: '10', cy: '8', r: '8', fill: mc, opacity: '.7' }));
+          const bite = _svgEl('circle', { cx: '17', cy: '6', r: '3', fill: 'rgba(0,0,0,.85)' });
+          iconG.appendChild(bite);
+          iconG.appendChild(_svgEl('ellipse', { cx: '10', cy: '-1', rx: '2', ry: '3', fill: mc, opacity: '.5' }));
+        } else {
+          iconG.appendChild(_svgEl('circle', { cx: '10', cy: '10', r: '6', fill: '#6b7280', opacity: '.5' }));
+          const q = _svgEl('text', { x: '10', y: '10', 'text-anchor': 'middle', 'dominant-baseline': 'central', fill: '#d6e4f5', 'font-size': '9', 'font-family': "'JetBrains Mono',monospace" });
+          q.textContent = '?';
+          iconG.appendChild(q);
+        }
+        g.appendChild(iconG);
 
         // egress badge (cloud)
         if (n.is_egress) {
@@ -353,12 +428,13 @@ const Graph = (() => {
         label.textContent = n.hostname || n.label || n.ip || n.id.slice(0, 8);
         g.appendChild(label);
 
-        // username label below hostname
+        // username label below hostname (DOMAIN\user format, colored by status)
         if (n.username) {
           const uLabel = _svgEl('text', {
             class: `node-user${adminCls}`, 'text-anchor': 'middle', dy: NODE_R + 26,
+            fill: n.is_admin ? '#ef4444' : _statusFill(n.status),
           });
-          uLabel.textContent = n.username;
+          uLabel.textContent = n.domain ? `${n.domain}\\${n.username}` : n.username;
           g.appendChild(uLabel);
         }
       }
@@ -388,10 +464,35 @@ const Graph = (() => {
       if (circle) {
         circle.setAttribute('class', `node-bg ${_statusClass(n.status)}${adminCls}`);
       }
-      const osIcon = g.querySelector('.node-os-icon');
-      if (osIcon) {
-        osIcon.setAttribute('class', `node-os-icon${adminCls}`);
+      // update inline OS icon colors on admin state change
+      const iconG = g.querySelector('.node-os-icon');
+      if (iconG) {
+        const osKind = _osType(n.os);
+        if (osKind === 'windows') {
+          const wc = n.is_admin ? '#ef4444' : '#93c5fd';
+          iconG.querySelectorAll('rect').forEach(r => r.setAttribute('fill', wc));
+        } else if (osKind === 'linux') {
+          const bc = n.is_admin ? '#ef4444' : '#93c5fd';
+          const ellipses = iconG.querySelectorAll('ellipse');
+          if (ellipses[0]) ellipses[0].setAttribute('fill', bc);
+        }
       }
+      // update username label color by status
+      const uLabel = g.querySelector('.node-user');
+      if (uLabel) {
+        uLabel.setAttribute('fill', n.is_admin ? '#ef4444' : _statusFill(n.status));
+      }
+    });
+    // update edge status classes
+    _gEdges.querySelectorAll('.edge').forEach(g => {
+      const key = g.getAttribute('data-src') + ':' + g.getAttribute('data-tgt');
+      const e = _edges.find(ed => ed.source + ':' + ed.target === key);
+      if (!e) return;
+      const line = g.querySelector('line');
+      if (!line) return;
+      line.classList.remove('edge-degraded', 'edge-down');
+      if (e.status === 'degraded') line.classList.add('edge-degraded');
+      else if (e.status === 'down') line.classList.add('edge-down');
     });
   }
 
@@ -654,17 +755,45 @@ const Graph = (() => {
       if (n._channels && n._channels.length) lines.push(`<span class="gt-hint">${n._channels.length} channel(s) — click for details</span>`);
     } else {
       if (n.hostname) lines.push(`<b>${escHtml(n.hostname)}</b>`);
-      if (n.username) lines.push(`User: ${escHtml(n.username)}${n.is_admin ? ' <span class="gt-admin">[ADMIN]</span>' : ''}`);
-      if (n.ip)       lines.push(`IP: ${escHtml(n.ip)}`);
-      if (n.os)       lines.push(`OS: ${escHtml(n.os)}`);
-      lines.push(`Status: ${n.status}`);
-      lines.push(`ID: ${n.id.slice(0, 12)}`);
-      if (n.is_egress) lines.push('Egress beacon');
-      if (n.link_type && n.link_type !== 'cloud') lines.push(`Link: ${n.link_type.toUpperCase()}`);
+      if (n.ip) lines.push(`<span class="gt-dim">IP:</span> ${escHtml(n.ip)}`);
+      if (n.ext_ip && n.ext_ip !== n.ip) lines.push(`<span class="gt-dim">Ext:</span> ${escHtml(n.ext_ip)}`);
+      const user = n.domain && n.username ? `${escHtml(n.domain)}\\${escHtml(n.username)}` : escHtml(n.username || '');
+      if (user) lines.push(`<span class="gt-dim">User:</span> ${user}${n.is_admin ? ' <span class="gt-admin">[ADMIN]</span>' : ''}`);
+      if (n.os) lines.push(`<span class="gt-dim">OS:</span> ${escHtml(n.os)}`);
+      if (n.pid) lines.push(`<span class="gt-dim">PID:</span> ${escHtml(n.pid)}${n.process ? ` (${escHtml(n.process)})` : ''}`);
+      const statusColor = (n.status === 'online' || n.status === 'alive') ? '#22c55e' : n.status === 'idle' ? '#f59e0b' : '#6b7280';
+      const ago = n.last_seen ? _timeAgo(n.last_seen) : '';
+      lines.push(`<span class="gt-dim">Status:</span> <span style="color:${statusColor}">${escHtml(n.status)}</span>${ago ? ` &mdash; ${ago}` : ''}`);
+      const linkInfo = _nodeLinkInfo(n);
+      if (linkInfo) lines.push(`<span class="gt-dim">Links:</span> ${linkInfo}`);
+      lines.push('<span class="gt-hint">click to select &middot; drag to move</span>');
     }
     _tooltip.innerHTML = lines.join('<br>');
     _tooltip.style.display = 'block';
     _posTooltip(e);
+  }
+
+  function _timeAgo(ts) {
+    if (!ts) return '';
+    const now = Date.now();
+    const then = new Date(ts).getTime();
+    if (isNaN(then)) return '';
+    const diff = Math.max(0, Math.floor((now - then) / 1000));
+    if (diff < 60)   return `${diff}s ago`;
+    if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  }
+
+  function _nodeLinkInfo(n) {
+    const incoming = _edges.filter(e => e.target === n.id && !e.link_type.startsWith('cloud'));
+    const outgoing = _edges.filter(e => e.source === n.id && !e.link_type.startsWith('cloud'));
+    const total = incoming.length + outgoing.length;
+    if (total === 0) return '';
+    const parts = [];
+    incoming.forEach(e => parts.push(`${(e.link_type || '?').toUpperCase()}:${e.link_port || '?'} in`));
+    outgoing.forEach(e => parts.push(`${(e.link_type || '?').toUpperCase()}:${e.link_port || '?'} out`));
+    return `${total} (${parts.join(', ')})`;
   }
 
   function _posTooltip(e) {
@@ -723,6 +852,36 @@ const Graph = (() => {
     if (_cloudPanel && !_cloudPanel.contains(e.target)) _hideCloudDetail();
   }
 
+  /* ── heartbeat ripple ────────────────────────────────────────────────────── */
+  function _ripple(nodeId) {
+    if (!_gNodes) return;
+    const gNode = _gNodes.querySelector(`.node[data-id="${nodeId}"]`);
+    if (!gNode) return;
+    const n = _nodes.find(nd => nd.id === nodeId);
+    const rippleCls = n && n.is_admin ? 'ripple-admin'
+      : n && (n.status === 'idle') ? 'ripple-idle'
+      : n && (n.status === 'dead' || n.status === 'offline') ? 'ripple-dead'
+      : 'ripple-alive';
+    const c = _svgEl('circle', { r: NODE_R, class: `node-ripple ${rippleCls}` });
+    c.style.animation = 'hb-ripple .7s ease-out forwards';
+    gNode.insertBefore(c, gNode.firstChild);
+    c.addEventListener('animationend', () => c.remove());
+  }
+
+  /* ── toolbar ─────────────────────────────────────────────────────────────── */
+  function _initToolbar() {
+    const btnReset    = document.getElementById('btn-graph-reset');
+    if (btnReset) {
+      btnReset.addEventListener('click', () => {
+        _nodes.forEach(n => { n.fx = null; n.fy = null; });
+        _zoomState = { k: 1, x: 0, y: 0 };
+        _applyZoom();
+        _alpha = 1.0;
+        _startSim();
+      });
+    }
+  }
+
   /* ── helpers ─────────────────────────────────────────────────────────────── */
   function _svgEl(tag, attrs = {}) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -747,6 +906,13 @@ const Graph = (() => {
     if (status === 'idle')   return 'node-idle';
     if (status === 'dead' || status === 'offline') return 'node-dead';
     return 'node-unknown';
+  }
+
+  function _statusFill(status) {
+    if (status === 'online' || status === 'alive') return '#22c55e';
+    if (status === 'idle')   return '#f59e0b';
+    if (status === 'dead' || status === 'offline') return '#ef4444';
+    return '#6888aa';
   }
 
   function _providerLabel(p) {

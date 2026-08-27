@@ -549,7 +549,7 @@ a:hover{color:#f87171;text-decoration:none}
       </div>
       <div class="logo-text">
         <span class="logo-name">Stratum</span>
-        <span class="logo-sub">C2 · v1.0 · Wiki</span>
+        <span class="logo-sub">C2 · v3.0.1 · Wiki</span>
       </div>
     </a>
   </div>
@@ -748,7 +748,7 @@ a:hover{color:#f87171;text-decoration:none}
     <img src="../webui/assets/icon.webp" alt="Stratum C2" style="width:72px;height:auto;display:block">
   </div>
   <div class="hero-title">Stratum C2</div>
-  <div class="hero-sub">Cloud Persistence Framework · v3.0 · Technical Wiki</div>
+  <div class="hero-sub">Cloud Persistence Framework · v3.0.1 · Technical Wiki</div>
   <div class="badges">
     <span class="badge badge-red">RSA-4096 + AES-256-GCM</span>
     <span class="badge badge-green">5 Cloud Providers</span>
@@ -1557,10 +1557,10 @@ Agent lifetime:
 
 <h3 id="s3-2">3.2 Script Agents (bash / PowerShell)</h3>
 <div class="callout callout-warn">
-  <div class="callout-title">Script agents are v1-only — deprecated</div>
-  Script agents (bash, PowerShell) use the v1 wire protocol (base64 colon-delimited, RSA-OAEP key wrapping, static session_key). The server now requires the v2 protocol (Epoch ECDH + KDF chain). Script agents <strong>cannot connect to a v2 server</strong> and are no longer generated for new deployments. Deploy the <strong>Rust native agent</strong> for all new sessions. Existing v1 script agent sessions will not reconnect after a server upgrade.
+  <div class="callout-title">Script agents removed in v3.0.1</div>
+  Script agents (bash, PowerShell) have been fully removed from the codebase. All deploy modes now produce native Rust binaries only (EXE/DLL/BIN/ELF). The Rust agent is the sole operational implementation with the complete tradecraft module.
 </div>
-<p>The script agents were the baseline delivery format. The bash agent (<code>agents/templates/core.sh</code>) is concatenated with the provider-specific transport layer (<code>providers/{name}/transport/agent.sh</code>) at deploy time, producing a single self-contained file with all credentials and configuration embedded.</p>
+<p>The section below is historical reference only. All script templates (<code>core.sh</code>, <code>core.ps1</code>, stub variants) and provider transport scripts have been deleted.</p>
 <p><strong>Composition at deploy time:</strong></p>
 <pre><code><span class="cmt"># agent.sh build process (wizard)</span>
 <span class="var">transport</span> = providers/dropbox/transport/agent.sh   <span class="cmt"># token refresh, upload, download</span>
@@ -2443,7 +2443,7 @@ manager.load_all()    <span class="cmt"># ← can now construct transports for l
   <li>Implement <code>XxxWizard(ProviderWizard)</code> — set <code>PROVIDER_ID</code>, <code>PROVIDER_NAME</code>, <code>TRANSPORT_DIR</code>; implement <code>make_config()</code>, <code>step_auth()</code>, <code>step_init_channel()</code>; override <code>_native_agent_extra_env()</code> to inject <code>STRATUM_APP_KEY</code> etc. for the Rust build</li>
   <li>Register: add <code>TRANSPORT_REGISTRY["{name}"] = XxxTransport</code> at module level, and add to <code>providers/all.py</code></li>
 </ol>
-<p>The agent scripts for the new provider go in <code>providers/{name}/transport/agent.sh</code> and <code>agent.ps1</code>. These only need to implement <code>_upload()</code>, <code>_download()</code>, and <code>_token_refresh()</code> — the C2 core functions are inherited from the universal <code>agents/templates/core.sh</code> / <code>core.ps1</code>.</p>
+<p>The Rust agent handles all transport internally. Provider-specific credentials are injected via <code>STRATUM_*</code> env vars at compile time through <code>_native_agent_extra_env()</code>. No script templates are needed.</p>
 </section>
 
 <!-- ════════════════════════ §7 OPSEC ════ -->
@@ -2677,23 +2677,10 @@ execve(<span class="str">"/bin/bash"</span>, {<span class="str">"/proc/self/fd/N
 
 <h4>Self-delete mechanisms by agent type</h4>
 <table>
-  <tr><th>Agent</th><th>Platform</th><th>Script / Binary</th><th>.vbs launcher</th><th>Timing</th></tr>
-  <tr>
-    <td>core.sh</td><td>Linux</td>
-    <td><code>(sleep 1; rm -f "$STUB_PATH") &amp;</code> — background subshell survives parent exit</td>
-    <td>N/A</td>
-    <td>~1 s after exit</td>
-  </tr>
-  <tr>
-    <td>core.ps1</td><td>Windows</td>
-    <td>Detached <code>cmd.exe</code>: <code>timeout /t 3 &amp; del /f /q "stub.ps1"</code></td>
-    <td>Same <code>cmd.exe</code> call: <code>if exist "stub.vbs" del /f /q "stub.vbs"</code></td>
-    <td>~3 s after exit</td>
-  </tr>
+  <tr><th>Agent</th><th>Platform</th><th>Mechanism</th><th>Timing</th></tr>
   <tr>
     <td>Rust ELF</td><td>Linux</td>
     <td><code>std::fs::remove_file(current_exe())</code> — unlink while running is legal on POSIX</td>
-    <td>N/A</td>
     <td>Immediate (pre-exit)</td>
   </tr>
   <tr>
@@ -2709,12 +2696,8 @@ execve(<span class="str">"/bin/bash"</span>, {<span class="str">"/proc/self/fd/N
   On Windows, a running process holds an open kernel handle on its own EXE image. <code>DeleteFile</code> fails with <code>ERROR_SHARING_VIOLATION</code> while the process is alive. The <code>MoveFileExW(MOVEFILE_DELAY_UNTIL_REBOOT, 0x4)</code> fallback schedules the file for deletion when the OS next boots — the binary is orphaned (persist is already gone) and will never re-execute. This is the only reliable mechanism available without a separate helper process.
 </div>
 
-<h4>VBS launcher deletion (Windows)</h4>
-<p>The deploy wizard generates a <code>.vbs</code> launcher next to every <code>.ps1</code> artifact (<code>stub.vbs</code>, <code>agent.vbs</code>, <code>agent_stageless.vbs</code>). The VBS filename is always the PS1 name with the extension swapped. On KILL:</p>
-<ul>
-  <li><strong>PS1 agents</strong> — <code>[System.IO.Path]::ChangeExtension($env:_STUB_PATH, ".vbs")</code> is computed and added to the same detached <code>cmd.exe</code> delete command, guarded by <code>if exist</code>.</li>
-  <li><strong>Rust PE</strong> — <code>_STUB_PATH</code> is set by the PS1 stub before exec-ing stage-2 and is inherited by the native process. <code>kill_cleanup()</code> reads it via <code>std::env::var("_STUB_PATH")</code>, then calls <code>Path::with_extension("vbs")</code> to derive the launcher path and removes it.</li>
-</ul>
+<h4>VBS launcher deletion (Windows) — removed in v3.0.1</h4>
+<p>VBS launchers are no longer generated. The Rust PE agent handles its own self-deletion. No PS1 or VBS artifacts exist in the deploy output.</p>
 
 <h4>Persist directory removal</h4>
 <p>All Linux agent techniques call <code>rm -rf "$_PERSIST_DIR"</code> after removing the payload file. Earlier versions used <code>rmdir</code> (non-recursive), which silently failed if the directory contained any extra files (e.g., from a <code>blobsave</code> command or operator-placed artifacts). The recursive form is used unconditionally — <code>_PERSIST_DIR</code> is always a wizard-generated subdirectory under <code>$HOME/.local/share/</code> and is safe to remove in full.</p>
@@ -4355,6 +4338,20 @@ Get-Content 'C:\Program Files\App\config.ini'</code></pre>
   <tr><td>TCP</td><td>Linux + Windows</td><td>Linux + Windows</td><td>Any port</td><td>General mesh, cross-platform</td></tr>
   <tr><td>SMB</td><td>Windows only</td><td>Linux + Windows</td><td><code>\\.\pipe\stratum</code></td><td>Blend with SMB traffic, named-pipe covert channel</td></tr>
 </table>
+
+<h4>WebUI — Graph View</h4>
+<p>The <strong>Graph</strong> button in the top toolbar toggles the P2P topology visualizer. It replaces the session table with an interactive force-directed graph that renders every agent as a node and every P2P link as an edge.</p>
+<ul>
+  <li><strong>Node types</strong> — each session is drawn as a circle. A green ring indicates an alive session, amber for idle, grey for dead. The node label shows the session ID and hostname.</li>
+  <li><strong>Edge types</strong> — TCP links are drawn as solid lines, SMB links as dashed lines, and cloud (dead-drop) links as dotted lines. Each edge is color-coded by transport.</li>
+  <li><strong>Tooltip</strong> — hovering a node displays session details: user, host, OS, internal/external IP, provider, and P2P role (parent/child/standalone).</li>
+  <li><strong>Legend</strong> — a collapsible legend in the top-left corner maps colors and line styles to transport types and node states.</li>
+  <li><strong>Empty state</strong> — when no P2P links exist, the graph area displays an informational message with a quick-start guide for establishing the first mesh link.</li>
+</ul>
+<div class="callout callout-tip">
+  <div class="callout-title">Graph interaction</div>
+  Nodes can be dragged to rearrange the layout. The graph auto-updates in real time via WebSocket — new links, unlinks, and session state changes are reflected immediately without page refresh.
+</div>
 
 <h3 id="s13-9">6.9 Lateral Movement — Jump Modules</h3>
 <p>Jump modules combine deployment and P2P linking into a single command. Deploy a new agent on a remote target and automatically establish a P2P link back to the current agent.</p>

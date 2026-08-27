@@ -4,18 +4,16 @@
 
 <div align="center">
 
-**Cloud Persistence Framework · v3.0**
+**Cloud Persistence Framework · v3.0.1**
 
 *A fallback foothold that routes through infrastructure defenders can't block.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg)]()
 
-[![Python](https://img.shields.io/badge/Python-30.7%25-3776ab?logo=python&logoColor=white)]()
-[![JavaScript](https://img.shields.io/badge/JavaScript-22.9%25-f7df1e?logo=javascript&logoColor=black)]()
-[![Rust](https://img.shields.io/badge/Rust-19.4%25-ce422b?logo=rust&logoColor=white)]()
-[![PowerShell](https://img.shields.io/badge/PowerShell-9.5%25-5391fe?logo=powershell&logoColor=white)]()
-[![Shell](https://img.shields.io/badge/Shell-7.4%25-89e051?logo=gnubash&logoColor=black)]()
+[![Python](https://img.shields.io/badge/Python-37.0%25-3776ab?logo=python&logoColor=white)]()
+[![Rust](https://img.shields.io/badge/Rust-27.5%25-ce422b?logo=rust&logoColor=white)]()
+[![JavaScript](https://img.shields.io/badge/JavaScript-25.2%25-f7df1e?logo=javascript&logoColor=black)]()
 
 </div>
 
@@ -49,7 +47,7 @@ That's Stratum. Commands and responses travel as ordinary files inside a cloud s
 The agent wakes on a configurable interval (+ log-normal jitter), reads the input file, executes, encrypts the response, uploads it, and sleeps. Everything encrypted end-to-end with RSA-4096-OAEP + AES-256-GCM. The operator's IP never appears in any network log on the target side.
 
 <div align="center">
-  <img src="docs/screenshots/stratum-img.png" alt="Stratum C2 WebGUI" width="900" />
+  <img src="docs/screenshots/wegbui.png" alt="Stratum C2 WebGUI" width="900" />
 </div>
 
 ---
@@ -78,17 +76,15 @@ All five share the same wire format, the same RSA keypair, and the same operator
 
 A SOC that wants to stop C2 blocks the teamserver domain or fronted infrastructure. A SOC that wants to stop Stratum has to block Dropbox, OneDrive, Google Drive, SharePoint, and S3 simultaneously. That's not a firewall rule — it's a business decision no enterprise is going to make. The dead-drop architecture doesn't try to evade detection. It operates on infrastructure the defender has already decided to trust, permanently.
 
-### 2. Six agent formats from a single deploy flow
+### 2. Four native agent formats from a single deploy flow
 
 | Format | Platform | Dependencies |
 |---|---|---|
-| `.sh` | Linux | `curl` + `openssl` — pre-installed everywhere |
-| `.ps1` | Windows | PowerShell 5.1+ — pre-installed since Windows 7 |
-| `.exe` / `.dll` | Windows | None — Rust-compiled PE, no interpreter, no PowerShell in process tree |
+| `.exe` / `.dll` | Windows | None — Rust-compiled PE (MSVC-ABI), no interpreter, no PowerShell in process tree |
 | `.elf` | Linux | None — Rust-compiled musl-static, runs on any x86_64 Linux |
 | `.bin` | Linux / Windows | x64 PIC shellcode — drop into any external loader or injector |
 
-The wizard generates all of them. You answer prompts; it compiles, signs, encrypts, and packages. No compiler flags, no env vars, no manual key management.
+The wizard generates all of them. You answer prompts; it compiles, encrypts, and packages. No compiler flags, no env vars, no manual key management.
 
 ### 3. Three deploy modes — matched to the engagement
 
@@ -116,7 +112,7 @@ Before touching a single registry key or cron entry, run `/persist probe`. The a
 Pick what works, install it, remove it cleanly when done. The WebGUI tracks every installed technique per session. `/kill` tears everything down — persistence, binary, cloud artifacts — in one command.
 
 <div align="center">
-  <img src="docs/screenshots/scene18-persistencetab.png" alt="Persistence tab — probe results" width="900" />
+  <img src="docs/screenshots/persist.png" alt="Persistence tab — probe results" width="900" />
 </div>
 
 ### 5. Operational guardrails baked at deploy time
@@ -183,10 +179,10 @@ Open `https://<host>:<port>`, log in, click **Deploy**. The wizard walks you thr
 
 ```bash
 # Linux — background, no terminal
-nohup ./stub.sh &>/dev/null &
+chmod +x stub.elf && nohup ./stub.elf &>/dev/null &
 
-# Windows — hidden window
-powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File stub.ps1
+# Windows — hidden window (cmd or PowerShell)
+start /b stub.exe
 ```
 
 Session appears in the WebGUI automatically on first beacon.
@@ -227,7 +223,11 @@ Multi-operator, real-time, browser-based. Every operator sees the same sessions 
 Each session has dedicated tabs: **Shell** · **History** · **Artifacts** · **Persist** · **Credentials** · **Control** · **Info**. Global views: **Sessions** · **Deploy** · **Archives** · **Tradecraft** · **Settings**.
 
 <div align="center">
-  <img src="docs/screenshots/scene19-infotab.png" alt="Info tab — live system profile" width="900" />
+  <img src="docs/screenshots/sessinfo.png" alt="Info tab — live system profile" width="900" />
+</div>
+
+<div align="center">
+  <img src="docs/screenshots/graph.png" alt="P2P topology graph" width="900" />
 </div>
 
 ---
@@ -253,7 +253,7 @@ Each session has dedicated tabs: **Shell** · **History** · **Artifacts** · **
 | Blob key derivation | PBKDF2-HMAC-SHA-256 · 210,000 iterations |
 | Bootstrap key | One-time-use — deleted from cloud on first agent run |
 | Session key in binary | XOR-obfuscated in `.rodata` — raw hex never appears verbatim |
-| Local blob encryption | AES-256-GCM (Rust agents) · AES-256-CBC (bash/PS1 stubs) — cross-compatible |
+| Local blob encryption | AES-256-GCM — HW-fingerprinted blob cached on disk |
 
 ---
 
