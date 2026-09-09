@@ -461,6 +461,14 @@ class AsyncPoller(threading.Thread):
                                     sess_dl.mkdir(parents=True, exist_ok=True)
                                     dest = sess_dl / filename
                                 dest.parent.mkdir(parents=True, exist_ok=True)
+                                if dest.exists():
+                                    stem, suffix = dest.stem, dest.suffix
+                                    parent = dest.parent
+                                    for n in range(1, 1000):
+                                        candidate = parent / f"{stem}_{n}{suffix}"
+                                        if not candidate.exists():
+                                            dest = candidate
+                                            break
                                 dest.write_bytes(file_data)
                                 sess.transport.delete(staging_path)
                                 msg = f"saved: {dest}  ({len(file_data):,} bytes)"
@@ -500,6 +508,13 @@ class AsyncPoller(threading.Thread):
                                 data = sess.transport.download(cp)
                                 if data:
                                     dest = sess_dl / fn
+                                    if dest.exists():
+                                        _stem, _sfx = dest.stem, dest.suffix
+                                        for _n in range(1, 1000):
+                                            _cand = sess_dl / f"{_stem}_{_n}{_sfx}"
+                                            if not _cand.exists():
+                                                dest = _cand
+                                                break
                                     dest.write_bytes(data)
                                     sess.transport.delete(cp)
                                     hist.hist.log_download(self.cmd_id, sp, str(dest), len(data))

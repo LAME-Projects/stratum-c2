@@ -5,6 +5,16 @@ Format: features, fixes, and breaking changes grouped by release.
 
 ---
 
+## v3.0.2
+
+### Fixes
+
+- **Download file collision** — downloading files with the same name from different remote paths (e.g. two `.bash_history` from different users) no longer overwrites the first. Numeric suffix (`_1`, `_2`, …) appended automatically when the destination exists
+- **Credential deduplication** — `/creds listen dump` no longer appends duplicate entries. Server-side check on `username` + `secret` pair before insert
+- **Upload delete shows real command** — the artifact delete button now shows the actual shell command (`rm -f '/path/file'` or `Remove-Item`) in the pending bar and shell history, instead of the misleading `/upload delete filename`
+
+---
+
 ## v3.0.1
 
 ### Agent — External IP Detection

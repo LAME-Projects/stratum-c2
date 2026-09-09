@@ -34,10 +34,10 @@ fn main() {
         res.set("ProductName",      "System Update Helper");
         res.set("CompanyName",      "System Services");
         res.set("LegalCopyright",   "Copyright \u{00a9} System Services");
-        res.set("FileVersion",      "3.0.1.0");
-        res.set("ProductVersion",   "3.0.1.0");
-        res.set_version_info(winres::VersionInfo::FILEVERSION,    0x0003_0000_0001_0000);
-        res.set_version_info(winres::VersionInfo::PRODUCTVERSION, 0x0003_0000_0001_0000);
+        res.set("FileVersion",      "3.0.2.0");
+        res.set("ProductVersion",   "3.0.2.0");
+        res.set_version_info(winres::VersionInfo::FILEVERSION,    0x0003_0000_0002_0000);
+        res.set_version_info(winres::VersionInfo::PRODUCTVERSION, 0x0003_0000_0002_0000);
         let _ = res.compile();
     }
 

@@ -984,6 +984,9 @@ async def add_credential(session_id: str, body: CredentialRequest,
                          username: str = Depends(get_current_user)):
     s = _require_session(_sm(request), session_id)
     creds = _load_creds(s)
+    for c in creds:
+        if c.get("username") == body.username and c.get("secret") == body.secret:
+            return c
     import uuid
     entry = {
         "id": uuid.uuid4().hex[:12],

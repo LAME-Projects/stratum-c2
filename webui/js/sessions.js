@@ -3610,7 +3610,7 @@ const Sessions = (() => {
             ? `Remove-Item '${remotePath}' -Force -ErrorAction SilentlyContinue`
             : `rm -f '${remotePath}'`;
           try {
-            const r = await API.sendCommand(_activeId, cmd, `/upload delete ${fname}`);
+            const r = await API.sendCommand(_activeId, cmd, cmd);
             if (r && r.ok === false) {
               Toast.warning('Command blocked', r.locked_by ? `Lock held by '${r.locked_by}'` : 'Another operator holds the lock');
               return;

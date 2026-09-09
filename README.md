@@ -4,7 +4,7 @@
 
 <div align="center">
 
-**Cloud Persistence Framework · v3.0.1**
+**Cloud Persistence Framework · v3.0.2**
 
 *A fallback foothold that routes through infrastructure defenders can't block.*
 
