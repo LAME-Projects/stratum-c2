@@ -34,45 +34,67 @@ def _parse_semver(tag: str) -> tuple[int, ...]:
     return tuple(int(x) for x in m.groups())
 
 
+def _extract_section(changelog: str, version: str) -> str:
+    header = f"## v{version}"
+    start = changelog.find(header)
+    if start == -1:
+        return ""
+    start += len(header)
+    end = changelog.find("\n## ", start)
+    section = changelog[start:end].strip() if end != -1 else changelog[start:].strip()
+    if section.startswith("---"):
+        section = section[3:].strip()
+    return section
+
+
 async def check_for_update(repo: str) -> Optional[dict]:
     global _update_state
 
     if not repo:
         return None
 
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    url = f"https://raw.githubusercontent.com/{repo}/main/VERSION"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(url, headers={"Accept": "application/vnd.github+json"})
+            r = await client.get(url)
             if r.status_code == 404:
-                log.warning("Update check: no releases found for %s", repo)
+                log.warning("Update check: VERSION file not found for %s", repo)
                 _update_state = None
                 return None
             r.raise_for_status()
-            data = r.json()
+            remote_version = r.text.strip()
     except Exception as exc:
         log.warning("Update check failed: %s", exc)
         _update_state = None
         return None
 
-    latest_tag = data.get("tag_name", "")
-    latest_ver = _parse_semver(latest_tag)
+    latest_ver = _parse_semver(remote_version)
     current_ver = _parse_semver(__version__)
 
     if latest_ver <= current_ver:
-        log.info("Up to date: v%s (latest: %s)", __version__, latest_tag)
+        log.info("Up to date: v%s (latest: v%s)", __version__, remote_version)
         _update_state = None
         return None
+
+    notes = ""
+    try:
+        cl_url = f"https://raw.githubusercontent.com/{repo}/main/CHANGELOG.md"
+        async with httpx.AsyncClient(timeout=15) as client:
+            cl = await client.get(cl_url)
+            if cl.status_code == 200:
+                notes = _extract_section(cl.text, remote_version)
+    except Exception:
+        pass
 
     _update_state = {
         "available": True,
         "current": __version__,
-        "latest": latest_tag.lstrip("v"),
-        "release_notes": data.get("body", ""),
-        "published_at": data.get("published_at", ""),
-        "html_url": data.get("html_url", ""),
+        "latest": remote_version,
+        "release_notes": notes,
+        "published_at": "",
+        "html_url": f"https://github.com/{repo}",
     }
-    log.info("Update available: v%s → %s", __version__, latest_tag)
+    log.info("Update available: v%s → v%s", __version__, remote_version)
     return _update_state
 
 
