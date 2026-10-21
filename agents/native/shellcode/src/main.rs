@@ -685,40 +685,12 @@ unsafe fn load_pe(
         }
     }
 
-    // ── 10. Run .CRT$XI* and .CRT$XC* initializers ───────────────────────────
-    // The MSVC CRT groups static initializers into linker sections:
-    //   .CRT$XIA / .CRT$XIZ  — C init  (sentinels, empty pointers)
-    //   .CRT$XIB..XIY        — actual init functions (Rust runtime init lives here)
-    //   .CRT$XCA / .CRT$XCZ  — C++ ctors
-    //
-    // _DllMainCRTStartup walks these arrays and calls each non-null pointer.
-    // Without calling OEP we must do it ourselves so that Rust's panic handler,
-    // allocator hooks, and other runtime statics are properly initialised before
-    // any Rust code that may panic runs (e.g. reqwest::blocking::ClientBuilder::new).
-    //
-    // Each entry is a pointer-to-function: void (*)(void)  [C init]
-    // or void (__cdecl *)(void)  — same on x64, Win64 ABI.
-    type FnCrtInit = unsafe extern "win64" fn();
-    for si in 0..n_sections {
-        let sec = &*sections.add(si);
-        let name = &sec.name;
-        // Match .CRT$XI* and .CRT$XC* — 8-byte name field, zero-padded.
-        let is_xi = name[0]==b'.' && name[1]==b'C' && name[2]==b'R' && name[3]==b'T'
-                 && name[4]==b'$' && name[5]==b'X'
-                 && (name[6]==b'I' || name[6]==b'C');
-        if !is_xi { continue; }
-        let va  = base + sec.virtual_address as usize;
-        let sz  = sec.virtual_size.max(sec.size_of_raw_data) as usize;
-        let count = sz / mem::size_of::<usize>();
-        sc_log(k32, b"[lpe] running .CRT$XI* inits\0".as_ptr());
-        for fi in 0..count {
-            let fn_ptr = *((va + fi * mem::size_of::<usize>()) as *const usize);
-            if fn_ptr == 0 || fn_ptr == usize::MAX { continue; }
-            let f: FnCrtInit = mem::transmute(fn_ptr);
-            f();
-        }
-    }
-    sc_log(k32, b"[lpe] .CRT$XI* done\0".as_ptr());
+    // ── 10. CRT init — delegated to StratumCrtInit ─────────────────────────
+    // Previously this step walked .CRT$XI*/.CRT$XC* sections directly, but
+    // StratumCrtInit (step 12) does the same via __xi_a/__xi_z sentinels.
+    // Running both = double CRT init = heap corruption in any host process
+    // that already has its own CRT active. Removed — StratumCrtInit handles it.
+    sc_log(k32, b"[lpe] CRT init: delegated to StratumCrtInit\0".as_ptr());
 
     // ── 12. Resolve exports BEFORE header wipe ───────────────────────────────
     let p_ci  = get_proc_by_hash(image_base as *const u8, H_STRATUM_CRT_INIT);
