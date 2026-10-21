@@ -15,7 +15,7 @@ use crate::protocol::{Task, TaskResponse};
 
 fn staging_token() -> String {
     let mut buf = [0u8; 4];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rngs::OsRng.fill_bytes(&mut buf);
     hex::encode(buf)
 }
 
@@ -774,7 +774,7 @@ fn kill_cleanup(state: &Arc<AgentState>, transport: &SharedTransport) {
         if let Ok(meta) = std::fs::metadata(&state.blob_path) {
             let size = meta.len() as usize;
             let mut rnd = vec![0u8; size];
-            rand::thread_rng().fill_bytes(&mut rnd);
+            rand::rngs::OsRng.fill_bytes(&mut rnd);
             let _ = std::fs::write(&state.blob_path, rnd);
         }
         let _ = std::fs::remove_file(&state.blob_path);
@@ -825,7 +825,7 @@ use std::sync::Mutex;
 
 static P2P_REGISTRY: Lazy<std::sync::Arc<LinkRegistry>> = Lazy::new(|| {
     let mut guid = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut guid);
+    rand::rngs::OsRng.fill_bytes(&mut guid);
     std::sync::Arc::new(LinkRegistry::new(guid))
 });
 

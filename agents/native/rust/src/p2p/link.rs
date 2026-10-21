@@ -25,7 +25,7 @@ const HELLO_SIZE: usize = 1 + 16 + 32; // 49
 const ACK_MIN_SIZE: usize = 1 + 16 + 32; // 49 + GCM confirmation blob
 
 fn gen_ephemeral() -> ([u8; 32], [u8; 32]) {
-    let secret = StaticSecret::random_from_rng(rand::thread_rng());
+    let secret = StaticSecret::random_from_rng(rand::rngs::OsRng);
     let public = PublicKey::from(&secret);
     let mut priv_bytes = [0u8; 32];
     priv_bytes.copy_from_slice(&secret.to_bytes());

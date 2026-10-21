@@ -22,7 +22,7 @@ fn pad_message(data: &[u8]) -> Vec<u8> {
     if pad_needed > 0 {
         let mut pad = vec![0u8; pad_needed];
         use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut pad);
+        rand::rngs::OsRng.fill_bytes(&mut pad);
         buf.extend_from_slice(&pad);
     }
     buf

@@ -2772,7 +2772,7 @@ fn _handle_smb_client(stream: &mut std::net::TcpStream) -> Option<String> {
 
 fn _random_challenge() -> [u8; 8] {
     let mut buf = [0u8; 8];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut buf);
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut buf);
     buf
 }
 
@@ -2883,7 +2883,7 @@ fn _build_smb2_negotiate_response(client_msg_id: u64) -> Vec<u8> {
     pkt.extend_from_slice(&0x0202u16.to_le_bytes());  // Dialect: SMB 2.0.2
     pkt.extend_from_slice(&0u16.to_le_bytes());       // NegotiateContextCount (0 for 2.0.2)
     let mut guid = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut guid);
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut guid);
     pkt.extend_from_slice(&guid);                     // ServerGUID
     pkt.extend_from_slice(&0u32.to_le_bytes());       // Capabilities
     pkt.extend_from_slice(&65536u32.to_le_bytes());   // MaxTransactSize
@@ -3180,7 +3180,7 @@ fn _utf16le_to_string(data: &[u8]) -> String {
 
 fn _rand_hex(n: usize) -> String {
     let mut buf = vec![0u8; n];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut buf);
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut buf);
     hex::encode(buf)
 }
 

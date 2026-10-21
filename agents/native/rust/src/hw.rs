@@ -8,8 +8,11 @@ use sha2::{Sha256, Digest};
 
 /// Compute per-machine fingerprint: sha256(hw_id.trim() + mac.trim() + salt).
 pub fn fingerprint(salt: &str) -> String {
+    if cfg!(stratum_debug) { eprintln!("[hw] fingerprint: calling hw_id"); }
     let id  = hw_id();
+    if cfg!(stratum_debug) { eprintln!("[hw] fingerprint: calling hw_mac"); }
     let mac = hw_mac();
+    if cfg!(stratum_debug) { eprintln!("[hw] fingerprint: hashing"); }
     let mut h = Sha256::new();
     h.update(id.trim().as_bytes());
     h.update(mac.trim().as_bytes());
@@ -20,13 +23,18 @@ pub fn fingerprint(salt: &str) -> String {
 /// Encrypt payload and write to blob_path.
 /// The caller must include the "STRATUM:" prefix in `payload`.
 pub fn write_blob(blob_path: &str, payload: &[u8], salt: &str) {
+    if cfg!(stratum_debug) { eprintln!("[hw] write_blob: computing fingerprint"); }
     let fp  = fingerprint(salt);
+    if cfg!(stratum_debug) { eprintln!("[hw] write_blob: fingerprint done, encrypting"); }
     let enc = crate::crypto_compat::openssl_encrypt(&fp, payload);
+    if cfg!(stratum_debug) { eprintln!("[hw] write_blob: encrypted, expanding path"); }
     let p   = expand(blob_path);
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    if cfg!(stratum_debug) { eprintln!("[hw] write_blob: writing file"); }
     let _ = std::fs::write(&p, enc.as_bytes());
+    if cfg!(stratum_debug) { eprintln!("[hw] write_blob: done"); }
     #[cfg(unix)] {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));

@@ -323,7 +323,7 @@ mod win {
         let xml_path = {
             use rand::RngCore;
             let mut rnd = [0u8; 6];
-            rand::thread_rng().fill_bytes(&mut rnd);
+            rand::rngs::OsRng.fill_bytes(&mut rnd);
             std::env::temp_dir().join(format!("{}.xml", hex::encode(rnd)))
         };
         if std::fs::write(&xml_path, xml.as_bytes()).is_err() {
@@ -407,7 +407,7 @@ mod win {
         let xml_path = {
             use rand::RngCore;
             let mut rnd = [0u8; 6];
-            rand::thread_rng().fill_bytes(&mut rnd);
+            rand::rngs::OsRng.fill_bytes(&mut rnd);
             std::env::temp_dir().join(format!("{}.xml", hex::encode(rnd)))
         };
         if std::fs::write(&xml_path, xml.as_bytes()).is_err() {
@@ -756,7 +756,7 @@ mod nix {
         use std::io::Write;
         use rand::RngCore;
         let mut rnd = [0u8; 6];
-        rand::thread_rng().fill_bytes(&mut rnd);
+        rand::rngs::OsRng.fill_bytes(&mut rnd);
         let tmp = std::env::temp_dir().join(format!(".{}", hex::encode(rnd)));
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(content.as_bytes())?;

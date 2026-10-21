@@ -43,10 +43,14 @@ fn gcm_decrypt(password: &str, b64: &str) -> Option<String> {
 }
 
 fn gcm_encrypt(password: &str, plaintext: &[u8]) -> String {
+    if cfg!(stratum_debug) { eprintln!("[crypto] gcm_encrypt: generating salt+nonce"); }
     let mut salt  = [0u8; 8];
     let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut salt);
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    // Use OsRng directly — rand::thread_rng() relies on TLS that may not
+    // be initialised for threads created outside std::thread::spawn (sRDI case).
+    rand::rngs::OsRng.fill_bytes(&mut salt);
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    if cfg!(stratum_debug) { eprintln!("[crypto] gcm_encrypt: salt+nonce ok"); }
     let key    = derive_gcm(password, &salt);
     let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
     let nonce  = Nonce::<Aes256Gcm>::from_slice(&nonce_bytes);

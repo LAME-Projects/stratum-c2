@@ -1376,7 +1376,7 @@ pub(crate) fn compute_sleep_secs(state: &Arc<exec::AgentState>) -> u64 {
         let ln     = LogNormal::new(mu, sigma).unwrap_or_else(|_| {
             LogNormal::new(base.ln(), 0.1).unwrap()
         });
-        ln.sample(&mut rand::thread_rng())
+        ln.sample(&mut rand::rngs::OsRng)
     } else {
         base
     };

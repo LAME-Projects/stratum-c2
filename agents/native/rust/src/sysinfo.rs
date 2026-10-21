@@ -376,7 +376,7 @@ fn stun_query(addr: &str, port: u16) -> Option<String> {
     let mut req = [0u8; 20];
     req[0] = 0x00; req[1] = 0x01;
     req[4] = 0x21; req[5] = 0x12; req[6] = 0xA4; req[7] = 0x42;
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut req[8..]);
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut req[8..]);
     // Two attempts per server
     for _ in 0..2 {
         if sock.send(&req).is_err() { continue; }

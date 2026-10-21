@@ -39,7 +39,7 @@ pub(crate) fn rsa_pss_verify(pub_key: &PubKey, msg: &[u8], sig_bytes: &[u8]) -> 
 pub(crate) fn gcm_seal(key_bytes: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes));
     let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ct = cipher.encrypt(nonce, plaintext).ok()?;
     // Output: nonce(12) || ciphertext+tag

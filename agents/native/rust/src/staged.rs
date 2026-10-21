@@ -223,7 +223,7 @@ fn exec_unix_elf(elf_bytes: &[u8]) {
         std::env::temp_dir()
     };
 
-    let tmp_path = tmp_dir.join(format!(".{:016x}", rand::thread_rng().next_u64()));
+    let tmp_path = tmp_dir.join(format!(".{:016x}", rand::rngs::OsRng.next_u64()));
     if std::fs::write(&tmp_path, elf_bytes).is_ok() {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o700));

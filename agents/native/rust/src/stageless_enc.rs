@@ -61,7 +61,9 @@ pub fn run() {
         return;
     };
 
+    if cfg!(stratum_debug) { eprintln!("[stageless-enc] cfg ready, calling start_agent"); }
     start_agent(cfg, &t);
+    if cfg!(stratum_debug) { eprintln!("[stageless-enc] start_agent returned (unexpected)"); }
 }
 
 fn try_bootstrap() -> Option<AgentCfg> {
@@ -72,6 +74,7 @@ fn try_bootstrap() -> Option<AgentCfg> {
     let cfg    = parse_cfg(&data)?;
     if cfg!(stratum_debug) { eprintln!("[stageless-enc] config parsed OK, caching"); }
     cache_cfg(&data);
+    if cfg!(stratum_debug) { eprintln!("[stageless-enc] cache_cfg done"); }
     Some(cfg)
 }
 
