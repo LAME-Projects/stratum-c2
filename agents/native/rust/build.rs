@@ -5,6 +5,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(stratum_staged_enc)");
     println!("cargo::rustc-check-cfg=cfg(stratum_stageless_enc)");
     println!("cargo::rustc-check-cfg=cfg(stratum_debug)");
+    println!("cargo::rustc-check-cfg=cfg(stratum_naked)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_onedrive)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_s3)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_sharepoint)");
@@ -14,6 +15,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=STRATUM_DEBUG");
     if std::env::var("STRATUM_DEBUG").as_deref() == Ok("true") {
         println!("cargo:rustc-cfg=stratum_debug");
+    }
+
+    println!("cargo:rerun-if-env-changed=STRATUM_NAKED");
+    if std::env::var("STRATUM_NAKED").as_deref() == Ok("true") {
+        println!("cargo:rustc-cfg=stratum_naked");
     }
 
     // ── P2P child mode ───────────────────────────────────────────────────────
@@ -28,7 +34,9 @@ fn main() {
         ] { bake_required(var); }
     }
 
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("STRATUM_NAKED").as_deref() != Ok("true")
+    {
         let mut res = winres::WindowsResource::new();
         res.set("FileDescription",  "System Update Helper");
         res.set("ProductName",      "System Update Helper");

