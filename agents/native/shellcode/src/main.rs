@@ -818,28 +818,17 @@ unsafe fn load_pe(
     let wipe_size = opt.size_of_headers as usize;
     memset_raw(image_base as *mut u8, 0, wipe_size.min(0x1000));
 
-    // ── 11b. Isolate agent heap from host process ──────────────────────────
-    // Create a private heap and swap PEB.ProcessHeap so that StratumCrtInit,
-    // the Rust allocator, ucrtbase, and every DLL the agent imports all
-    // allocate on a dedicated heap — zero interference with the host process.
-    // PEB.ProcessHeap is at offset 0x30 in the PEB (x64 Win10/11).
-    let peb_addr: usize;
-    asm!("mov {}, gs:[0x60]", out(reg) peb_addr, options(nostack, pure, nomem));
-    let process_heap_ptr = (peb_addr + 0x30) as *mut usize;
-    let _old_process_heap = *process_heap_ptr;
-    let private_heap = heap_create(0, 0, 0);
-    if !private_heap.is_null() {
-        *process_heap_ptr = private_heap as usize;
-        sc_log(k32, b"[lpe] PEB.ProcessHeap swapped to private\0".as_ptr());
-    } else {
-        sc_log(k32, b"[lpe] HeapCreate failed, using host heap\0".as_ptr());
-    }
+    // ── 11b. PEB.ProcessHeap — DO NOT SWAP ─────────────────────────────────
+    // Previous versions created a private heap and swapped PEB.ProcessHeap.
+    // This causes STATUS_HEAP_CORRUPTION (0xC0000374) because the host process
+    // (kRustyMirage) has threads that HeapFree objects allocated on the original
+    // heap, but GetProcessHeap() now returns our private one. Even restoring
+    // after CRT init doesn't help — CRT allocates on the private heap, then
+    // Rust frees on the original. The only safe approach: never touch PEB.
+    // The host process heap is shared — Stratum allocates/frees on it cleanly.
+    sc_log(k32, b"[lpe] using host ProcessHeap (no swap)\0".as_ptr());
 
     // ── 12. Run DLL CRT initialisers, then call StratumRun ───────────────────
-    // StratumCrtInit walks __xi_a..__xi_z and __xc_a..__xc_z so that Rust's
-    // panic handler, thread-local infrastructure, and all static initialisers
-    // are set up before any Rust code in the DLL runs.
-    // All allocations now go to the private heap via PEB.ProcessHeap.
     if !p_ci.is_null() {
         sc_log(k32, b"[lpe] calling StratumCrtInit\0".as_ptr());
         type FnCrtInit = unsafe extern "win64" fn();

