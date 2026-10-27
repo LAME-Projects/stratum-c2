@@ -939,8 +939,40 @@ fn _bof_exec_windows(coff_data: &[u8], args: &str) -> String {
                 }
             }
         } else {
-            crate::dlog!("bof", "UNRESOLVED extern: {}", sym.name);
-            unresolved.push(sym.name.clone());
+            // No '$' separator — try resolving bare name from common DLLs.
+            // TrustedSec BOFs import e.g. __imp_LoadLibraryA without DLL$ prefix.
+            static FALLBACK_DLLS: &[&str] = &[
+                "kernel32.dll\0", "ntdll.dll\0", "msvcrt.dll\0",
+                "advapi32.dll\0", "user32.dll\0", "ws2_32.dll\0",
+            ];
+            let mut found = false;
+            unsafe {
+                use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+                let fname = format!("{}\0", imp_name);
+                for dll in FALLBACK_DLLS {
+                    let h = GetModuleHandleA(dll.as_ptr());
+                    if h != 0 {
+                        if let Some(a) = GetProcAddress(h, fname.as_ptr()) {
+                            let addr = a as usize;
+                            if is_imp {
+                                let slot = got_alloc_slot(addr);
+                                resolved.insert(sym.name.clone(), slot);
+                                crate::dlog!("bof", "resolved (fallback) {} -> 0x{:x} (GOT 0x{:x})", imp_name, addr, slot);
+                            } else {
+                                let stub = thunk_alloc(addr);
+                                resolved.insert(sym.name.clone(), stub);
+                                crate::dlog!("bof", "resolved (fallback) {} -> 0x{:x} (thunk 0x{:x})", imp_name, addr, stub);
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !found {
+                crate::dlog!("bof", "UNRESOLVED extern: {}", sym.name);
+                unresolved.push(sym.name.clone());
+            }
         }
     }
     if !unresolved.is_empty() {
