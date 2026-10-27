@@ -5,21 +5,21 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(stratum_staged_enc)");
     println!("cargo::rustc-check-cfg=cfg(stratum_stageless_enc)");
     println!("cargo::rustc-check-cfg=cfg(stratum_debug)");
-    println!("cargo::rustc-check-cfg=cfg(stratum_naked)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_onedrive)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_s3)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_sharepoint)");
     println!("cargo::rustc-check-cfg=cfg(stratum_provider_googledrive)");
     println!("cargo::rustc-check-cfg=cfg(stratum_p2p)");
-
-    println!("cargo:rerun-if-env-changed=STRATUM_DEBUG");
-    if std::env::var("STRATUM_DEBUG").as_deref() == Ok("true") {
-        println!("cargo:rustc-cfg=stratum_debug");
-    }
+    println!("cargo::rustc-check-cfg=cfg(stratum_naked)");
 
     println!("cargo:rerun-if-env-changed=STRATUM_NAKED");
     if std::env::var("STRATUM_NAKED").as_deref() == Ok("true") {
         println!("cargo:rustc-cfg=stratum_naked");
+    }
+
+    println!("cargo:rerun-if-env-changed=STRATUM_DEBUG");
+    if std::env::var("STRATUM_DEBUG").as_deref() == Ok("true") {
+        println!("cargo:rustc-cfg=stratum_debug");
     }
 
     // ── P2P child mode ───────────────────────────────────────────────────────

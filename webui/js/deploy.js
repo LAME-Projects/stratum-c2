@@ -1173,11 +1173,17 @@ const Deploy = (() => {
     body.appendChild(blobWrap);
 
     const debugVal = _cfgDefault('debug_mode');
+    const nakedVal = _cfgDefault('naked_mode');
     const tagWrap = document.createElement('div');
     tagWrap.className = 'cfg-section';
     tagWrap.innerHTML = `
       <div class="cfg-section-hdr">Options</div>
       <label class="tog-label">
+        <input type="checkbox" id="cfg-naked_mode"${nakedVal ? ' checked' : ''}>
+        <span class="tog-track"><span class="tog-thumb"></span></span>
+        <span>Naked mode <span class="hint-lbl">(strip internal AMSI/ETW/VEH — use with external loader)</span></span>
+      </label>
+      <label class="tog-label" style="margin-top:.5rem">
         <input type="checkbox" id="cfg-debug_mode"${debugVal ? ' checked' : ''}>
         <span class="tog-track"><span class="tog-thumb"></span></span>
         <span>Debug mode <span class="hint-lbl">(verbose output — dev only)</span></span>
@@ -1485,6 +1491,8 @@ const Deploy = (() => {
     const bpw = document.getElementById('cfg-blob_path_win');
     if (bpl) _cmVals.blob_path_linux = bpl.value || '${HOME}/.config/pulse/.pid';
     if (bpw) _cmVals.blob_path_win   = bpw.value || '%APPDATA%\\Microsoft\\Windows\\Themes\\.ddb';
+    const nkd = document.getElementById('cfg-naked_mode');
+    if (nkd) _cmVals.naked_mode = nkd.checked;
     const dbg = document.getElementById('cfg-debug_mode');
     if (dbg) _cmVals.debug_mode = dbg.checked;
     _cmVals.session_label    = _creds.session_label || '';

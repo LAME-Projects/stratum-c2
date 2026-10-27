@@ -5,6 +5,33 @@ Format: features, fixes, and breaking changes grouped by release.
 
 ---
 
+## Naked Mode (feat/stratum-naked)
+
+### Naked Build Mode — evasion-free beacon for custom loader wrapping
+
+- **`stratum_naked` compile-time flag** — `build.rs` declares and emits `cfg(stratum_naked)` when `STRATUM_NAKED=true`. All evasion code is excluded at compile time via `#[cfg(all(windows, not(stratum_naked)))]` — no AMSI/ETW symbols, no VEH handler, no debug register code appears in the naked binary
+- **PE resources stripped** — `winres` resource embedding (FileDescription, ProductName, icon) skipped in naked builds to eliminate static metadata signatures
+- **Deploy wizard integration** — naked mode toggle in WebUI (Step 2 Options), CLI wizard prompt, config recap row, and `STRATUM_NAKED` env var wired through the full pipeline: GUI → `deploy.py` → `_wizard.py` → `cargo build`
+
+### Shell Execution Hardened
+
+- **Unified `cmd.exe /c` shell** — removed PowerShell path (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass`) that triggered Trellix `ExP:Illegal API Use` via COM `AtlComPtrAssign` initialization. All shell commands now execute through `cmd.exe /c` regardless of build mode
+- **Raw Win32 shell on Windows** — replaced `std::thread::spawn` + `std::process::Command` with direct `CreateProcessW` + pipe I/O via Win32 API. Rust's `thread::spawn` crashes in reflective-DLL context because the OS never calls `DLL_THREAD_ATTACH` for manually mapped DLLs, causing a TLS initialization access violation
+
+### Inline Execution Fixes
+
+- **Assembly exec: `CreateThread` reader** — replaced `std::thread::spawn` pipe reader with `crate::dynapi::create_thread` + `_pipe_reader` (same pattern as memexec). This was the root cause of .NET assembly execution silently failing — the Rust thread spawn crashed in reflective-DLL context and the task thread died without reaching `Invoke_3`
+- **Assembly exec: `ExitProcess` hook** — added `_install_exit_process_hook()` before `Invoke_3` to prevent .NET assemblies calling `Environment.Exit()` from killing the beacon process. The hook converts `ExitProcess` → `ExitThread`. Was already present in memexec but missing in assembly exec
+- **Default script interpreter** — changed from `Interp::Powershell` to `Interp::Cmd` on Windows to avoid PowerShell COM initialization overhead and EDR triggers
+
+### Evasion Improvements (standard build)
+
+- **ETW trace suppression** — VEH handler now manages both DR0 (AmsiScanBuffer → `E_INVALIDARG`) and DR1 (NtTraceControl → `STATUS_SUCCESS`) with dispatch logic per register. `_amsi_hwbp_install` resolves and sets both breakpoints, `_amsi_hwbp_remove` clears both
+- **BOF naked path** — plain `CreateThread` execution without VEH crash guard (loader owns VEH chain)
+- **Memexec naked path** — PE thread without guarded VEH, cleanup gated with `not(stratum_naked)`
+
+---
+
 ## v3.0.2
 
 ### Fixes
